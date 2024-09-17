@@ -1,0 +1,10 @@
+# Ignore all directories
+*/
+
+# Don't ignore this .gitignore file
+!.gitignore
+
+# Allow the app directory
+!app/
+!app/**
+
