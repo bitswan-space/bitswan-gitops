@@ -63,14 +63,6 @@ def read_bitswan_yaml(bitswan_yaml_path: str) -> dict[str, Any]:
 async def docker_compose_up(
     bitswan_dir: str, docker_compose: str, deployment_info: dict[str, Any]
 ) -> None:
-    services_to_recreate = [
-        svc
-        for svc, info in deployment_info.items()
-        if info[
-            "recreate"
-        ]  # FIXME: should be always True and not specified in the info
-    ]
-
     ide_services = [svc + "__ide__" for svc in deployment_info.keys()]
 
     async def setup_asyncio_process(cmd: list[Any]) -> dict[str, Any]:
@@ -91,13 +83,11 @@ async def docker_compose_up(
             "returncode": proc.returncode,
         }
 
-    build_result = None
-    if services_to_recreate:
-        build_result = await setup_asyncio_process(
-            ["docker-compose", "-f", "/dev/stdin", "--pull"].extend(
-                services_to_recreate
-            )
+    build_result = await setup_asyncio_process(
+        ["docker-compose", "-f", "/dev/stdin", "--pull"].extend(
+            list(deployment_info.keys())
         )
+    )
 
     up_result = await setup_asyncio_process(
         ["docker-compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
@@ -131,23 +121,6 @@ async def git_pull(bitswan_dir: str) -> bool:
         return False
 
     return True
-
-
-def manage_containers(
-    bitswan_dir: str, git_root: str, bs_yaml: dict[str, Any]
-) -> dict[str, Any]:
-    parser = DockerfileParser()
-    client = docker.from_env()
-
-    deployment_info = (
-        get_deployment_info(client, deployments)
-        if (deployments := bs_yaml.get("deployments"))
-        else {}
-    )
-
-    for deployment_id, info in deployment_info.items():
-        if info["running"]:
-            conf = deployments[deployment_id]
 
 
 def calculate_checksum(file_path):
