@@ -4,8 +4,6 @@ import os
 from typing import Any
 import zipfile
 from tempfile import NamedTemporaryFile
-import docker
-from dockerfile_parse import DockerfileParser
 import yaml
 
 

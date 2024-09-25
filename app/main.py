@@ -1,4 +1,8 @@
+from .models import ContainerProperties
+from datetime import datetime
 import os
+import docker
+import docker.models.containers
 import yaml
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
@@ -91,3 +95,26 @@ async def deploy():
         )
 
     return JSONResponse(content={"message": "Services deployed successfully"})
+
+
+@app.get("/pres")
+async def list_pres() -> list[ContainerProperties]:
+    client = docker.from_env()
+    info = client.info()
+
+    containers: list[docker.models.containers.Container] = client.containers.list(filters={"label": ["space.bitswan.pipeline.protocol.-version", "gitops.deployment_id"]})
+
+    attrs = list(map(lambda c: ContainerProperties(
+        c.id,
+        info["name"], #FIXME: i hate docker sdk
+        datetime.fromtimestamp(c.attrs["Created"]),
+        c.name.replace("/", ""),
+        c.attrs["State"],
+        c.status,
+        c.labels["gitops.deployment_id"],
+    ), containers))
+
+    return attrs
+
+
+
