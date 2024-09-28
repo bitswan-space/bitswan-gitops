@@ -29,16 +29,20 @@ async def process_zip_file(file, deployment_id):
             zip_ref.extractall(output_dir)
 
         # Update or create bitswan.yaml
+        data = None
         if os.path.exists(bitswan_yaml_path):
             with open(bitswan_yaml_path, "r") as f:
-                data = yaml.safe_load(f) or {}
-        else:
-            data = {}
+                data = yaml.safe_load(f)
 
-        data[deployment_id] = data.get(deployment_id, {})
-        old_deploymend_checksum = data[deployment_id].get("checksum")
-        data[deployment_id]["checksum"] = checksum
-        data[deployment_id]["active"] = True  # FIXME: How to decide this?
+        data = data or {"deployments": {}}
+        deployments = data["deployments"]  # should never raise KeyError
+
+        deployments[deployment_id] = deployments.get(deployment_id, {})
+        old_deploymend_checksum = deployments[deployment_id].get("checksum")
+        deployments[deployment_id]["checksum"] = checksum
+        deployments[deployment_id]["active"] = True  # FIXME: How to decide this?
+
+        data["deployments"] = deployments
         with open(bitswan_yaml_path, "w") as f:
             yaml.dump(data, f)
 

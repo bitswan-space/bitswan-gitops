@@ -27,10 +27,7 @@ async def deploy():
     bitswan_dir = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/pipeline")
     bitswan_yaml_path = os.path.join(bitswan_dir, "bitswan.yaml")
 
-    if not await git_pull(bitswan_dir):
-        return JSONResponse(
-            content={"error": "Error pulling from git"}, status_code=500
-        )
+    await git_pull(bitswan_dir)
 
     try:
         bs_yaml = read_bitswan_yaml(bitswan_yaml_path)
@@ -86,15 +83,16 @@ async def deploy():
             dc["services"][deployment_id] = entry
 
     dc_yaml = yaml.dump(dc)
+    print(dc_yaml)
 
-    deployment_result = await docker_compose_up(bitswan_dir, dc_yaml, deployments)
+    # deployment_result = await docker_compose_up(bitswan_dir, dc_yaml, deployments)
 
-    if any([result["return_code"]] for result in deployment_result.values()):
-        return JSONResponse(
-            content={"error": "Error deploying services"}, status_code=500
-        )
+    # if any([result["return_code"]] for result in deployment_result.values()):
+    #     return JSONResponse(
+    #         content={"error": "Error deploying services"}, status_code=500
+    #     )
 
-    return JSONResponse(content={"message": "Services deployed successfully"})
+    return JSONResponse(content={"message": dc_yaml})
 
 
 @app.get("/pres")
@@ -102,19 +100,28 @@ async def list_pres() -> list[ContainerProperties]:
     client = docker.from_env()
     info = client.info()
 
-    containers: list[docker.models.containers.Container] = client.containers.list(filters={"label": ["space.bitswan.pipeline.protocol.-version", "gitops.deployment_id"]})
+    containers: list[docker.models.containers.Container] = client.containers.list(
+        filters={
+            "label": [
+                "space.bitswan.pipeline.protocol.-version",
+                "gitops.deployment_id",
+            ]
+        }
+    )
 
-    attrs = list(map(lambda c: ContainerProperties(
-        c.id,
-        info["name"], #FIXME: i hate docker sdk
-        datetime.fromtimestamp(c.attrs["Created"]),
-        c.name.replace("/", ""),
-        c.attrs["State"],
-        c.status,
-        c.labels["gitops.deployment_id"],
-    ), containers))
+    attrs = list(
+        map(
+            lambda c: ContainerProperties(
+                c.id,
+                info["name"],  # FIXME: i hate docker sdk
+                datetime.fromtimestamp(c.attrs["Created"]),
+                c.name.replace("/", ""),
+                c.attrs["State"],
+                c.status,
+                c.labels["gitops.deployment_id"],
+            ),
+            containers,
+        )
+    )
 
     return attrs
-
-
-
