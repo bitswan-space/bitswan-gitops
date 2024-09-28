@@ -5,6 +5,8 @@ from typing import Any
 import zipfile
 from tempfile import NamedTemporaryFile
 import yaml
+from filelock import FileLock
+import shutil
 
 
 async def process_zip_file(file, deployment_id):
@@ -14,14 +16,17 @@ async def process_zip_file(file, deployment_id):
 
     checksum = calculate_checksum(temp_file.name)
     output_dir = f"{checksum}"
+    old_deploymend_checksum = None
 
     try:
+        bitswan_home = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/bitswan")
+        bitswan_yaml_path = os.path.join(bitswan_home, "bitswan.yaml")
+
+        output_dir = os.path.join(bitswan_home, output_dir)
+
         os.makedirs(output_dir, exist_ok=True)
         with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
             zip_ref.extractall(output_dir)
-
-        bitswan_home = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/bitswan")
-        bitswan_yaml_path = os.path.join(bitswan_home, "bitswan.yaml")
 
         # Update or create bitswan.yaml
         if os.path.exists(bitswan_yaml_path):
@@ -30,10 +35,14 @@ async def process_zip_file(file, deployment_id):
         else:
             data = {}
 
-        data[checksum] = deployment_id
-
+        data[deployment_id] = data.get(deployment_id, {})
+        old_deploymend_checksum = data[deployment_id].get("checksum")
+        data[deployment_id]["checksum"] = checksum
+        data[deployment_id]["active"] = True  # FIXME: How to decide this?
         with open(bitswan_yaml_path, "w") as f:
             yaml.dump(data, f)
+
+        await update_git(bitswan_home, deployment_id, bitswan_yaml_path, checksum)
 
         return {
             "message": "File processed successfully",
@@ -41,8 +50,13 @@ async def process_zip_file(file, deployment_id):
             "checksum": checksum,
         }
     except Exception as e:
+        shutil.rmtree(output_dir, ignore_errors=True)
         return {"error": f"Error processing file: {str(e)}"}
     finally:
+        if old_deploymend_checksum:
+            shutil.rmtree(
+                os.path.join(bitswan_home, old_deploymend_checksum), ignore_errors=True
+            )
         os.unlink(temp_file.name)
 
 
@@ -127,3 +141,52 @@ def calculate_checksum(file_path):
         for byte_block in iter(lambda: f.read(4096), b""):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
+
+
+async def wait_coroutine(*args, **kwargs) -> int:
+    coro = await asyncio.create_subprocess_exec(*args, **kwargs)
+    result = await coro.wait()
+    return result
+
+
+async def update_git(
+    bitswan_home: str, deployment_id: str, bitswan_yaml_path: str, checksum: str
+):
+    if not os.path.exists(os.path.join(bitswan_home, ".git")):
+        res = await wait_coroutine("git", "init", cwd=bitswan_home)
+        if res:
+            raise Exception("Error initializing git repository")
+
+    lock_file = os.path.join(bitswan_home, ".git", "bitswan_git.lock")
+    lock = FileLock(lock_file, timeout=30)
+
+    with lock:
+        has_remote = (
+            await wait_coroutine("git", "remote", "show", "origin", cwd=bitswan_home)
+            == 0
+        )
+
+        if has_remote:
+            res = await git_pull(bitswan_home)
+            if not res:
+                raise Exception("Error pulling from git")
+
+        add_process = await asyncio.create_subprocess_exec(
+            "git", "add", bitswan_yaml_path, cwd=bitswan_home
+        )
+        await add_process.wait()
+
+        commit_process = await asyncio.create_subprocess_exec(
+            "git",
+            "commit",
+            "-m",
+            f"Update deployment {deployment_id} with checksum {checksum}",
+            cwd=bitswan_home,
+        )
+        await commit_process.wait()
+
+        if has_remote:
+            push_process = await asyncio.create_subprocess_exec(
+                "git", "push", cwd=bitswan_home
+            )
+            await push_process.wait()

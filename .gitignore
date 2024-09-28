@@ -1,10 +1,4 @@
-# Ignore all directories
-*/
+gitops.py
 
-# Don't ignore this .gitignore file
-!.gitignore
-
-# Allow the app directory
-!app/
-!app/**
-
+**/__pycache__
+.venv
