@@ -79,8 +79,6 @@ def read_bitswan_yaml(bitswan_yaml_path: str) -> dict[str, Any]:
 async def docker_compose_up(
     bitswan_dir: str, docker_compose: str, deployment_info: dict[str, Any]
 ) -> None:
-    ide_services = [svc + "__ide__" for svc in deployment_info.keys()]
-
     async def setup_asyncio_process(cmd: list[Any]) -> dict[str, Any]:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -92,30 +90,20 @@ async def docker_compose_up(
 
         stdout, stderr = await proc.communicate(input=docker_compose.encode())
 
-        return {
+        res = {
             "cmd": cmd,
             "stdout": stdout.decode("utf-8"),
             "stderr": stderr.decode("utf-8"),
-            "returncode": proc.returncode,
+            "return_code": proc.returncode,
         }
-
-    build_result = await setup_asyncio_process(
-        ["docker-compose", "-f", "/dev/stdin", "--pull"].extend(
-            list(deployment_info.keys())
-        )
-    )
+        return res
 
     up_result = await setup_asyncio_process(
         ["docker-compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
     )
-    ide_result = await setup_asyncio_process(
-        ["docker-compose", "-f", "/dev/stdin", "up", "--no-start"].extend(ide_services)
-    )
 
     return {
-        "build_result": build_result,
         "up_result": up_result,
-        "ide_result": ide_result,
     }
 
 

@@ -7,6 +7,7 @@ import yaml
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from .utils import docker_compose_up, git_pull, process_zip_file, read_bitswan_yaml
+from pprint import pprint
 
 app = FastAPI()
 
@@ -54,13 +55,6 @@ async def deploy():
             "gitops.deployment_id": deployment_id,
         }
 
-        if ("env_dir" in bs_yaml) and os.path.exists(
-            env_file := os.path.join(bs_yaml["env_dir"], deployment_id)
-        ):
-            entry["env_file"] = env_file
-        if os.path.exists(env_file := os.path.join(bs_yaml["env_dir"], "default")):
-            entry["env_file"] = env_file
-
         if "network_mode" in conf:
             entry["network_mode"] = conf["network_mode"]
         elif "networks" in conf:
@@ -71,7 +65,7 @@ async def deploy():
         passthroughs = ["volumes", "ports", "devices", "container_name"]
         entry.update({p: conf[p] for p in passthroughs if p in conf})
 
-        source = conf.get("source", deployment_id)
+        source = conf.get("source") or conf.get("checksum") or deployment_id
         deployment_dir = os.path.join(bitswan_dir, source)
 
         entry["image"] = "bitswan/pipeline-runtime-environment:latest"
@@ -83,16 +77,21 @@ async def deploy():
             dc["services"][deployment_id] = entry
 
     dc_yaml = yaml.dump(dc)
-    print(dc_yaml)
 
-    # deployment_result = await docker_compose_up(bitswan_dir, dc_yaml, deployments)
+    deployment_result = await docker_compose_up(bitswan_dir, dc_yaml, deployments)
 
-    # if any([result["return_code"]] for result in deployment_result.values()):
-    #     return JSONResponse(
-    #         content={"error": "Error deploying services"}, status_code=500
-    #     )
-
-    return JSONResponse(content={"message": dc_yaml})
+    for result in deployment_result.values():
+        if result["return_code"] != 0:
+            return JSONResponse(
+                content={"error": "Error deploying services"}, status_code=500
+            )
+    return JSONResponse(
+        content={
+            "message": "Deployed services successfully",
+            "deployments": list(deployments.keys()),
+            "result": deployment_result,
+        }
+    )
 
 
 @app.get("/pres")
