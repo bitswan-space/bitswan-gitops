@@ -71,7 +71,7 @@ async def deploy():
         entry["image"] = "bitswan/pipeline-runtime-environment:latest"
         if "volumes" not in entry:
             entry["volumes"] = []
-        entry["volumes"].append(f"{deployment_dir}:/conf")
+        entry["volumes"].append(f"{deployment_dir}:/opt/pipelines")
 
         if conf.get("enabled", True):
             dc["services"][deployment_id] = entry
