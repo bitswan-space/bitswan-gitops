@@ -99,7 +99,7 @@ async def docker_compose_up(
         return res
 
     up_result = await setup_asyncio_process(
-        ["docker-compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
+        ["docker", "compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
     )
 
     return {
