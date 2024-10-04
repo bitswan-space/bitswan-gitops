@@ -1,6 +1,8 @@
 FROM python:3.11-bookworm
 WORKDIR /src
 
+RUN apt-get update && apt-get install -yqq docker-compose
+
 COPY requirements.txt .
 COPY app/ ./app/
 
