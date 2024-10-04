@@ -4,3 +4,5 @@ python-multipart
 aiofiles
 pyyaml
 filelock
+dockerfile-parse
+docker
