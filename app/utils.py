@@ -99,7 +99,7 @@ async def docker_compose_up(
         return res
 
     up_result = await setup_asyncio_process(
-        ["docker", "compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
+        ["docker-compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
     )
 
     return {
@@ -161,12 +161,12 @@ async def update_git(
             raise Exception("Error initializing git repository")
 
     if not await check_git_config("user.email"):
-        asyncio.subprocess.create_subprocess_exec(
+        await asyncio.subprocess.create_subprocess_exec(
             "git", "config", "--global", "user.email", "pipeline-ops@bspump.com"
         )
 
     if not await check_git_config("user.name"):
-        asyncio.subprocess.create_subprocess_exec(
+        await asyncio.subprocess.create_subprocess_exec(
             "git", "config", "--global", "user.name", "pipeline-ops"
         )
 
