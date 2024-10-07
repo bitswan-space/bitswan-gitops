@@ -97,24 +97,10 @@ async def update_git(
 
         return await process.wait()
 
-    async def check_git_config(config_name: str):
-        return_code = await run_command("git", "config", "--get", config_name)
-        return return_code == 0
-
     if not os.path.exists(os.path.join(bitswan_home, ".git")):
         res = await wait_coroutine("git", "init", cwd=bitswan_home)
         if res:
             raise Exception("Error initializing git repository")
-
-    if not await check_git_config("user.email"):
-        await asyncio.subprocess.create_subprocess_exec(
-            "git", "config", "--global", "user.email", "pipeline-ops@bspump.com"
-        )
-
-    if not await check_git_config("user.name"):
-        await asyncio.subprocess.create_subprocess_exec(
-            "git", "config", "--global", "user.name", "pipeline-ops"
-        )
 
     lock_file = os.path.join(bitswan_home, ".git", "bitswan_git.lock")
     lock = FileLock(lock_file, timeout=30)
@@ -138,6 +124,8 @@ async def update_git(
         commit_process = await asyncio.create_subprocess_exec(
             "git",
             "commit",
+            "--author",
+            "pipeline-ops <>",
             "-m",
             f"Update deployment {deployment_id} with checksum {checksum}",
             cwd=bitswan_home,
@@ -149,4 +137,3 @@ async def update_git(
                 "git", "push", cwd=bitswan_home
             )
             await push_process.wait()
-
