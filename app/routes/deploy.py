@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from ..utils import git_pull
+from ..utils import git_pull, read_bitswan_yaml
 
 router = APIRouter()
 
@@ -12,14 +12,15 @@ router = APIRouter()
 @router.get("/deploy")
 async def deploy():
     bitswan_dir = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/pipeline")
-    bitswan_yaml_path = os.path.join(bitswan_dir, "bitswan.yaml")
 
     await git_pull(bitswan_dir)
 
-    try:
-        bs_yaml = read_bitswan_yaml(bitswan_yaml_path)
-    except Exception as e:
-        return JSONResponse(content={"error": e}, status_code=500)
+    bs_yaml = read_bitswan_yaml(bitswan_dir)
+
+    if not bs_yaml:
+        return JSONResponse(
+            content={"error": "Error reading bitswan.yaml"}, status_code=500
+        )
 
     dc = {
         "version": "3",
@@ -80,16 +81,6 @@ async def deploy():
     )
 
 
-def read_bitswan_yaml(bitswan_yaml_path: str) -> dict[str, Any]:
-    try:
-        if os.path.exists(bitswan_yaml_path):
-            with open(bitswan_yaml_path, "r") as f:
-                bs_yaml: dict = yaml.safe_load(f)
-                return bs_yaml
-        else:
-            raise FileNotFoundError("bitswan.yaml not found")
-    except Exception as e:
-        raise Exception(f"Error reading bitswan.yaml: {str(e)}")
 
 
 async def docker_compose_up(

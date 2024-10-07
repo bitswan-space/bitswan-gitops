@@ -8,7 +8,7 @@ import shutil
 from fastapi import UploadFile, File, APIRouter
 from fastapi.responses import JSONResponse
 from tempfile import NamedTemporaryFile
-from ..utils import wait_coroutine, git_pull
+from ..utils import read_bitswan_yaml, wait_coroutine, git_pull
 
 router = APIRouter()
 
@@ -44,10 +44,7 @@ async def process_zip_file(file, deployment_id):
             zip_ref.extractall(output_dir)
 
         # Update or create bitswan.yaml
-        data = None
-        if os.path.exists(bitswan_yaml_path):
-            with open(bitswan_yaml_path, "r") as f:
-                data = yaml.safe_load(f)
+        data = read_bitswan_yaml(bitswan_home)
 
         data = data or {"deployments": {}}
         deployments = data["deployments"]  # should never raise KeyError
@@ -90,13 +87,6 @@ def calculate_checksum(file_path):
 async def update_git(
     bitswan_home: str, deployment_id: str, bitswan_yaml_path: str, checksum: str
 ):
-    async def run_command(*args):
-        process: asyncio.subprocess.Process = await asyncio.create_subprocess_exec(
-            *args
-        )
-
-        return await process.wait()
-
     if not os.path.exists(os.path.join(bitswan_home, ".git")):
         res = await wait_coroutine("git", "init", cwd=bitswan_home)
         if res:
