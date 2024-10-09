@@ -13,6 +13,7 @@ router = APIRouter()
 async def deploy():
     bitswan_dir = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/pipeline")
     host_dir = os.environ.get("BS_HOST_DIR", "/mnt/repo/pipeline")
+    pipeline_ops_id = os.environ.get("BS_PIPELINEOPS_ID", "pipeline-ops")
 
     await git_pull(bitswan_dir)
 
@@ -25,6 +26,7 @@ async def deploy():
 
     dc = {
         "version": "3",
+        "name": pipeline_ops_id,
         "services": {},
         "networks": {
             network: {"external": True}
