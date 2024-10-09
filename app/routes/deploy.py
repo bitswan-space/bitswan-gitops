@@ -12,6 +12,7 @@ router = APIRouter()
 @router.get("/deploy")
 async def deploy():
     bitswan_dir = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/pipeline")
+    host_dir = os.environ.get("BS_HOST_DIR", "/mnt/repo/pipeline")
 
     await git_pull(bitswan_dir)
 
@@ -53,7 +54,7 @@ async def deploy():
         entry.update({p: conf[p] for p in passthroughs if p in conf})
 
         source = conf.get("source") or conf.get("checksum") or deployment_id
-        deployment_dir = os.path.join(bitswan_dir, source)
+        deployment_dir = os.path.join(host_dir, source)
 
         entry["image"] = "bitswan/pipeline-runtime-environment:latest"
         if "volumes" not in entry:
