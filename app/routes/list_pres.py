@@ -11,7 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from paho.mqtt import client as mqtt_client
 
 from ..models import ContainerProperties, encode_pydantic_models
-from ..utils import read_bitswan_yaml
+from ..utils import read_bitswan_yaml, configure_git
 from ..mqtt import mqtt_resource
 
 
@@ -90,6 +90,7 @@ async def publish_pres(client: mqtt_client.Client) -> list[ContainerProperties]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await configure_git()
     scheduler = AsyncIOScheduler(timezone="UTC")
     await mqtt_resource.connect()
 
