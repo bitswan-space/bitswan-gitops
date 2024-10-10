@@ -84,8 +84,6 @@ async def deploy():
     )
 
 
-
-
 async def docker_compose_up(
     bitswan_dir: str, docker_compose: str, deployment_info: dict[str, Any]
 ) -> None:

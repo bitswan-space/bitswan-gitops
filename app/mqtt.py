@@ -1,6 +1,7 @@
 from paho.mqtt import client as mqtt_client
 import os
 
+
 class MQTTResource:
     def __init__(self):
         self.client: mqtt_client.Client | None = None
@@ -36,7 +37,9 @@ class MQTTResource:
             raise RuntimeError("MQTT client is not initialized")
         return self.client
 
+
 mqtt_resource = MQTTResource()
+
 
 async def get_mqtt_client() -> mqtt_client.Client:
     await mqtt_resource.connect()
