@@ -1,6 +1,7 @@
 import asyncio
 import os
 from typing import Any
+import shlex
 
 import yaml
 
@@ -31,7 +32,12 @@ async def call_git_command(*command, **kwargs) -> bool:
     # If all host environment variables are set, use nsenter to run git command on host
     if host_dir and host_path and host_home and host_user:
         host_command = 'PATH={} su - {} -c "cd {} && PATH={} HOME={} {}"'.format(
-            host_path, host_user, host_dir, host_path, host_home, " ".join(command)
+            host_path,
+            host_user,
+            host_dir,
+            host_path,
+            host_home,
+            " ".join(shlex.quote(arg) for arg in command),
         )
         nsenter_command = [
             "nsenter",
