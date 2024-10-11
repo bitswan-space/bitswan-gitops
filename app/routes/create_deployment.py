@@ -57,7 +57,7 @@ async def process_zip_file(file, deployment_id):
         with open(bitswan_yaml_path, "w") as f:
             yaml.dump(data, f)
 
-        await update_git(bitswan_home, deployment_id, bitswan_yaml_path, checksum)
+        await update_git(bitswan_home, deployment_id, checksum)
 
         return {
             "message": "File processed successfully",
@@ -83,9 +83,11 @@ def calculate_checksum(file_path):
     return sha256_hash.hexdigest()
 
 
-async def update_git(
-    bitswan_home: str, deployment_id: str, bitswan_yaml_path: str, checksum: str
-):
+async def update_git(bitswan_home: str, deployment_id: str, checksum: str):
+    host_path = os.environ.get("HOST_PATH")
+    if host_path:
+        bitswan_home = os.environ.get("BS_HOST_DIR", "/mnt/repo/pipeline")
+    bitswan_yaml_path = os.path.join(bitswan_home, "bitswan.yaml")
     lock_file = os.path.join(bitswan_home, "bitswan_git.lock")
     lock = FileLock(lock_file, timeout=30)
 
@@ -106,7 +108,7 @@ async def update_git(
             "git",
             "commit",
             "--author",
-            "pipeline-ops <>",
+            "pipeline-ops <info@bitswan.space>",
             "-m",
             f"Update deployment {deployment_id} with checksum {checksum}",
             cwd=bitswan_home,
