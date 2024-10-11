@@ -108,7 +108,7 @@ async def update_git(bitswan_home: str, deployment_id: str, checksum: str):
             "git",
             "commit",
             "--author",
-            "pipeline-ops <info@bitswan.space>",
+            '"pipeline-ops <info@bitswan.space>"',
             "-m",
             f"Update deployment {deployment_id} with checksum {checksum}",
             cwd=bitswan_home,
