@@ -26,12 +26,12 @@ async def call_git_command(*command, **kwargs) -> bool:
     host_dir = os.environ.get("BS_HOST_DIR", "/mnt/repo/pipeline")
     host_path = os.environ.get("HOST_PATH")
     host_home = os.environ.get("HOST_HOME")
-    host_uid = os.environ.get("HOST_UID")
+    host_user = os.environ.get("HOST_USER")
 
     # If all host environment variables are set, use nsenter to run git command on host
-    if host_dir and host_path and host_home and host_uid:
+    if host_dir and host_path and host_home and host_user:
         host_command = 'PATH={} su - {} -c "cd {} && PATH={} HOME={} {}"'.format(
-            host_path, host_uid, host_dir, host_path, host_home, " ".join(command)
+            host_path, host_user, host_dir, host_path, host_home, " ".join(command)
         )
         nsenter_command = [
             "nsenter",
