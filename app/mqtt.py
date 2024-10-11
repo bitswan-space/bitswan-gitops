@@ -11,12 +11,10 @@ class MQTTResource:
             self.client = mqtt_client.Client()
             broker = os.environ.get("MQTT_BROKER", "localhost")
             port = int(os.environ.get("MQTT_PORT", 1883))
-            topic = os.environ.get("MQTT_TOPIC", "bitswan/topology")
 
             def on_connect(client, userdata, flags, rc):
                 if rc == 0:
                     print("Connected to MQTT Broker!")
-                    client.subscribe(topic)
                 else:
                     print(f"Failed to connect, return code {rc}")
 

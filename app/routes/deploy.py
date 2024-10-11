@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from ..utils import git_pull, read_bitswan_yaml
+from ..utils import read_bitswan_yaml, call_git_command
 
 router = APIRouter()
 
@@ -16,7 +16,7 @@ async def deploy():
     pipeline_ops_id = os.environ.get("BS_PIPELINEOPS_ID", "pipeline-ops")
     os.environ["COMPOSE_PROJECT_NAME"] = pipeline_ops_id
 
-    await git_pull(bitswan_dir)
+    await call_git_command("git", "pull", cwd=bitswan_dir)
 
     bs_yaml = read_bitswan_yaml(bitswan_dir)
 

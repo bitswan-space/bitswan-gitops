@@ -3,12 +3,11 @@ import hashlib
 from filelock import FileLock
 import yaml
 import zipfile
-import asyncio
 import shutil
 from fastapi import UploadFile, File, APIRouter
 from fastapi.responses import JSONResponse
 from tempfile import NamedTemporaryFile
-from ..utils import read_bitswan_yaml, wait_coroutine, git_pull
+from ..utils import read_bitswan_yaml, call_git_command
 
 router = APIRouter()
 
@@ -87,31 +86,23 @@ def calculate_checksum(file_path):
 async def update_git(
     bitswan_home: str, deployment_id: str, bitswan_yaml_path: str, checksum: str
 ):
-    if not os.path.exists(os.path.join(bitswan_home, ".git")):
-        res = await wait_coroutine("git", "init", cwd=bitswan_home)
-        if res:
-            raise Exception("Error initializing git repository")
-
-    lock_file = os.path.join(bitswan_home, ".git", "bitswan_git.lock")
+    lock_file = os.path.join(bitswan_home, "bitswan_git.lock")
     lock = FileLock(lock_file, timeout=30)
 
     with lock:
         has_remote = (
-            await wait_coroutine("git", "remote", "show", "origin", cwd=bitswan_home)
+            await call_git_command("git", "remote", "show", "origin", cwd=bitswan_home)
             == 0
         )
 
         if has_remote:
-            res = await git_pull(bitswan_home)
-            if not res:
+            res = await call_git_command("git", "pull", cwd=bitswan_home)
+            if res != 0:
                 raise Exception("Error pulling from git")
 
-        add_process = await asyncio.create_subprocess_exec(
-            "git", "add", bitswan_yaml_path, cwd=bitswan_home
-        )
-        await add_process.wait()
+        await call_git_command("git", "add", bitswan_yaml_path, cwd=bitswan_home)
 
-        commit_process = await asyncio.create_subprocess_exec(
+        await call_git_command(
             "git",
             "commit",
             "--author",
@@ -120,10 +111,6 @@ async def update_git(
             f"Update deployment {deployment_id} with checksum {checksum}",
             cwd=bitswan_home,
         )
-        await commit_process.wait()
 
         if has_remote:
-            push_process = await asyncio.create_subprocess_exec(
-                "git", "push", cwd=bitswan_home
-            )
-            await push_process.wait()
+            await call_git_command("git", "push", cwd=bitswan_home)

@@ -1,9 +1,7 @@
-from dataclasses import asdict
 import functools
 import docker
 import docker.models.containers
 import os
-import json
 from fastapi import FastAPI
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -11,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from paho.mqtt import client as mqtt_client
 
 from ..models import ContainerProperties, encode_pydantic_models
-from ..utils import read_bitswan_yaml, configure_git
+from ..utils import read_bitswan_yaml
 from ..mqtt import mqtt_resource
 
 
@@ -73,13 +71,14 @@ async def retrieve_inactive_pres() -> list[ContainerProperties]:
 
 
 async def publish_pres(client: mqtt_client.Client) -> list[ContainerProperties]:
+    topic = os.environ.get("MQTT_TOPIC", "bitswan/topology")
     active = await retrieve_active_pres()
     inactive = await retrieve_inactive_pres()
 
     pres = active + inactive
 
     client.publish(
-        "bitswan/topology",
+        topic,
         payload=encode_pydantic_models(pres),
         qos=1,
         retain=True,
@@ -90,7 +89,6 @@ async def publish_pres(client: mqtt_client.Client) -> list[ContainerProperties]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await configure_git()
     scheduler = AsyncIOScheduler(timezone="UTC")
     await mqtt_resource.connect()
 

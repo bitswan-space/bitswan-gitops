@@ -5,34 +5,6 @@ from typing import Any
 import yaml
 
 
-async def git_pull(bitswan_dir: str) -> bool:
-    pull_proc = await asyncio.create_subprocess_exec("git", "pull", cwd=bitswan_dir)
-    await pull_proc.wait()
-
-    if pull_proc.returncode:
-        return False
-
-    return True
-
-
-async def configure_git() -> None:
-    bitswan_dir = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/pipeline")
-    abspath = os.path.abspath(bitswan_dir)
-
-    await asyncio.create_subprocess_exec(
-        "git", "config", "--global", "--add", "safe.directory", abspath
-    )
-    await asyncio.create_subprocess_exec(
-        "git", "config", "user.name", "pipeline-ops", cwd=bitswan_dir
-    )
-    await asyncio.create_subprocess_exec(
-        "git", "config", "user.email", "info@bitswan.space", cwd=bitswan_dir
-    )
-    await asyncio.create_subprocess_exec(
-        "git", "config", "pull.rebase", "false", cwd=bitswan_dir
-    )
-
-
 async def wait_coroutine(*args, **kwargs) -> int:
     coro = await asyncio.create_subprocess_exec(*args, **kwargs)
     result = await coro.wait()
@@ -48,3 +20,34 @@ def read_bitswan_yaml(bitswan_dir: str) -> dict[str, Any] | None:
                 return bs_yaml
     except Exception:
         return None
+
+
+async def call_git_command(*command, **kwargs) -> bool:
+    host_dir = os.environ.get("BS_HOST_DIR", "/mnt/repo/pipeline")
+    host_path = os.environ.get("HOST_PATH")
+    host_home = os.environ.get("HOST_HOME")
+    host_uid = os.environ.get("HOST_UID")
+
+    # If all host environment variables are set, use nsenter to run git command on host
+    if host_dir and host_path and host_home and host_uid:
+        host_command = 'su - {} -c "cd {} && PATH={} HOME={} {}"'.format(
+            host_uid, host_dir, host_path, host_home, " ".join(command)
+        )
+        nsenter_command = [
+            "nsenter",
+            "-t",
+            "1",
+            "-m",
+            "-u",
+            "-n",
+            "-i",
+            "sh",
+            "-c",
+            host_command,
+        ]
+        result = await wait_coroutine(*nsenter_command)
+        return result == 0
+
+    # Fallback to local git command
+    result = await wait_coroutine(*command, **kwargs)
+    return result == 0
