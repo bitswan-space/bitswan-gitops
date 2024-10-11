@@ -92,14 +92,13 @@ async def update_git(bitswan_home: str, deployment_id: str, checksum: str):
     lock = FileLock(lock_file, timeout=30)
 
     with lock:
-        has_remote = (
-            await call_git_command("git", "remote", "show", "origin", cwd=bitswan_home)
-            == 0
+        has_remote = await call_git_command(
+            "git", "remote", "show", "origin", cwd=bitswan_home
         )
 
         if has_remote:
             res = await call_git_command("git", "pull", cwd=bitswan_home)
-            if res != 0:
+            if not res:
                 raise Exception("Error pulling from git")
 
         await call_git_command("git", "add", bitswan_yaml_path, cwd=bitswan_home)
@@ -115,4 +114,6 @@ async def update_git(bitswan_home: str, deployment_id: str, checksum: str):
         )
 
         if has_remote:
-            await call_git_command("git", "push", cwd=bitswan_home)
+            res = await call_git_command("git", "push", cwd=bitswan_home)
+            if not res:
+                raise Exception("Error pushing to git")
