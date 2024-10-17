@@ -45,7 +45,7 @@ async def retrieve_active_pres() -> Topology:
                     ),  # how tf does this work
                     "name": c.name.replace("/", ""),
                     "state": c.status,
-                    "status": calculate_uptime(c.attrs["Created"]),
+                    "status": calculate_uptime(c.attrs["State"]["StartedAt"]),
                     "deployment_id": c.labels["gitops.deployment_id"],
                 },
                 "metrics": [],
