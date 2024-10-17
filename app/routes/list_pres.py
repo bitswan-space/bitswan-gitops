@@ -17,7 +17,7 @@ from ..mqtt import mqtt_resource
 def calculate_uptime(created_at: str) -> str:
     created_at = datetime.fromisoformat(created_at)
     uptime = datetime.now(timezone.utc) - created_at
-    return humanize.naturaltime(uptime)
+    return humanize.naturaldelta(uptime)
 
 
 async def retrieve_active_pres() -> Topology:
