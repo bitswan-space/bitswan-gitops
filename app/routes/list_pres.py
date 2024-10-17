@@ -8,12 +8,12 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from paho.mqtt import client as mqtt_client
 
-from ..models import ContainerProperties, encode_pydantic_models
+from ..models import ContainerProperties, Topology, Pipeline, encode_pydantic_model
 from ..utils import read_bitswan_yaml
 from ..mqtt import mqtt_resource
 
 
-async def retrieve_active_pres() -> list[ContainerProperties]:
+async def retrieve_active_pres() -> Topology:
     client = docker.from_env()
     info = client.info()
 
@@ -29,62 +29,96 @@ async def retrieve_active_pres() -> list[ContainerProperties]:
     parsed_containers = list(
         map(
             lambda c: {
-                "container_id": c.id,
-                "endpoint_name": info["Name"],  # FIXME: i hate docker sdk
-                "created": datetime.strptime(
-                    c.attrs["Created"][:26] + "Z", "%Y-%m-%dT%H:%M:%S.%fZ"
-                ),  # how tf does this work
-                "name": c.name.replace("/", ""),
-                "state": c.attrs["State"]["Status"],
-                "status": c.status,
-                "deployment_id": c.labels["gitops.deployment_id"],
+                "wires": [],
+                "properties": {
+                    "container_id": c.id,
+                    "endpoint_name": info["Name"],  # FIXME: i hate docker sdk
+                    "created": datetime.strptime(
+                        c.attrs["Created"][:26] + "Z", "%Y-%m-%dT%H:%M:%S.%fZ"
+                    ),  # how tf does this work
+                    "name": c.name.replace("/", ""),
+                    "state": c.attrs["State"]["Status"],
+                    "status": c.status,
+                    "deployment_id": c.labels["gitops.deployment_id"],
+                },
+                "metrics": [],
             },
             containers,
         )
     )
 
-    attrs = [ContainerProperties(**c) for c in parsed_containers]
+    topology = {
+        "topology": {
+            c["properties"]["deployment_id"]: Pipeline(
+                wires=c["wires"],
+                properties=ContainerProperties(**c["properties"]),
+                metrics=c["metrics"],
+            )
+            for c in parsed_containers
+        },
+        "display_style": "list",
+    }
 
-    return attrs
+    return Topology(**topology)
 
 
-async def retrieve_inactive_pres() -> list[ContainerProperties]:
+async def retrieve_inactive_pres() -> Topology:
     bs_home = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/pipeline")
     bs_yaml = read_bitswan_yaml(bs_home)
 
     if not bs_yaml:
-        return []
-    else:
-        return [
-            ContainerProperties(
-                container_id=None,
-                endpoint_name=None,
-                created=None,
-                name=deployment_id,
-                state=None,
-                status=None,
-                deployment_id=deployment_id,
+        return Topology(topology={}, display_style="list")
+
+    # Create list of inactive containers
+    inactive_containers = [
+        ContainerProperties(
+            container_id=None,
+            endpoint_name=None,
+            created=None,
+            name=deployment_id,
+            state=None,
+            status=None,
+            deployment_id=deployment_id,
+        )
+        for deployment_id in bs_yaml["deployments"]
+        if not bs_yaml["deployments"][deployment_id].get("active", False)
+    ]
+
+    # Build topology with inactive containers
+    topology = {
+        "topology": {
+            container.name: Pipeline(
+                wires=[],  # Wires are empty for inactive containers
+                properties=container,
+                metrics=[],  # Metrics can be filled as needed
             )
-            for deployment_id in bs_yaml["deployments"]
-            if not bs_yaml["deployments"][deployment_id].get("active", False)
-        ]
+            for container in inactive_containers
+        },
+        "display_style": "list",
+    }
+
+    # Return Topology instance
+    return Topology(**topology)
 
 
-async def publish_pres(client: mqtt_client.Client) -> list[ContainerProperties]:
+async def publish_pres(client: mqtt_client.Client) -> Topology:
     topic = os.environ.get("MQTT_TOPIC", "bitswan/topology")
     active = await retrieve_active_pres()
     inactive = await retrieve_inactive_pres()
 
-    pres = active + inactive
+    pres = inactive.topology.copy()
+    pres.update(active.topology)
+
+    topology = Topology(topology=pres, display_style="list")
 
     client.publish(
         topic,
-        payload=encode_pydantic_models(pres),
+        payload=encode_pydantic_model(topology),
         qos=1,
         retain=True,
     )
 
-    return active + inactive
+    return topology
 
 
 @asynccontextmanager

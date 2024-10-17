@@ -16,7 +16,17 @@ class ContainerProperties(BaseModel):
         json_encoders = {datetime: lambda v: v.isoformat()}
 
 
-def encode_pydantic_models(data_list: list[BaseModel]) -> bytearray:
-    dict_list = [item.model_dump_json() for item in data_list]
-    json_str = json.dumps(dict_list)
+class Pipeline(BaseModel):
+    wires: list
+    properties: ContainerProperties
+    metrics: list
+
+
+class Topology(BaseModel):
+    topology: dict[str, Pipeline]
+    display_style: str
+
+
+def encode_pydantic_model(data: BaseModel) -> bytearray:
+    json_str = data.model_dump_json()
     return bytearray(json_str.encode("utf-8"))
