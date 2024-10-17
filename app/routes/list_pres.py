@@ -2,8 +2,9 @@ import functools
 import docker
 import docker.models.containers
 import os
+import humanize
 from fastapi import FastAPI
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from paho.mqtt import client as mqtt_client
@@ -11,6 +12,12 @@ from paho.mqtt import client as mqtt_client
 from ..models import ContainerProperties, Topology, Pipeline, encode_pydantic_model
 from ..utils import read_bitswan_yaml
 from ..mqtt import mqtt_resource
+
+
+def calculate_uptime(created_at: str) -> str:
+    created_at = datetime.fromisoformat(created_at)
+    uptime = datetime.now(timezone.utc) - created_at
+    return humanize.naturaltime(uptime)
 
 
 async def retrieve_active_pres() -> Topology:
@@ -37,8 +44,8 @@ async def retrieve_active_pres() -> Topology:
                         c.attrs["Created"][:26] + "Z", "%Y-%m-%dT%H:%M:%S.%fZ"
                     ),  # how tf does this work
                     "name": c.name.replace("/", ""),
-                    "state": c.attrs["State"]["Status"],
-                    "status": c.status,
+                    "state": c.status,
+                    "status": calculate_uptime(c.attrs["Created"]),
                     "deployment_id": c.labels["gitops.deployment_id"],
                 },
                 "metrics": [],
