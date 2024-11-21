@@ -131,12 +131,13 @@ async def publish_pres(client: mqtt_client.Client) -> Topology:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler = AsyncIOScheduler(timezone="UTC")
-    await mqtt_resource.connect()
+    result = await mqtt_resource.connect()
 
-    scheduler.add_job(
-        functools.partial(publish_pres, mqtt_resource.get_client()),
-        trigger="interval",
-        seconds=10,
-    )
-    scheduler.start()
+    if result:
+        scheduler.add_job(
+            functools.partial(publish_pres, mqtt_resource.get_client()),
+            trigger="interval",
+            seconds=10,
+        )
+        scheduler.start()
     yield

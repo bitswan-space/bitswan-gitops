@@ -6,10 +6,13 @@ class MQTTResource:
     def __init__(self):
         self.client: mqtt_client.Client | None = None
 
-    async def connect(self):
+    async def connect(self) -> bool:
         if self.client is None:
             self.client = mqtt_client.Client()
-            broker = os.environ.get("MQTT_BROKER", "localhost")
+            broker = os.environ.get("MQTT_BROKER")
+            if not broker:
+                print("There is no MQTT_BROKER env var..skipping connection to MQTT")
+                return False
             port = int(os.environ.get("MQTT_PORT", 1883))
 
             def on_connect(client, userdata, flags, rc):
@@ -22,6 +25,7 @@ class MQTTResource:
             self.client.connect(broker, port)
             self.client.loop_start()
             print("MQTT client connected and loop started")
+            return True
 
     async def disconnect(self):
         if self.client is not None:
