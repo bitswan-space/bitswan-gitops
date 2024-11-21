@@ -48,16 +48,6 @@ async def deploy():
             )
         else:
             pipeline_conf = read_pipeline_conf(source_dir)
-            deployment_config = (
-                pipeline_conf["deployment"]
-                if "deployment" in pipeline_conf.sections()
-                else {}
-            )
-            docker_compose_config = (
-                pipeline_conf["docker.compose"]
-                if "docker.compose" in pipeline_conf.sections()
-                else {}
-            )
 
         entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
         entry["container_name"] = deployment_id
@@ -67,8 +57,8 @@ async def deploy():
         }
         entry["image"] = "bitswan/pipeline-runtime-environment:latest"
 
-        network_mode = docker_compose_config.get(
-            "network_mode", conf.get("network_mode")
+        network_mode = pipeline_conf.get(
+            "docker.compose", "network_mode", fallback=conf.get("network_mode")
         )
 
         if network_mode:
@@ -83,8 +73,8 @@ async def deploy():
 
         deployment_dir = os.path.join(host_dir, source)
 
-        entry["image"] = deployment_config.get("pre", entry.get("image")) or entry.get(
-            "image"
+        entry["image"] = pipeline_conf.get(
+            "deployment", "pre", fallback=entry.get("image")
         )
 
         if "volumes" not in entry:
