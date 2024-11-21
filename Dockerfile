@@ -1,7 +1,8 @@
 FROM python:3.11-bookworm
 WORKDIR /src
 
-RUN apt-get update && apt-get install -yqq docker-compose
+ENV VERSION=27.3.1
+RUN wget -qO- https://get.docker.com/ | sh
 
 COPY requirements.txt .
 COPY app/ ./app/

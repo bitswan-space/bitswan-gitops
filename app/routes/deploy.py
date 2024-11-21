@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from ..utils import read_bitswan_yaml, call_git_command
+from ..utils import read_bitswan_yaml, call_git_command, read_pipeline_conf
 
 router = APIRouter()
 
@@ -38,15 +38,41 @@ async def deploy():
         conf = conf or {}
         entry = {}
 
+        source = conf.get("source") or conf.get("checksum") or deployment_id
+        source_dir = os.path.join(bitswan_dir, source)
+
+        if not os.path.exists(source_dir):
+            return JSONResponse(
+                content={"error": f"Deployment directory {source_dir} does not exist"},
+                status_code=500,
+            )
+        else:
+            pipeline_conf = read_pipeline_conf(source_dir)
+            deployment_config = (
+                pipeline_conf["deployment"]
+                if "deployment" in pipeline_conf.sections()
+                else {}
+            )
+            docker_compose_config = (
+                pipeline_conf["docker.compose"]
+                if "docker.compose" in pipeline_conf.sections()
+                else {}
+            )
+
         entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
         entry["container_name"] = deployment_id
         entry["restart"] = "always"
         entry["labels"] = {
             "gitops.deployment_id": deployment_id,
         }
+        entry["image"] = "bitswan/pipeline-runtime-environment:latest"
 
-        if "network_mode" in conf:
-            entry["network_mode"] = conf["network_mode"]
+        network_mode = docker_compose_config.get(
+            "network_mode", conf.get("network_mode")
+        )
+
+        if network_mode:
+            entry["network_mode"] = network_mode
         elif "networks" in conf:
             entry["networks"] = conf["networks"].copy()
         elif "default-networks" in bs_yaml:
@@ -55,10 +81,12 @@ async def deploy():
         passthroughs = ["volumes", "ports", "devices", "container_name"]
         entry.update({p: conf[p] for p in passthroughs if p in conf})
 
-        source = conf.get("source") or conf.get("checksum") or deployment_id
         deployment_dir = os.path.join(host_dir, source)
 
-        entry["image"] = "bitswan/pipeline-runtime-environment:latest"
+        entry["image"] = deployment_config.get("pre", entry.get("image")) or entry.get(
+            "image"
+        )
+
         if "volumes" not in entry:
             entry["volumes"] = []
         entry["volumes"].append(f"{deployment_dir}:/opt/pipelines")
@@ -107,7 +135,7 @@ async def docker_compose_up(
         return res
 
     up_result = await setup_asyncio_process(
-        ["docker-compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
+        ["docker", "compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
     )
 
     return {
