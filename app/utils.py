@@ -60,10 +60,10 @@ async def call_git_command(*command, **kwargs) -> bool:
     return result == 0
 
 
-def read_pipeline_conf(source_dir: str) -> ConfigParser:
+def read_pipeline_conf(source_dir: str) -> ConfigParser | None:
     conf_file_path = os.path.join(source_dir, "pipelines.conf")
     if os.path.exists(conf_file_path):
         config = ConfigParser()
         config.read(conf_file_path)
         return config
-    return {}
+    return None

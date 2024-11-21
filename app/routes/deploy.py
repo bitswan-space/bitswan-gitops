@@ -59,7 +59,7 @@ async def deploy():
 
         network_mode = pipeline_conf.get(
             "docker.compose", "network_mode", fallback=conf.get("network_mode")
-        )
+        ) or conf.get("network_mode")
 
         if network_mode:
             entry["network_mode"] = network_mode
@@ -73,8 +73,9 @@ async def deploy():
 
         deployment_dir = os.path.join(host_dir, source)
 
-        entry["image"] = pipeline_conf.get(
-            "deployment", "pre", fallback=entry.get("image")
+        entry["image"] = (
+            pipeline_conf.get("deployment", "pre", fallback=entry.get("image"))
+            or entry["image"]
         )
 
         if "volumes" not in entry:
