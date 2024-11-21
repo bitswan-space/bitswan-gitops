@@ -1,22 +1,33 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import json
 
 
 class ContainerProperties(BaseModel):
-    container_id: str | None
-    endpoint_name: str | None
-    created: datetime | None
+    container_id: str | None = Field(alias="container-id", default=None)
+    endpoint_name: str | None = Field(alias="endpoint-name", default=None)
+    created_at: datetime | None = Field(alias="created-at", default=None)
     name: str
     state: str | None
     status: str | None
-    deployment_id: str
+    deployment_id: str | None = Field(alias="deployment-id", default=None)
 
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat()}
+        populate_by_name = True
 
 
-def encode_pydantic_models(data_list: list[BaseModel]) -> bytearray:
-    dict_list = [item.model_dump_json() for item in data_list]
-    json_str = json.dumps(dict_list)
+class Pipeline(BaseModel):
+    wires: list
+    properties: ContainerProperties
+    metrics: list
+
+
+class Topology(BaseModel):
+    topology: dict[str, Pipeline]
+    display_style: str
+
+
+def encode_pydantic_model(data: BaseModel) -> bytearray:
+    json_str = data.model_dump_json(by_alias=True)
     return bytearray(json_str.encode("utf-8"))
