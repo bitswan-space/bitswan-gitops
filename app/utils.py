@@ -1,4 +1,5 @@
 import asyncio
+from configparser import ConfigParser
 import os
 from typing import Any
 import shlex
@@ -57,3 +58,12 @@ async def call_git_command(*command, **kwargs) -> bool:
     # Fallback to local git command
     result = await wait_coroutine(*command, **kwargs)
     return result == 0
+
+
+def read_pipeline_conf(source_dir: str) -> dict[str, Any]:
+    conf_file_path = os.path.join(source_dir, "pipelines.conf")
+    if os.path.exists(conf_file_path):
+        config = ConfigParser()
+        config.read(conf_file_path)
+        return config
+    return {}
