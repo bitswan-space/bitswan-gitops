@@ -4,10 +4,12 @@ WORKDIR /src
 ENV VERSION=27.3.1
 RUN wget -qO- https://get.docker.com/ | sh
 
-COPY requirements.txt .
+COPY pyproject.toml .
+COPY LICENSE .
+COPY README.md .
 COPY app/ ./app/
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -e .
 EXPOSE 8079
 
-CMD ["uvicorn", "app.main:app", "--port", "8079", "--host", "0.0.0.0"]
+CMD ["bitswan-gitops-server"]
