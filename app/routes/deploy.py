@@ -28,11 +28,8 @@ async def deploy():
     dc = {
         "version": "3",
         "services": {},
-        "networks": {
-            network: {"external": True}
-            for network in bs_yaml.get("default-networks", {})
-        },
     }
+    external_networks = {"bitswan_network"}
     deployments = bs_yaml.get("deployments", {})
     for deployment_id, conf in deployments.items():
         conf = conf or {}
@@ -57,9 +54,13 @@ async def deploy():
         }
         entry["image"] = "bitswan/pipeline-runtime-environment:latest"
 
-        network_mode = pipeline_conf.get(
-            "docker.compose", "network_mode", fallback=conf.get("network_mode")
-        ) or conf.get("network_mode")
+        network_mode = None
+        if pipeline_conf:
+          network_mode = pipeline_conf.get(
+              "docker.compose", "network_mode", fallback=conf.get("network_mode")
+          )
+        if not network_mode:
+          network_mode = conf.get("network_mode")
 
         if network_mode:
             entry["network_mode"] = network_mode
@@ -67,16 +68,21 @@ async def deploy():
             entry["networks"] = conf["networks"].copy()
         elif "default-networks" in bs_yaml:
             entry["networks"] = bs_yaml["default-networks"].copy()
+        else:
+            entry["networks"] = ["bitswan_network"]
+        if entry["networks"]:
+            external_networks.update(set(entry["networks"]))
 
         passthroughs = ["volumes", "ports", "devices", "container_name"]
         entry.update({p: conf[p] for p in passthroughs if p in conf})
 
         deployment_dir = os.path.join(host_dir, source)
 
-        entry["image"] = (
-            pipeline_conf.get("deployment", "pre", fallback=entry.get("image"))
-            or entry["image"]
-        )
+        if pipeline_conf:
+          entry["image"] = (
+              pipeline_conf.get("deployment", "pre", fallback=entry.get("image"))
+              or entry["image"]
+          )
 
         if "volumes" not in entry:
             entry["volumes"] = []
@@ -85,6 +91,9 @@ async def deploy():
         if conf.get("enabled", True):
             dc["services"][deployment_id] = entry
 
+    dc["networks"] = {}
+    for network in external_networks:
+        dc["networks"][network] = {"external": True}
     dc_yaml = yaml.dump(dc)
 
     deployment_result = await docker_compose_up(bitswan_dir, dc_yaml, deployments)
