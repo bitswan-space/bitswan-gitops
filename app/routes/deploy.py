@@ -70,7 +70,7 @@ async def deploy():
             entry["networks"] = bs_yaml["default-networks"].copy()
         else:
             entry["networks"] = ["bitswan_network"]
-        if entry["networks"]:
+        if entry.get("networks"):
             external_networks.update(set(entry["networks"]))
 
         passthroughs = ["volumes", "ports", "devices", "container_name"]
