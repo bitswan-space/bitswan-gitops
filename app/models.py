@@ -1,6 +1,5 @@
 from datetime import datetime
 from pydantic import BaseModel, Field
-import json
 
 
 class ContainerProperties(BaseModel):
