@@ -13,8 +13,8 @@ router = APIRouter()
 async def deploy():
     bitswan_dir = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/pipeline")
     host_dir = os.environ.get("BS_HOST_DIR", "/mnt/repo/pipeline")
-    pipeline_ops_id = os.environ.get("BS_PIPELINEOPS_ID", "pipeline-ops")
-    os.environ["COMPOSE_PROJECT_NAME"] = pipeline_ops_id
+    gitops_id = os.environ.get("BS_GITOPS_ID", "pipeline-ops")
+    os.environ["COMPOSE_PROJECT_NAME"] = gitops_id
 
     await call_git_command("git", "pull", cwd=bitswan_dir)
 
