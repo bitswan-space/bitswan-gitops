@@ -55,10 +55,26 @@ async def deploy():
         entry["image"] = "bitswan/pipeline-runtime-environment:latest"
 
         network_mode = None
+        secret_groups = []
         if pipeline_conf:
             network_mode = pipeline_conf.get(
                 "docker.compose", "network_mode", fallback=conf.get("network_mode")
             )
+            secret_groups = pipeline_conf.get("secrets", "groups", fallback="").split(
+                " "
+            )
+        for secret_group in secret_groups:
+            gitops_dir = os.environ.get(
+                "BITSWAN_GITOPS_DIR",
+                os.path.join(os.environ.get("HOME"), ".config/bitswan/local-gitops/"),
+            )
+            if os.path.exists(gitops_dir):
+                secret_env_file = os.path.join(gitops_dir, "secrets", secret_group)
+                if os.path.exists(secret_env_file):
+                    if not entry.get("env_file"):
+                        entry["env_file"] = []
+                    entry["env_file"].append(secret_env_file)
+
         if not network_mode:
             network_mode = conf.get("network_mode")
 
