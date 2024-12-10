@@ -90,11 +90,17 @@ def calculate_checksum(file_path):
 async def update_git(bitswan_home: str, deployment_id: str, checksum: str):
     host_path = os.environ.get("HOST_PATH")
     if host_path:
+        original_bitswan_home = bitswan_home
         bitswan_home = os.environ.get(
             "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
         )
+        bitswan_home = os.path.join(bitswan_home, "gitops")
     bitswan_yaml_path = os.path.join(bitswan_home, "bitswan.yaml")
-    lock_file = os.path.join(bitswan_home, "bitswan_git.lock")
+
+    if host_path:
+        lock_file = os.path.join(original_bitswan_home, "bitswan_git.lock")
+    else:
+        lock_file = os.path.join(bitswan_home, "bitswan_git.lock")
     lock = FileLock(lock_file, timeout=30)
 
     with lock:
