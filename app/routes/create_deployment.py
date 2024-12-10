@@ -102,7 +102,7 @@ async def update_git(
     else:
         bitswan_dir = bitswan_home
 
-    lock_file = os.path.join(bitswan_dir, "bitswan_git.lock")
+    lock_file = os.path.join(bitswan_home, "bitswan_git.lock")
 
     bitswan_yaml_path = os.path.join(bitswan_dir, "bitswan.yaml")
 
