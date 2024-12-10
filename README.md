@@ -9,13 +9,15 @@
     ports:
       - "8079:8079"
     volumes:
-      - /path/to/repo:/repo # Change this to the path of your repository
+      - /home/root/.config/bitswan/local-gitops/gitops:/home/root/.config/bitswan/gitops
+      - /home/root/.config/bitswan/local-gitops/secrets:/home/root/.config/bitswan/secrets
       - /var/run/docker.sock:/var/run/docker.sock
-      - /etc/bitswan-secrets/:/etc/bitswan-secrets/
       - ${HOME}/.gitconfig:/root/.gitconfig
     environment:
-      - BS_BITSWAN_DIR=/repo
-      - BS_HOST_DIR=/path/to/repo # Change this to the path of your repository
+      - BITSWAN_GITOPS_DIR=/home/root/.config/bitswan
+      - BITSWAN_GITOPS_DIR_HOST=/home/root/.config/bitswan/local-gitops/
+      - BITSWAN_GITOPS_ID=local-gitops
+      - BITSWAN_GITOPS_SECRET=secret
       - MQTT_BROKER=emqx
       - MQTT_TOPIC=/c/local/running-pipelines/topology
 ```
@@ -29,15 +31,17 @@
     ports:
       - "8079:8079"
     volumes:
-      - /path/to/repo:/repo # Change this to the path of your repository
+      - /home/root/.config/bitswan/local-gitops/gitops:/home/root/.config/bitswan/gitops
+      - /home/root/.config/bitswan/local-gitops/secrets:/home/root/.config/bitswan/secrets
       - /var/run/docker.sock:/var/run/docker.sock
-      - /etc/bitswan-secrets/:/etc/bitswan-secrets/
     environment:
-      - BS_BITSWAN_DIR=/repo
-      - BS_HOST_DIR=/path/to/repo # Change this to the path of your repository
+      - BITSWAN_GITOPS_DIR=/home/root/.config/bitswan
+      - BITSWAN_GITOPS_DIR_HOST=/home/root/.config/bitswan/local-gitops/
+      - BITSWAN_GITOPS_ID=local-gitops
+      - BITSWAN_GITOPS_SECRET=secret
       - MQTT_BROKER=mosquitto
       - MQTT_TOPIC=/c/local/running-pipelines/topology
-      - HOST_PATH: $PATH
-      - HOST_HOME: $HOME
-      - HOST_USER: $USER
+      - HOST_PATH=$PATH
+      - HOST_HOME=$HOME
+      - HOST_USER=$USER
 ```
