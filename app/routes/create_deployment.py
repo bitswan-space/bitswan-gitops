@@ -33,17 +33,21 @@ async def process_zip_file(file, deployment_id):
     old_deploymend_checksum = None
 
     try:
-        bitswan_home = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/bitswan")
-        bitswan_yaml_path = os.path.join(bitswan_home, "bitswan.yaml")
+        gitops_home = os.environ.get(
+            "BITSWAN_GITOPS_DIR",
+            "/gitops",
+        )
+        bitswan_path = os.path.join(gitops_home, "gitops")
+        bitswan_yaml_path = os.path.join(bitswan_path, "bitswan.yaml")
 
-        output_dir = os.path.join(bitswan_home, output_dir)
+        output_dir = os.path.join(bitswan_path, output_dir)
 
         os.makedirs(output_dir, exist_ok=True)
         with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
             zip_ref.extractall(output_dir)
 
         # Update or create bitswan.yaml
-        data = read_bitswan_yaml(bitswan_home)
+        data = read_bitswan_yaml(bitswan_path)
 
         data = data or {"deployments": {}}
         deployments = data["deployments"]  # should never raise KeyError
@@ -57,7 +61,7 @@ async def process_zip_file(file, deployment_id):
         with open(bitswan_yaml_path, "w") as f:
             yaml.dump(data, f)
 
-        await update_git(bitswan_home, deployment_id, checksum)
+        await update_git(bitswan_path, deployment_id, checksum)
 
         return {
             "message": "File processed successfully",
@@ -70,7 +74,7 @@ async def process_zip_file(file, deployment_id):
     finally:
         if old_deploymend_checksum:
             shutil.rmtree(
-                os.path.join(bitswan_home, old_deploymend_checksum), ignore_errors=True
+                os.path.join(bitswan_path, old_deploymend_checksum), ignore_errors=True
             )
         os.unlink(temp_file.name)
 
@@ -86,7 +90,9 @@ def calculate_checksum(file_path):
 async def update_git(bitswan_home: str, deployment_id: str, checksum: str):
     host_path = os.environ.get("HOST_PATH")
     if host_path:
-        bitswan_home = os.environ.get("BS_HOST_DIR", "/mnt/repo/pipeline")
+        bitswan_home = os.environ.get(
+            "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
+        )
     bitswan_yaml_path = os.path.join(bitswan_home, "bitswan.yaml")
     lock_file = os.path.join(bitswan_home, "bitswan_git.lock")
     lock = FileLock(lock_file, timeout=30)
@@ -107,7 +113,7 @@ async def update_git(bitswan_home: str, deployment_id: str, checksum: str):
             "git",
             "commit",
             "--author",
-            "pipeline-ops <info@bitswan.space>",
+            "gitops <info@bitswan.space>",
             "-m",
             f"Update deployment {deployment_id} with checksum {checksum}",
             cwd=bitswan_home,
