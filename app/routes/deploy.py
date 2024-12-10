@@ -78,6 +78,9 @@ async def deploy():
                 " "
             )
         for secret_group in secret_groups:
+            # Skip empty secret groups
+            if not secret_group:
+                continue
             if os.path.exists(secrets_dir):
                 secret_env_file = os.path.join(secrets_dir, secret_group)
                 if os.path.exists(secret_env_file):
