@@ -37,7 +37,12 @@ async def process_zip_file(file, deployment_id):
             "BITSWAN_GITOPS_DIR",
             "/gitops",
         )
+        gitops_home_host = os.environ.get(
+            "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
+        )
         bitswan_path = os.path.join(gitops_home, "gitops")
+        bitswan_path_host = os.path.join(gitops_home_host, "gitops")
+
         bitswan_yaml_path = os.path.join(bitswan_path, "bitswan.yaml")
 
         output_dir = os.path.join(bitswan_path, output_dir)
@@ -61,7 +66,7 @@ async def process_zip_file(file, deployment_id):
         with open(bitswan_yaml_path, "w") as f:
             yaml.dump(data, f)
 
-        await update_git(bitswan_path, deployment_id, checksum)
+        await update_git(bitswan_path, bitswan_path_host, deployment_id, checksum)
 
         return {
             "message": "File processed successfully",
@@ -87,27 +92,33 @@ def calculate_checksum(file_path):
     return sha256_hash.hexdigest()
 
 
-async def update_git(bitswan_home: str, deployment_id: str, checksum: str):
+async def update_git(
+    bitswan_home: str, bitswan_home_host: str, deployment_id: str, checksum: str
+):
     host_path = os.environ.get("HOST_PATH")
+
     if host_path:
-        bitswan_home = os.environ.get(
-            "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
-        )
-    bitswan_yaml_path = os.path.join(bitswan_home, "bitswan.yaml")
+        bitswan_dir = bitswan_home_host
+    else:
+        bitswan_dir = bitswan_home
+
     lock_file = os.path.join(bitswan_home, "bitswan_git.lock")
+
+    bitswan_yaml_path = os.path.join(bitswan_dir, "bitswan.yaml")
+
     lock = FileLock(lock_file, timeout=30)
 
     with lock:
         has_remote = await call_git_command(
-            "git", "remote", "show", "origin", cwd=bitswan_home
+            "git", "remote", "show", "origin", cwd=bitswan_dir
         )
 
         if has_remote:
-            res = await call_git_command("git", "pull", cwd=bitswan_home)
+            res = await call_git_command("git", "pull", cwd=bitswan_dir)
             if not res:
                 raise Exception("Error pulling from git")
 
-        await call_git_command("git", "add", bitswan_yaml_path, cwd=bitswan_home)
+        await call_git_command("git", "add", bitswan_yaml_path, cwd=bitswan_dir)
 
         await call_git_command(
             "git",
@@ -116,10 +127,10 @@ async def update_git(bitswan_home: str, deployment_id: str, checksum: str):
             "gitops <info@bitswan.space>",
             "-m",
             f"Update deployment {deployment_id} with checksum {checksum}",
-            cwd=bitswan_home,
+            cwd=bitswan_dir,
         )
 
         if has_remote:
-            res = await call_git_command("git", "push", cwd=bitswan_home)
+            res = await call_git_command("git", "push", cwd=bitswan_dir)
             if not res:
                 raise Exception("Error pushing to git")
