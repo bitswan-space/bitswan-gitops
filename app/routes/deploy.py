@@ -68,12 +68,18 @@ async def deploy():
                 "BITSWAN_GITOPS_DIR",
                 os.path.join(os.environ.get("HOME"), ".config/bitswan/local-gitops/"),
             )
+            gitops_dir_host = os.environ.get(
+                "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
+            )
             if os.path.exists(gitops_dir):
                 secret_env_file = os.path.join(gitops_dir, "secrets", secret_group)
+                secret_env_file_host = os.path.join(
+                    gitops_dir_host, "secrets", secret_group
+                )
                 if os.path.exists(secret_env_file):
                     if not entry.get("env_file"):
                         entry["env_file"] = []
-                    entry["env_file"].append(secret_env_file)
+                    entry["env_file"].append(secret_env_file_host)
 
         if not network_mode:
             network_mode = conf.get("network_mode")
