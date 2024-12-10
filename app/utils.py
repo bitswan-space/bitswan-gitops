@@ -5,6 +5,7 @@ from typing import Any
 import shlex
 
 import yaml
+import requests
 
 
 async def wait_coroutine(*args, **kwargs) -> int:
@@ -69,3 +70,47 @@ def read_pipeline_conf(source_dir: str) -> ConfigParser | None:
         config.read(conf_file_path)
         return config
     return None
+
+
+def add_route_to_caddy(deployment_id: str, port: str) -> bool:
+    caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
+    upstreams = requests.get(f"{caddy_url}/reverse_proxy/upstreams")
+    gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
+
+    if upstreams.status_code != 200:
+        return False
+
+    upstreams = upstreams.json()
+    for upstream in upstreams:
+        name = upstream.get("address").split(":")[0]
+        # deployment_id is already in the upstreams
+        if name == deployment_id:
+            return True
+
+    body = [
+        {
+            "match": [{"host": ["{}.{}".format(deployment_id, gitops_domain)]}],
+            "handle": [
+                {
+                    "handler": "subroute",
+                    "routes": [
+                        {
+                            "handle": [
+                                {
+                                    "handler": "reverse_proxy",
+                                    "upstreams": [
+                                        {"dial": "{}:{}".format(deployment_id, port)}
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ],
+            "terminal": True,
+        }
+    ]
+
+    routes_url = "{}/config/apps/http/servers/srv0/routes/...".format(caddy_url)
+    response = requests.post(routes_url, json=body)
+    return response.status_code == 200

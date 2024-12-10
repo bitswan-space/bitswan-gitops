@@ -4,7 +4,12 @@ import asyncio
 from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from ..utils import read_bitswan_yaml, call_git_command, read_pipeline_conf
+from ..utils import (
+    read_bitswan_yaml,
+    call_git_command,
+    read_pipeline_conf,
+    add_route_to_caddy,
+)
 
 router = APIRouter()
 
@@ -104,6 +109,17 @@ async def deploy():
                 pipeline_conf.get("deployment", "pre", fallback=entry.get("image"))
                 or entry["image"]
             )
+            expose = pipeline_conf.getboolean(
+                "deployment", "expose", fallback=conf.get("expose")
+            )
+            port = pipeline_conf.get("deployment", "port", fallback=conf.get("port"))
+            if expose and port:
+                result = add_route_to_caddy(deployment_id, port)
+                if not result:
+                    return JSONResponse(
+                        content={"error": "Error adding route to Caddy"},
+                        status_code=500,
+                    )
 
         if "volumes" not in entry:
             entry["volumes"] = []
