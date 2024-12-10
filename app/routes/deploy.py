@@ -13,7 +13,7 @@ router = APIRouter()
 async def deploy():
     gitops_dir = os.environ.get(
         "BITSWAN_GITOPS_DIR",
-        os.path.join(os.environ.get("HOME"), ".config/bitswan/"),
+        "/gitops",
     )
     host_dir = os.environ.get(
         "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"

@@ -25,7 +25,9 @@ def read_bitswan_yaml(bitswan_dir: str) -> dict[str, Any] | None:
 
 
 async def call_git_command(*command, **kwargs) -> bool:
-    host_dir = os.environ.get("BS_HOST_DIR", "/mnt/repo/pipeline")
+    host_dir = os.environ.get(
+        "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
+    )
     host_path = os.environ.get("HOST_PATH")
     host_home = os.environ.get("HOST_HOME")
     host_user = os.environ.get("HOST_USER")

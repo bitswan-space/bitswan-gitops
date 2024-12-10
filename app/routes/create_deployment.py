@@ -35,7 +35,7 @@ async def process_zip_file(file, deployment_id):
     try:
         gitops_home = os.environ.get(
             "BITSWAN_GITOPS_DIR",
-            os.path.join(os.environ.get("HOME"), ".config/bitswan/"),
+            "/gitops",
         )
         bitswan_path = os.path.join(gitops_home, "gitops")
         bitswan_yaml_path = os.path.join(bitswan_path, "bitswan.yaml")
