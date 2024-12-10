@@ -11,14 +11,23 @@ router = APIRouter()
 
 @router.post("/deploy")
 async def deploy():
-    bitswan_dir = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/pipeline")
-    host_dir = os.environ.get("BS_HOST_DIR", "/mnt/repo/pipeline")
-    gitops_id = os.environ.get("BS_GITOPS_ID", "pipeline-ops")
+    gitops_dir = os.environ.get(
+        "BITSWAN_GITOPS_DIR",
+        "/gitops",
+    )
+    host_dir = os.environ.get(
+        "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
+    )
+    gitops_id = os.environ.get("BITSWAN_GITOPS_ID", "gitops-local")
     os.environ["COMPOSE_PROJECT_NAME"] = gitops_id
 
-    await call_git_command("git", "pull", cwd=bitswan_dir)
+    gitops_config = os.path.join(gitops_dir, "gitops")
+    gitops_config_host = os.path.join(host_dir, "gitops")
+    secrets_dir = os.path.join(gitops_dir, "secrets")
 
-    bs_yaml = read_bitswan_yaml(bitswan_dir)
+    await call_git_command("git", "pull", cwd=gitops_config)
+
+    bs_yaml = read_bitswan_yaml(gitops_config)
 
     if not bs_yaml:
         return JSONResponse(
@@ -36,7 +45,7 @@ async def deploy():
         entry = {}
 
         source = conf.get("source") or conf.get("checksum") or deployment_id
-        source_dir = os.path.join(bitswan_dir, source)
+        source_dir = os.path.join(gitops_config, source)
 
         if not os.path.exists(source_dir):
             return JSONResponse(
@@ -55,10 +64,22 @@ async def deploy():
         entry["image"] = "bitswan/pipeline-runtime-environment:latest"
 
         network_mode = None
+        secret_groups = []
         if pipeline_conf:
             network_mode = pipeline_conf.get(
                 "docker.compose", "network_mode", fallback=conf.get("network_mode")
             )
+            secret_groups = pipeline_conf.get("secrets", "groups", fallback="").split(
+                " "
+            )
+        for secret_group in secret_groups:
+            if os.path.exists(secrets_dir):
+                secret_env_file = os.path.join(secrets_dir, secret_group)
+                if os.path.exists(secret_env_file):
+                    if not entry.get("env_file"):
+                        entry["env_file"] = []
+                    entry["env_file"].append(secret_env_file)
+
         if not network_mode:
             network_mode = conf.get("network_mode")
 
@@ -76,7 +97,7 @@ async def deploy():
         passthroughs = ["volumes", "ports", "devices", "container_name"]
         entry.update({p: conf[p] for p in passthroughs if p in conf})
 
-        deployment_dir = os.path.join(host_dir, source)
+        deployment_dir = os.path.join(gitops_config_host, source)
 
         if pipeline_conf:
             entry["image"] = (
@@ -96,7 +117,7 @@ async def deploy():
         dc["networks"][network] = {"external": True}
     dc_yaml = yaml.dump(dc)
 
-    deployment_result = await docker_compose_up(bitswan_dir, dc_yaml, deployments)
+    deployment_result = await docker_compose_up(gitops_config, dc_yaml, deployments)
 
     for result in deployment_result.values():
         if result["return_code"] != 0:
