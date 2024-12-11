@@ -72,6 +72,20 @@ def read_pipeline_conf(source_dir: str) -> ConfigParser | None:
     return None
 
 
+def test_read_pipeline_conf():
+    import tempfile
+
+    # create a tempdir with a pipelines.conf file
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        with open(os.path.join(tmpdirname, "pipelines.conf"), "w") as f:
+            f.write("[pipeline1]\n")
+            f.write("key1=value1\n")
+            f.write("key2=value2\n")
+
+        config = read_pipeline_conf(tmpdirname)
+        assert config.get("pipeline1", "key1") == "value1"
+
+
 def add_route_to_caddy(deployment_id: str, port: str) -> bool:
     caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
     upstreams = requests.get(f"{caddy_url}/reverse_proxy/upstreams")
