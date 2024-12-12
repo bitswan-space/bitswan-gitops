@@ -33,14 +33,9 @@ async def call_git_command(*command, **kwargs) -> bool:
 
     # If all host environment variables are set, use nsenter to run git command on host
     if cwd and host_path and host_home and host_user:
-        host_command = 'PATH={} su - {} -c "cd {} && PATH={} HOME={} {}"'.format(
-            host_path,
-            host_user,
-            cwd,
-            host_path,
-            host_home,
-            " ".join(shlex.quote(arg) for arg in command),
-        )
+        formatted_command = " ".join(shlex.quote(arg) for arg in command)
+        host_command = f'PATH={host_path} su - {host_user} -c "cd {cwd} && PATH={host_path} HOME={host_home} {formatted_command}"'
+
         nsenter_command = [
             "nsenter",
             "-t",
