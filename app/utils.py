@@ -26,23 +26,16 @@ def read_bitswan_yaml(bitswan_dir: str) -> dict[str, Any] | None:
 
 
 async def call_git_command(*command, **kwargs) -> bool:
-    host_dir = os.environ.get(
-        "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
-    )
+    cwd = kwargs.get("cwd")
     host_path = os.environ.get("HOST_PATH")
     host_home = os.environ.get("HOST_HOME")
     host_user = os.environ.get("HOST_USER")
 
     # If all host environment variables are set, use nsenter to run git command on host
-    if host_dir and host_path and host_home and host_user:
-        host_command = 'PATH={} su - {} -c "cd {} && PATH={} HOME={} {}"'.format(
-            host_path,
-            host_user,
-            host_dir,
-            host_path,
-            host_home,
-            " ".join(shlex.quote(arg) for arg in command),
-        )
+    if cwd and host_path and host_home and host_user:
+        formatted_command = " ".join(shlex.quote(arg) for arg in command)
+        host_command = f'PATH={host_path} su - {host_user} -c "cd {cwd} && PATH={host_path} HOME={host_home} {formatted_command}"'
+
         nsenter_command = [
             "nsenter",
             "-t",
