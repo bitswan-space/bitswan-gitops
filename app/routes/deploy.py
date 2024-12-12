@@ -6,7 +6,6 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from ..utils import (
     read_bitswan_yaml,
-    call_git_command,
     read_pipeline_conf,
     add_route_to_caddy,
 )
@@ -29,8 +28,6 @@ async def deploy():
     gitops_config = os.path.join(gitops_dir, "gitops")
     gitops_config_host = os.path.join(host_dir, "gitops")
     secrets_dir = os.path.join(gitops_dir, "secrets")
-
-    await call_git_command("git", "pull", cwd=gitops_config)
 
     bs_yaml = read_bitswan_yaml(gitops_config)
 
