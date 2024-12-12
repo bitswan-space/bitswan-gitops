@@ -30,8 +30,6 @@ async def deploy():
     gitops_config_host = os.path.join(host_dir, "gitops")
     secrets_dir = os.path.join(gitops_dir, "secrets")
 
-    await call_git_command("git", "pull", cwd=gitops_config)
-
     bs_yaml = read_bitswan_yaml(gitops_config)
 
     if not bs_yaml:
