@@ -112,7 +112,9 @@ async def deploy():
             expose = pipeline_conf.getboolean(
                 "deployment", "expose", fallback=conf.get("expose")
             )
-            port = pipeline_conf.get("deployment", "port", fallback=conf.get("port"))
+            port = pipeline_conf.get(
+                "deployment", "port", fallback=conf.get("port", 8080)
+            )
             if expose and port:
                 result = add_route_to_caddy(deployment_id, port)
                 if not result:
