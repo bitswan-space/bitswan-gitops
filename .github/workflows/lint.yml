@@ -1,0 +1,25 @@
+name: Python 3.10 Lint & Test
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    container:
+      image: python:3.10
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install dependencies
+      run: |
+        pip3 install .[dev]
+
+    - name: Run tests
+      run: |
+        pytest app
+
+    - name: Run linter
+      run: |
+        black --check app
+        ruff check app
