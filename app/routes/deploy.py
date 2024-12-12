@@ -6,7 +6,6 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from ..utils import (
     read_bitswan_yaml,
-    call_git_command,
     read_pipeline_conf,
     add_route_to_caddy,
 )
