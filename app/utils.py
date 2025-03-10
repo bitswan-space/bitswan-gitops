@@ -1,9 +1,10 @@
 import asyncio
 from configparser import ConfigParser
+from datetime import datetime, timezone
 import os
 from typing import Any
 import shlex
-
+import humanize
 import yaml
 import requests
 
@@ -23,6 +24,11 @@ def read_bitswan_yaml(bitswan_dir: str) -> dict[str, Any] | None:
                 return bs_yaml
     except Exception:
         return None
+    
+def calculate_uptime(created_at: str) -> str:
+    created_at = datetime.fromisoformat(created_at)
+    uptime = datetime.now(timezone.utc) - created_at
+    return humanize.naturaldelta(uptime)
 
 
 async def call_git_command(*command, **kwargs) -> bool:

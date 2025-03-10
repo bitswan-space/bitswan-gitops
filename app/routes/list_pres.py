@@ -2,22 +2,20 @@ import functools
 import docker
 import docker.models.containers
 import os
-import humanize
 from fastapi import FastAPI
-from datetime import datetime, timezone
+from datetime import datetime
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from paho.mqtt import client as mqtt_client
 
-from ..models import ContainerProperties, Topology, Pipeline, encode_pydantic_model
-from ..utils import read_bitswan_yaml
+from ..models import (
+    ContainerProperties,
+    Topology,
+    Pipeline,
+    encode_pydantic_model,
+)
+from ..utils import calculate_uptime, read_bitswan_yaml
 from ..mqtt import mqtt_resource
-
-
-def calculate_uptime(created_at: str) -> str:
-    created_at = datetime.fromisoformat(created_at)
-    uptime = datetime.now(timezone.utc) - created_at
-    return humanize.naturaldelta(uptime)
 
 
 async def retrieve_active_pres() -> Topology:
@@ -70,7 +68,7 @@ async def retrieve_active_pres() -> Topology:
 
 
 async def retrieve_inactive_pres() -> Topology:
-    bs_home = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/pipeline")
+    bs_home = os.environ.get("BITSWAN_BITSWAN_DIR", "/mnt/repo/pipeline")
     bs_yaml = read_bitswan_yaml(bs_home)
 
     if not bs_yaml:
