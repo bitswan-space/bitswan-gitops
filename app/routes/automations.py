@@ -15,7 +15,7 @@ async def deploy_automations(automation_service: AutomationService = Depends(get
 
 @router.post("/{deployment_id}/deploy")
 async def deploy_automation(deployment_id: str, automation_service: AutomationService = Depends(get_automation_service)):
-    return automation_service.deploy_automation(deployment_id)
+    return await automation_service.deploy_automation(deployment_id)
 
 @router.post("/{deployment_id}/start")
 async def start_automation(deployment_id: str, automation_service: AutomationService = Depends(get_automation_service)):
@@ -31,11 +31,11 @@ async def restart_automation(deployment_id: str, automation_service: AutomationS
 
 @router.post("/{deployment_id}/activate")
 async def activate_automation(deployment_id: str, automation_service: AutomationService = Depends(get_automation_service)):
-    return automation_service.activate_automation(deployment_id)
+    return await automation_service.activate_automation(deployment_id)
 
 @router.post("/{deployment_id}/deactivate")
 async def deactivate_automation(deployment_id: str, automation_service: AutomationService = Depends(get_automation_service)):
-    return automation_service.deactivate_automation(deployment_id)
+    return await automation_service.deactivate_automation(deployment_id)
 
 @router.get("/{deployment_id}/logs")
 async def get_automation_logs(deployment_id: str, lines: int = 100, automation_service: AutomationService = Depends(get_automation_service)):

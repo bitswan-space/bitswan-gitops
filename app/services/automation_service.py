@@ -123,20 +123,206 @@ class AutomationService:
     def delete_automation(self, deployment_id: str):
         pass
 
-    def deploy_automation(self, deployment_id: str):
-        pass
-
-    async def deploy_automations(self):
+    async def deploy_automation(self, deployment_id: str):
         os.environ["COMPOSE_PROJECT_NAME"] = self.gitops_id
-
         gitops_config = os.path.join(self.bs_home, "gitops")
-        gitops_config_host = os.path.join(self.bs_home_host, "gitops")
-        secrets_dir = os.path.join(self.bs_home, "secrets")
 
         bs_yaml = read_bitswan_yaml(gitops_config)
 
         if not bs_yaml:
             raise HTTPException(status_code=500, detail="Error reading bitswan.yaml")
+
+        dc_yaml = self.generate_docker_compose(bs_yaml)
+        deployments = bs_yaml.get("deployments", {})
+        
+
+        deployment_result = await docker_compose_up(gitops_config, dc_yaml, deployment_id)
+
+        for result in deployment_result.values():
+            if result["return_code"] != 0:
+                raise HTTPException(status_code=500, detail="Error deploying services")
+        return {
+            "message": "Deployed services successfully",
+            "deployments": list(deployments[deployment_id].keys()),
+            "result": deployment_result,
+        }
+        
+
+    async def deploy_automations(self):
+        os.environ["COMPOSE_PROJECT_NAME"] = self.gitops_id
+        gitops_config = os.path.join(self.bs_home, "gitops")
+
+        bs_yaml = read_bitswan_yaml(gitops_config)
+
+        if not bs_yaml:
+            raise HTTPException(status_code=500, detail="Error reading bitswan.yaml")
+
+        dc_yaml = self.generate_docker_compose(bs_yaml)
+        deployments = bs_yaml.get("deployments", {})
+        
+
+        deployment_result = await docker_compose_up(gitops_config, dc_yaml)
+
+        for result in deployment_result.values():
+            if result["return_code"] != 0:
+                raise HTTPException(status_code=500, detail="Error deploying services")
+        return {
+            "message": "Deployed services successfully",
+            "deployments": list(deployments.keys()),
+            "result": deployment_result,
+        }
+
+    def start_automation(self, deployment_id: str):
+        containers = self.docker_client.containers.list(
+            all=True,  # Include stopped containers
+            filters={
+                "label": [
+                    "space.bitswan.pipeline.protocol-version",
+                    f"gitops.deployment_id={deployment_id}"
+                ]
+            }
+        )
+        
+        if not containers:
+            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
+        
+        # Restart the container
+        container = containers[0]
+        container.start()
+        
+        return {
+            "status": "success",
+            "message": f"Container for deployment {deployment_id} started successfully"
+        }
+
+    def stop_automation(self, deployment_id: str):
+        containers = self.docker_client.containers.list(
+            all=True,  # Include stopped containers
+            filters={
+                "label": [
+                    "space.bitswan.pipeline.protocol-version",
+                    f"gitops.deployment_id={deployment_id}"
+                ]
+            }
+        )
+        
+        if not containers:
+            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
+        
+        container = containers[0]
+        container.stop()
+        
+        return {
+            "status": "success",
+            "message": f"Container for deployment {deployment_id} stopped successfully"
+        }
+
+    def restart_automation(self, deployment_id: str):
+        containers = self.docker_client.containers.list(
+            all=True,  # Include stopped containers
+            filters={
+                "label": [
+                    "space.bitswan.pipeline.protocol-version",
+                    f"gitops.deployment_id={deployment_id}"
+                ]
+            }
+        )
+        
+        if not containers:
+            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
+        
+        # Restart the container
+        container = containers[0]
+        container.restart()
+        
+        return {
+            "status": "success",
+            "message": f"Container for deployment {deployment_id} restarted successfully"
+        }
+
+    async def activate_automation(self, deployment_id: str):
+        gitops_dir = os.path.join(self.bs_home, "gitops")
+        bs_yaml = read_bitswan_yaml(gitops_dir)
+        bs_yaml["deployments"][deployment_id]["active"] = True
+        with open(os.path.join(gitops_dir, "bitswan.yaml"), "w") as f:
+            yaml.dump(bs_yaml, f)
+
+        # update git
+        await update_git(gitops_dir, self.bs_home_host, deployment_id, bs_yaml["deployments"][deployment_id]["checksum"])
+
+        result = await self.deploy_automation(deployment_id)
+
+        return result
+
+
+    async def deactivate_automation(self, deployment_id: str):
+        gitops_dir = os.path.join(self.bs_home, "gitops")
+        bs_yaml = read_bitswan_yaml(gitops_dir)
+        bs_yaml["deployments"][deployment_id]["active"] = False
+        with open(os.path.join(gitops_dir, "bitswan.yaml"), "w") as f:
+            yaml.dump(bs_yaml, f)
+
+        # update git
+        await update_git(gitops_dir, self.bs_home_host, deployment_id, bs_yaml["deployments"][deployment_id]["checksum"])
+
+        self.remove_automation(deployment_id)
+
+        return {
+            "status": "success",
+            "message": f"Deployment {deployment_id} deactivated successfully"
+        }
+
+
+    def get_automation_logs(self, deployment_id: str, lines: int = 100):
+        containers = self.docker_client.containers.list(
+            all=True,  # Include stopped containers
+            filters={
+                "label": [
+                    "space.bitswan.pipeline.protocol-version",
+                    f"gitops.deployment_id={deployment_id}"
+                ]
+            }
+        )
+
+        if not containers:
+            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
+        
+        container = containers[0]
+        logs = container.logs(tail=lines)
+        logs = logs.decode("utf-8")
+
+        return {
+            "status": "success",
+            "logs": logs.split("\n")
+        }
+    
+    def remove_automation(self, deployment_id: str):
+        containers = self.docker_client.containers.list(
+            all=True,  # Include stopped containers
+            filters={
+                "label": [
+                    "space.bitswan.pipeline.protocol-version",
+                    f"gitops.deployment_id={deployment_id}"
+                ]
+            }
+        )
+        
+        if not containers:
+            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
+        
+        container = containers[0]
+        container.stop()
+        container.remove()
+        
+        return {
+            "status": "success",
+            "message": f"Container for deployment {deployment_id} removed successfully"
+        }
+    
+    def generate_docker_compose(self, bs_yaml: dict):
+        gitops_config = os.path.join(self.bs_home, "gitops")
+        gitops_config_host = os.path.join(self.bs_home_host, "gitops")
+        secrets_dir = os.path.join(self.bs_home, "secrets")
 
         dc = {
             "version": "3",
@@ -230,111 +416,4 @@ class AutomationService:
         for network in external_networks:
             dc["networks"][network] = {"external": True}
         dc_yaml = yaml.dump(dc)
-
-        deployment_result = await docker_compose_up(gitops_config, dc_yaml, deployments)
-
-        for result in deployment_result.values():
-            if result["return_code"] != 0:
-                raise HTTPException(status_code=500, detail="Error deploying services")
-        return {
-            "message": "Deployed services successfully",
-            "deployments": list(deployments.keys()),
-            "result": deployment_result,
-        }
-
-    def start_automation(self, deployment_id: str):
-        containers = self.docker_client.containers.list(
-            all=True,  # Include stopped containers
-            filters={
-                "label": [
-                    "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}"
-                ]
-            }
-        )
-        
-        if not containers:
-            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
-        
-        # Restart the container
-        container = containers[0]
-        container.start()
-        
-        return {
-            "status": "success",
-            "message": f"Container for deployment {deployment_id} started successfully"
-        }
-
-    def stop_automation(self, deployment_id: str):
-        containers = self.docker_client.containers.list(
-            all=True,  # Include stopped containers
-            filters={
-                "label": [
-                    "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}"
-                ]
-            }
-        )
-        
-        if not containers:
-            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
-        
-        container = containers[0]
-        container.stop()
-        
-        return {
-            "status": "success",
-            "message": f"Container for deployment {deployment_id} stopped successfully"
-        }
-
-    def restart_automation(self, deployment_id: str):
-        containers = self.docker_client.containers.list(
-            all=True,  # Include stopped containers
-            filters={
-                "label": [
-                    "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}"
-                ]
-            }
-        )
-        
-        if not containers:
-            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
-        
-        # Restart the container
-        container = containers[0]
-        container.restart()
-        
-        return {
-            "status": "success",
-            "message": f"Container for deployment {deployment_id} restarted successfully"
-        }
-
-    def activate_automation(self, deployment_id: str):
-        gitops_dir = os.path.join(self.bs_home, "gitops")
-
-    def deactivate_automation(self, deployment_id: str):
-        pass
-
-    def get_automation_logs(self, deployment_id: str, lines: int = 100):
-        containers = self.docker_client.containers.list(
-            all=True,  # Include stopped containers
-            filters={
-                "label": [
-                    "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}"
-                ]
-            }
-        )
-
-        if not containers:
-            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
-        
-        container = containers[0]
-        logs = container.logs(tail=lines)
-        logs = logs.decode("utf-8")
-
-        return {
-            "status": "success",
-            "logs": logs.split("\n")
-        }
+        return dc_yaml

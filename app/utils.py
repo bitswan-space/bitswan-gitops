@@ -183,7 +183,7 @@ async def update_git(
                 raise Exception("Error pushing to git")
             
 async def docker_compose_up(
-    bitswan_dir: str, docker_compose: str, deployment_info: dict[str, Any]
+    bitswan_dir: str, docker_compose: str, container_name: str | None = None
 ) -> None:
     async def setup_asyncio_process(cmd: list[Any]) -> dict[str, Any]:
         proc = await asyncio.create_subprocess_exec(
@@ -203,10 +203,12 @@ async def docker_compose_up(
             "return_code": proc.returncode,
         }
         return res
+    
+    docker_compose_cmd = ["docker", "compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
+    if container_name:
+        docker_compose_cmd.append(container_name)
 
-    up_result = await setup_asyncio_process(
-        ["docker", "compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
-    )
+    up_result = await setup_asyncio_process(docker_compose_cmd)
 
     return {
         "up_result": up_result,
