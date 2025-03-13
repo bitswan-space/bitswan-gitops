@@ -92,8 +92,6 @@ class AutomationService:
             old_deploymend_checksum = None
 
             try:
-                bitswan_path_host = self.gitops_dir_host
-
                 bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
 
                 output_dir = os.path.join(self.gitops_dir, output_dir)
