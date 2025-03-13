@@ -282,7 +282,9 @@ class AutomationService:
             yaml.dump(bs_yaml, f)
 
         # update git
-        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "activate")
+        await update_git(
+            self.gitops_dir, self.gitops_dir_host, deployment_id, "activate"
+        )
 
         result = await self.deploy_automation(deployment_id)
 
@@ -295,7 +297,9 @@ class AutomationService:
             yaml.dump(bs_yaml, f)
 
         # update git
-        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "deactivate")
+        await update_git(
+            self.gitops_dir, self.gitops_dir_host, deployment_id, "deactivate"
+        )
 
         self.remove_automation(deployment_id)
 
