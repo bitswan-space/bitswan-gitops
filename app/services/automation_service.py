@@ -27,10 +27,12 @@ class AutomationService:
         )
         self.gitops_id = os.environ.get("BITSWAN_GITOPS_ID", "gitops-local")
         self.docker_client = docker.from_env()
+        self.gitops_dir = os.path.join(self.bs_home, "gitops")
+        self.gitops_dir_host = os.path.join(self.bs_home_host, "gitops")
+        self.secrets_dir = os.path.join(self.bs_home, "secrets")
 
     def get_automations(self):
-        gitops_dir = os.path.join(self.bs_home, "gitops")
-        bs_yaml = read_bitswan_yaml(gitops_dir)
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         if not bs_yaml:
             return []
@@ -90,19 +92,18 @@ class AutomationService:
             old_deploymend_checksum = None
 
             try:
-                bitswan_path = os.path.join(self.bs_home, "gitops")
-                bitswan_path_host = os.path.join(self.bs_home_host, "gitops")
+                bitswan_path_host = self.gitops_dir_host
 
-                bitswan_yaml_path = os.path.join(bitswan_path, "bitswan.yaml")
+                bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
 
-                output_dir = os.path.join(bitswan_path, output_dir)
+                output_dir = os.path.join(self.gitops_dir, output_dir)
 
                 os.makedirs(output_dir, exist_ok=True)
                 with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
                     zip_ref.extractall(output_dir)
 
                 # Update or create bitswan.yaml
-                data = read_bitswan_yaml(bitswan_path)
+                data = read_bitswan_yaml(self.gitops_dir)
 
                 data = data or {"deployments": {}}
                 deployments = data["deployments"]  # should never raise KeyError
@@ -116,7 +117,7 @@ class AutomationService:
                 with open(bitswan_yaml_path, "w") as f:
                     yaml.dump(data, f)
 
-                await update_git(bitswan_path, bitswan_path_host, deployment_id)
+                await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id)
 
                 return {
                     "message": "File processed successfully",
@@ -129,19 +130,18 @@ class AutomationService:
             finally:
                 if old_deploymend_checksum:
                     shutil.rmtree(
-                        os.path.join(bitswan_path, old_deploymend_checksum),
+                        os.path.join(self.gitops_dir, old_deploymend_checksum),
                         ignore_errors=True,
                     )
                 os.unlink(temp_file.name)
 
     async def delete_automation(self, deployment_id: str):
-        gitops_dir = os.path.join(self.bs_home, "gitops")
-        bs_yaml = read_bitswan_yaml(gitops_dir)
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
         bs_yaml["deployments"].pop(deployment_id)
-        with open(os.path.join(gitops_dir, "bitswan.yaml"), "w") as f:
+        with open(os.path.join(self.gitops_dir, "bitswan.yaml"), "w") as f:
             yaml.dump(bs_yaml, f)
 
-        await update_git(gitops_dir, self.bs_home_host, deployment_id)
+        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id)
         result = remove_route_from_caddy(deployment_id)
 
         if not result:
@@ -154,9 +154,8 @@ class AutomationService:
 
     async def deploy_automation(self, deployment_id: str):
         os.environ["COMPOSE_PROJECT_NAME"] = self.gitops_id
-        gitops_config = os.path.join(self.bs_home, "gitops")
 
-        bs_yaml = read_bitswan_yaml(gitops_config)
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         if not bs_yaml:
             raise HTTPException(status_code=500, detail="Error reading bitswan.yaml")
@@ -165,7 +164,7 @@ class AutomationService:
         deployments = bs_yaml.get("deployments", {})
 
         deployment_result = await docker_compose_up(
-            gitops_config, dc_yaml, deployment_id
+            self.gitops_dir, dc_yaml, deployment_id
         )
 
         for result in deployment_result.values():
@@ -179,9 +178,8 @@ class AutomationService:
 
     async def deploy_automations(self):
         os.environ["COMPOSE_PROJECT_NAME"] = self.gitops_id
-        gitops_config = os.path.join(self.bs_home, "gitops")
 
-        bs_yaml = read_bitswan_yaml(gitops_config)
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         if not bs_yaml:
             raise HTTPException(status_code=500, detail="Error reading bitswan.yaml")
@@ -189,7 +187,7 @@ class AutomationService:
         dc_yaml = self.generate_docker_compose(bs_yaml)
         deployments = bs_yaml.get("deployments", {})
 
-        deployment_result = await docker_compose_up(gitops_config, dc_yaml)
+        deployment_result = await docker_compose_up(self.gitops_dir, dc_yaml)
 
         for result in deployment_result.values():
             if result["return_code"] != 0:
@@ -278,28 +276,26 @@ class AutomationService:
         }
 
     async def activate_automation(self, deployment_id: str):
-        gitops_dir = os.path.join(self.bs_home, "gitops")
-        bs_yaml = read_bitswan_yaml(gitops_dir)
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
         bs_yaml["deployments"][deployment_id]["active"] = True
-        with open(os.path.join(gitops_dir, "bitswan.yaml"), "w") as f:
+        with open(os.path.join(self.gitops_dir, "bitswan.yaml"), "w") as f:
             yaml.dump(bs_yaml, f)
 
         # update git
-        await update_git(gitops_dir, self.bs_home_host, deployment_id)
+        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id)
 
         result = await self.deploy_automation(deployment_id)
 
         return result
 
     async def deactivate_automation(self, deployment_id: str):
-        gitops_dir = os.path.join(self.bs_home, "gitops")
-        bs_yaml = read_bitswan_yaml(gitops_dir)
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
         bs_yaml["deployments"][deployment_id]["active"] = False
-        with open(os.path.join(gitops_dir, "bitswan.yaml"), "w") as f:
+        with open(os.path.join(self.gitops_dir, "bitswan.yaml"), "w") as f:
             yaml.dump(bs_yaml, f)
 
         # update git
-        await update_git(gitops_dir, self.bs_home_host, deployment_id)
+        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id)
 
         self.remove_automation(deployment_id)
 
@@ -358,10 +354,6 @@ class AutomationService:
         }
 
     def generate_docker_compose(self, bs_yaml: dict):
-        gitops_config = os.path.join(self.bs_home, "gitops")
-        gitops_config_host = os.path.join(self.bs_home_host, "gitops")
-        secrets_dir = os.path.join(self.bs_home, "secrets")
-
         dc = {
             "version": "3",
             "services": {},
@@ -373,7 +365,7 @@ class AutomationService:
             entry = {}
 
             source = conf.get("source") or conf.get("checksum") or deployment_id
-            source_dir = os.path.join(gitops_config, source)
+            source_dir = os.path.join(self.gitops_dir, source)
 
             if not os.path.exists(source_dir):
                 raise HTTPException(
@@ -404,8 +396,8 @@ class AutomationService:
                 # Skip empty secret groups
                 if not secret_group:
                     continue
-                if os.path.exists(secrets_dir):
-                    secret_env_file = os.path.join(secrets_dir, secret_group)
+                if os.path.exists(self.secrets_dir):
+                    secret_env_file = os.path.join(self.secrets_dir, secret_group)
                     if os.path.exists(secret_env_file):
                         if not entry.get("env_file"):
                             entry["env_file"] = []
@@ -428,7 +420,7 @@ class AutomationService:
             passthroughs = ["volumes", "ports", "devices", "container_name"]
             entry.update({p: conf[p] for p in passthroughs if p in conf})
 
-            deployment_dir = os.path.join(gitops_config_host, source)
+            deployment_dir = os.path.join(self.gitops_dir_host, source)
 
             if pipeline_conf:
                 entry["image"] = (
