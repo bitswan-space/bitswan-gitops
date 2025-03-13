@@ -6,16 +6,27 @@ import zipfile
 import docker
 import yaml
 from app.models import DeployedPRE
-from app.utils import add_route_to_caddy, calculate_checksum, calculate_uptime, docker_compose_up, read_bitswan_yaml, read_pipeline_conf, remove_route_from_caddy, update_git
+from app.utils import (
+    add_route_to_caddy,
+    calculate_checksum,
+    calculate_uptime,
+    docker_compose_up,
+    read_bitswan_yaml,
+    read_pipeline_conf,
+    remove_route_from_caddy,
+    update_git,
+)
 from fastapi import UploadFile, HTTPException
+
 
 class AutomationService:
     def __init__(self):
         self.bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
-        self.bs_home_host = os.environ.get("BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/")
+        self.bs_home_host = os.environ.get(
+            "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
+        )
         self.gitops_id = os.environ.get("BITSWAN_GITOPS_ID", "gitops-local")
         self.docker_client = docker.from_env()
-
 
     def get_automations(self):
         gitops_dir = os.path.join(self.bs_home, "gitops")
@@ -39,7 +50,9 @@ class AutomationService:
         }
 
         info = self.docker_client.info()
-        containers: list[docker.models.containers.Container] = self.docker_client.containers.list(
+        containers: list[
+            docker.models.containers.Container
+        ] = self.docker_client.containers.list(
             filters={
                 "label": [
                     "space.bitswan.pipeline.protocol-version",
@@ -116,7 +129,8 @@ class AutomationService:
             finally:
                 if old_deploymend_checksum:
                     shutil.rmtree(
-                        os.path.join(bitswan_path, old_deploymend_checksum), ignore_errors=True
+                        os.path.join(bitswan_path, old_deploymend_checksum),
+                        ignore_errors=True,
                     )
                 os.unlink(temp_file.name)
 
@@ -136,12 +150,7 @@ class AutomationService:
             message = f"Deployment {deployment_id} deleted successfully"
 
         self.remove_automation(deployment_id)
-        return {
-            "status": "success",
-            "message": message
-        }
-            
-            
+        return {"status": "success", "message": message}
 
     async def deploy_automation(self, deployment_id: str):
         os.environ["COMPOSE_PROJECT_NAME"] = self.gitops_id
@@ -154,9 +163,10 @@ class AutomationService:
 
         dc_yaml = self.generate_docker_compose(bs_yaml)
         deployments = bs_yaml.get("deployments", {})
-        
 
-        deployment_result = await docker_compose_up(gitops_config, dc_yaml, deployment_id)
+        deployment_result = await docker_compose_up(
+            gitops_config, dc_yaml, deployment_id
+        )
 
         for result in deployment_result.values():
             if result["return_code"] != 0:
@@ -166,7 +176,6 @@ class AutomationService:
             "deployments": list(deployments[deployment_id].keys()),
             "result": deployment_result,
         }
-        
 
     async def deploy_automations(self):
         os.environ["COMPOSE_PROJECT_NAME"] = self.gitops_id
@@ -179,7 +188,6 @@ class AutomationService:
 
         dc_yaml = self.generate_docker_compose(bs_yaml)
         deployments = bs_yaml.get("deployments", {})
-        
 
         deployment_result = await docker_compose_up(gitops_config, dc_yaml)
 
@@ -198,21 +206,24 @@ class AutomationService:
             filters={
                 "label": [
                     "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}"
+                    f"gitops.deployment_id={deployment_id}",
                 ]
-            }
+            },
         )
-        
+
         if not containers:
-            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
-        
+            raise HTTPException(
+                status_code=404,
+                detail=f"No container found for deployment ID: {deployment_id}",
+            )
+
         # Restart the container
         container = containers[0]
         container.start()
-        
+
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} started successfully"
+            "message": f"Container for deployment {deployment_id} started successfully",
         }
 
     def stop_automation(self, deployment_id: str):
@@ -221,20 +232,23 @@ class AutomationService:
             filters={
                 "label": [
                     "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}"
+                    f"gitops.deployment_id={deployment_id}",
                 ]
-            }
+            },
         )
-        
+
         if not containers:
-            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
-        
+            raise HTTPException(
+                status_code=404,
+                detail=f"No container found for deployment ID: {deployment_id}",
+            )
+
         container = containers[0]
         container.stop()
-        
+
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} stopped successfully"
+            "message": f"Container for deployment {deployment_id} stopped successfully",
         }
 
     def restart_automation(self, deployment_id: str):
@@ -243,21 +257,24 @@ class AutomationService:
             filters={
                 "label": [
                     "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}"
+                    f"gitops.deployment_id={deployment_id}",
                 ]
-            }
+            },
         )
-        
+
         if not containers:
-            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
-        
+            raise HTTPException(
+                status_code=404,
+                detail=f"No container found for deployment ID: {deployment_id}",
+            )
+
         # Restart the container
         container = containers[0]
         container.restart()
-        
+
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} restarted successfully"
+            "message": f"Container for deployment {deployment_id} restarted successfully",
         }
 
     async def activate_automation(self, deployment_id: str):
@@ -274,7 +291,6 @@ class AutomationService:
 
         return result
 
-
     async def deactivate_automation(self, deployment_id: str):
         gitops_dir = os.path.join(self.bs_home, "gitops")
         bs_yaml = read_bitswan_yaml(gitops_dir)
@@ -289,9 +305,8 @@ class AutomationService:
 
         return {
             "status": "success",
-            "message": f"Deployment {deployment_id} deactivated successfully"
+            "message": f"Deployment {deployment_id} deactivated successfully",
         }
-
 
     def get_automation_logs(self, deployment_id: str, lines: int = 100):
         containers = self.docker_client.containers.list(
@@ -299,46 +314,49 @@ class AutomationService:
             filters={
                 "label": [
                     "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}"
+                    f"gitops.deployment_id={deployment_id}",
                 ]
-            }
+            },
         )
 
         if not containers:
-            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
-        
+            raise HTTPException(
+                status_code=404,
+                detail=f"No container found for deployment ID: {deployment_id}",
+            )
+
         container = containers[0]
         logs = container.logs(tail=lines)
         logs = logs.decode("utf-8")
 
-        return {
-            "status": "success",
-            "logs": logs.split("\n")
-        }
-    
+        return {"status": "success", "logs": logs.split("\n")}
+
     def remove_automation(self, deployment_id: str):
         containers = self.docker_client.containers.list(
             all=True,  # Include stopped containers
             filters={
                 "label": [
                     "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}"
+                    f"gitops.deployment_id={deployment_id}",
                 ]
-            }
+            },
         )
-        
+
         if not containers:
-            raise HTTPException(status_code=404, detail=f"No container found for deployment ID: {deployment_id}")
-        
+            raise HTTPException(
+                status_code=404,
+                detail=f"No container found for deployment ID: {deployment_id}",
+            )
+
         container = containers[0]
         container.stop()
         container.remove()
-        
+
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} removed successfully"
+            "message": f"Container for deployment {deployment_id} removed successfully",
         }
-    
+
     def generate_docker_compose(self, bs_yaml: dict):
         gitops_config = os.path.join(self.bs_home, "gitops")
         gitops_config_host = os.path.join(self.bs_home_host, "gitops")
@@ -358,7 +376,10 @@ class AutomationService:
             source_dir = os.path.join(gitops_config, source)
 
             if not os.path.exists(source_dir):
-                raise HTTPException(status_code=500, detail=f"Deployment directory {source_dir} does not exist")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Deployment directory {source_dir} does not exist",
+                )
             else:
                 pipeline_conf = read_pipeline_conf(source_dir)
 
@@ -376,9 +397,9 @@ class AutomationService:
                 network_mode = pipeline_conf.get(
                     "docker.compose", "network_mode", fallback=conf.get("network_mode")
                 )
-                secret_groups = pipeline_conf.get("secrets", "groups", fallback="").split(
-                    " "
-                )
+                secret_groups = pipeline_conf.get(
+                    "secrets", "groups", fallback=""
+                ).split(" ")
             for secret_group in secret_groups:
                 # Skip empty secret groups
                 if not secret_group:
@@ -423,7 +444,9 @@ class AutomationService:
                 if expose and port:
                     result = add_route_to_caddy(deployment_id, port)
                     if not result:
-                        raise HTTPException(status_code=500, detail="Error adding route to Caddy")
+                        raise HTTPException(
+                            status_code=500, detail="Error adding route to Caddy"
+                        )
 
             if "volumes" not in entry:
                 entry["volumes"] = []

@@ -27,7 +27,8 @@ def read_bitswan_yaml(bitswan_dir: str) -> dict[str, Any] | None:
                 return bs_yaml
     except Exception:
         return None
-    
+
+
 def calculate_uptime(created_at: str) -> str:
     created_at = datetime.fromisoformat(created_at)
     uptime = datetime.now(timezone.utc) - created_at
@@ -132,11 +133,13 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
     response = requests.post(routes_url, json=body)
     return response.status_code == 200
 
+
 def remove_route_from_caddy(deployment_id: str):
     caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
     routes_url = "{}/id/{}".format(caddy_url, deployment_id)
     response = requests.delete(routes_url)
     return response.status_code == 200
+
 
 def calculate_checksum(file_path):
     sha256_hash = hashlib.sha256()
@@ -146,9 +149,7 @@ def calculate_checksum(file_path):
     return sha256_hash.hexdigest()
 
 
-async def update_git(
-    bitswan_home: str, bitswan_home_host: str, deployment_id: str
-):
+async def update_git(bitswan_home: str, bitswan_home_host: str, deployment_id: str):
     host_path = os.environ.get("HOST_PATH")
 
     if host_path:
@@ -188,7 +189,8 @@ async def update_git(
             res = await call_git_command("git", "push", cwd=bitswan_dir)
             if not res:
                 raise Exception("Error pushing to git")
-            
+
+
 async def docker_compose_up(
     bitswan_dir: str, docker_compose: str, container_name: str | None = None
 ) -> None:
@@ -210,8 +212,16 @@ async def docker_compose_up(
             "return_code": proc.returncode,
         }
         return res
-    
-    docker_compose_cmd = ["docker", "compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
+
+    docker_compose_cmd = [
+        "docker",
+        "compose",
+        "-f",
+        "/dev/stdin",
+        "up",
+        "-d",
+        "--remove-orphans",
+    ]
     if container_name:
         docker_compose_cmd.append(container_name)
 

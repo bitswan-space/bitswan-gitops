@@ -12,7 +12,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Security(HTTPBearer
             detail="Unauthorized: Invalid or missing token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
 
 def get_automation_service():
     return AutomationService()
