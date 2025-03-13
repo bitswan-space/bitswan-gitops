@@ -27,6 +27,17 @@ class Topology(BaseModel):
     display_style: str
 
 
+class DeployedAutomation(BaseModel):
+    container_id: str | None
+    endpoint_name: str | None
+    created_at: datetime | None
+    name: str
+    state: str | None
+    status: str | None
+    deployment_id: str | None
+    active: bool
+
+
 def encode_pydantic_model(data: BaseModel) -> bytearray:
     json_str = data.model_dump_json(by_alias=True)
     return bytearray(json_str.encode("utf-8"))

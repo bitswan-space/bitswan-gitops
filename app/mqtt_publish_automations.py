@@ -2,25 +2,23 @@ import functools
 import docker
 import docker.models.containers
 import os
-import humanize
 from fastapi import FastAPI
-from datetime import datetime, timezone
+from datetime import datetime
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from paho.mqtt import client as mqtt_client
 
-from ..models import ContainerProperties, Topology, Pipeline, encode_pydantic_model
-from ..utils import read_bitswan_yaml
-from ..mqtt import mqtt_resource
+from .models import (
+    ContainerProperties,
+    Topology,
+    Pipeline,
+    encode_pydantic_model,
+)
+from .utils import calculate_uptime, read_bitswan_yaml
+from .mqtt import mqtt_resource
 
 
-def calculate_uptime(created_at: str) -> str:
-    created_at = datetime.fromisoformat(created_at)
-    uptime = datetime.now(timezone.utc) - created_at
-    return humanize.naturaldelta(uptime)
-
-
-async def retrieve_active_pres() -> Topology:
+async def retrieve_active_automations() -> Topology:
     client = docker.from_env()
     info = client.info()
 
@@ -69,8 +67,8 @@ async def retrieve_active_pres() -> Topology:
     return Topology(**topology)
 
 
-async def retrieve_inactive_pres() -> Topology:
-    bs_home = os.environ.get("BS_BITSWAN_DIR", "/mnt/repo/pipeline")
+async def retrieve_inactive_automations() -> Topology:
+    bs_home = os.environ.get("BITSWAN_BITSWAN_DIR", "/mnt/repo/pipeline")
     bs_yaml = read_bitswan_yaml(bs_home)
 
     if not bs_yaml:
@@ -108,15 +106,15 @@ async def retrieve_inactive_pres() -> Topology:
     return Topology(**topology)
 
 
-async def publish_pres(client: mqtt_client.Client) -> Topology:
+async def publish_automations(client: mqtt_client.Client) -> Topology:
     topic = os.environ.get("MQTT_TOPIC", "bitswan/topology")
-    active = await retrieve_active_pres()
-    inactive = await retrieve_inactive_pres()
+    active = await retrieve_active_automations()
+    inactive = await retrieve_inactive_automations()
 
-    pres = inactive.topology.copy()
-    pres.update(active.topology)
+    automations = inactive.topology.copy()
+    automations.update(active.topology)
 
-    topology = Topology(topology=pres, display_style="list")
+    topology = Topology(topology=automations, display_style="list")
 
     client.publish(
         topic,
@@ -135,7 +133,7 @@ async def lifespan(app: FastAPI):
 
     if result:
         scheduler.add_job(
-            functools.partial(publish_pres, mqtt_resource.get_client()),
+            functools.partial(publish_automations, mqtt_resource.get_client()),
             trigger="interval",
             seconds=10,
         )
