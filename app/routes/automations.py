@@ -51,7 +51,7 @@ async def create_automation(deployment_id: str, file: UploadFile = File(...), au
 
 @router.delete("/{deployment_id}")
 async def delete_automation(deployment_id: str, automation_service: AutomationService = Depends(get_automation_service)):
-    return automation_service.delete_automation(deployment_id)
+    return await automation_service.delete_automation(deployment_id)
 
 
 

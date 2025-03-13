@@ -105,6 +105,7 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
 
     body = [
         {
+            "@id": deployment_id,
             "match": [{"host": ["{}.{}".format(deployment_id, gitops_domain)]}],
             "handle": [
                 {
@@ -131,6 +132,12 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
     response = requests.post(routes_url, json=body)
     return response.status_code == 200
 
+def remove_route_from_caddy(deployment_id: str):
+    caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
+    routes_url = "{}/id/{}".format(caddy_url, deployment_id)
+    response = requests.delete(routes_url)
+    return response.status_code == 200
+
 def calculate_checksum(file_path):
     sha256_hash = hashlib.sha256()
     with open(file_path, "rb") as f:
@@ -140,7 +147,7 @@ def calculate_checksum(file_path):
 
 
 async def update_git(
-    bitswan_home: str, bitswan_home_host: str, deployment_id: str, checksum: str
+    bitswan_home: str, bitswan_home_host: str, deployment_id: str
 ):
     host_path = os.environ.get("HOST_PATH")
 
@@ -173,7 +180,7 @@ async def update_git(
             "--author",
             "gitops <info@bitswan.space>",
             "-m",
-            f"Update deployment {deployment_id} with checksum {checksum}",
+            f"Update deployment {deployment_id}",
             cwd=bitswan_dir,
         )
 

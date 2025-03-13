@@ -6,7 +6,7 @@ import zipfile
 import docker
 import yaml
 from app.models import DeployedPRE
-from app.utils import add_route_to_caddy, calculate_checksum, calculate_uptime, docker_compose_up, read_bitswan_yaml, read_pipeline_conf, update_git
+from app.utils import add_route_to_caddy, calculate_checksum, calculate_uptime, docker_compose_up, read_bitswan_yaml, read_pipeline_conf, remove_route_from_caddy, update_git
 from fastapi import UploadFile, HTTPException
 
 class AutomationService:
@@ -103,7 +103,7 @@ class AutomationService:
                 with open(bitswan_yaml_path, "w") as f:
                     yaml.dump(data, f)
 
-                await update_git(bitswan_path, bitswan_path_host, deployment_id, checksum)
+                await update_git(bitswan_path, bitswan_path_host, deployment_id)
 
                 return {
                     "message": "File processed successfully",
@@ -120,8 +120,28 @@ class AutomationService:
                     )
                 os.unlink(temp_file.name)
 
-    def delete_automation(self, deployment_id: str):
-        pass
+    async def delete_automation(self, deployment_id: str):
+        gitops_dir = os.path.join(self.bs_home, "gitops")
+        bs_yaml = read_bitswan_yaml(gitops_dir)
+        bs_yaml["deployments"].pop(deployment_id)
+        with open(os.path.join(gitops_dir, "bitswan.yaml"), "w") as f:
+            yaml.dump(bs_yaml, f)
+
+        await update_git(gitops_dir, self.bs_home_host, deployment_id)
+        result = remove_route_from_caddy(deployment_id)
+
+        if not result:
+            message = f"Deployment {deployment_id} deleted successfully, but failed to remove route from Caddy"
+        else:
+            message = f"Deployment {deployment_id} deleted successfully"
+
+        self.remove_automation(deployment_id)
+        return {
+            "status": "success",
+            "message": message
+        }
+            
+            
 
     async def deploy_automation(self, deployment_id: str):
         os.environ["COMPOSE_PROJECT_NAME"] = self.gitops_id
@@ -248,7 +268,7 @@ class AutomationService:
             yaml.dump(bs_yaml, f)
 
         # update git
-        await update_git(gitops_dir, self.bs_home_host, deployment_id, bs_yaml["deployments"][deployment_id]["checksum"])
+        await update_git(gitops_dir, self.bs_home_host, deployment_id)
 
         result = await self.deploy_automation(deployment_id)
 
@@ -263,7 +283,7 @@ class AutomationService:
             yaml.dump(bs_yaml, f)
 
         # update git
-        await update_git(gitops_dir, self.bs_home_host, deployment_id, bs_yaml["deployments"][deployment_id]["checksum"])
+        await update_git(gitops_dir, self.bs_home_host, deployment_id)
 
         self.remove_automation(deployment_id)
 
