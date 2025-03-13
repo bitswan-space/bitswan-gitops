@@ -1,9 +1,12 @@
 import asyncio
 from configparser import ConfigParser
 from datetime import datetime, timezone
+import hashlib
 import os
 from typing import Any
 import shlex
+
+from filelock import FileLock
 import humanize
 import yaml
 import requests
@@ -127,3 +130,84 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
     routes_url = "{}/config/apps/http/servers/srv0/routes/...".format(caddy_url)
     response = requests.post(routes_url, json=body)
     return response.status_code == 200
+
+def calculate_checksum(file_path):
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+
+async def update_git(
+    bitswan_home: str, bitswan_home_host: str, deployment_id: str, checksum: str
+):
+    host_path = os.environ.get("HOST_PATH")
+
+    if host_path:
+        bitswan_dir = bitswan_home_host
+    else:
+        bitswan_dir = bitswan_home
+
+    lock_file = os.path.join(bitswan_home, "bitswan_git.lock")
+
+    bitswan_yaml_path = os.path.join(bitswan_dir, "bitswan.yaml")
+
+    lock = FileLock(lock_file, timeout=30)
+
+    with lock:
+        has_remote = await call_git_command(
+            "git", "remote", "show", "origin", cwd=bitswan_dir
+        )
+
+        if has_remote:
+            res = await call_git_command("git", "pull", cwd=bitswan_dir)
+            if not res:
+                raise Exception("Error pulling from git")
+
+        await call_git_command("git", "add", bitswan_yaml_path, cwd=bitswan_dir)
+
+        await call_git_command(
+            "git",
+            "commit",
+            "--author",
+            "gitops <info@bitswan.space>",
+            "-m",
+            f"Update deployment {deployment_id} with checksum {checksum}",
+            cwd=bitswan_dir,
+        )
+
+        if has_remote:
+            res = await call_git_command("git", "push", cwd=bitswan_dir)
+            if not res:
+                raise Exception("Error pushing to git")
+            
+async def docker_compose_up(
+    bitswan_dir: str, docker_compose: str, deployment_info: dict[str, Any]
+) -> None:
+    async def setup_asyncio_process(cmd: list[Any]) -> dict[str, Any]:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=bitswan_dir,
+        )
+
+        stdout, stderr = await proc.communicate(input=docker_compose.encode())
+
+        res = {
+            "cmd": cmd,
+            "stdout": stdout.decode("utf-8"),
+            "stderr": stderr.decode("utf-8"),
+            "return_code": proc.returncode,
+        }
+        return res
+
+    up_result = await setup_asyncio_process(
+        ["docker", "compose", "-f", "/dev/stdin", "up", "-d", "--remove-orphans"]
+    )
+
+    return {
+        "up_result": up_result,
+    }
