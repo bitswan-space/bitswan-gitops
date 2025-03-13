@@ -5,7 +5,7 @@ from tempfile import NamedTemporaryFile
 import zipfile
 import docker
 import yaml
-from app.models import DeployedPRE
+from app.models import DeployedAutomation
 from app.utils import (
     add_route_to_caddy,
     calculate_checksum,
@@ -36,7 +36,7 @@ class AutomationService:
             return []
 
         pres = {
-            deployment_id: DeployedPRE(
+            deployment_id: DeployedAutomation(
                 container_id=None,
                 endpoint_name=None,
                 created_at=None,
@@ -65,7 +65,7 @@ class AutomationService:
         for container in containers:
             deployment_id = container.labels["gitops.deployment_id"]
             if deployment_id in pres:
-                pres[deployment_id] = DeployedPRE(
+                pres[deployment_id] = DeployedAutomation(
                     container_id=container.id,
                     endpoint_name=info["Name"],
                     created_at=datetime.strptime(

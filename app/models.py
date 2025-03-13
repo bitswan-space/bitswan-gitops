@@ -27,7 +27,7 @@ class Topology(BaseModel):
     display_style: str
 
 
-class DeployedPRE(BaseModel):
+class DeployedAutomation(BaseModel):
     container_id: str | None
     endpoint_name: str | None
     created_at: datetime | None
