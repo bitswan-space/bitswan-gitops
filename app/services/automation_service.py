@@ -52,15 +52,15 @@ class AutomationService:
         }
 
         info = self.docker_client.info()
-        containers: list[
-            docker.models.containers.Container
-        ] = self.docker_client.containers.list(
-            filters={
-                "label": [
-                    "space.bitswan.pipeline.protocol-version",
-                    "gitops.deployment_id",
-                ]
-            }
+        containers: list[docker.models.containers.Container] = (
+            self.docker_client.containers.list(
+                filters={
+                    "label": [
+                        "space.bitswan.pipeline.protocol-version",
+                        "gitops.deployment_id",
+                    ]
+                }
+            )
         )
 
         # updated pres with active containers
