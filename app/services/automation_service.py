@@ -115,7 +115,9 @@ class AutomationService:
                 with open(bitswan_yaml_path, "w") as f:
                     yaml.dump(data, f)
 
-                await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id)
+                await update_git(
+                    self.gitops_dir, self.gitops_dir_host, deployment_id, "create"
+                )
 
                 return {
                     "message": "File processed successfully",
@@ -139,7 +141,7 @@ class AutomationService:
         with open(os.path.join(self.gitops_dir, "bitswan.yaml"), "w") as f:
             yaml.dump(bs_yaml, f)
 
-        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id)
+        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "delete")
         result = remove_route_from_caddy(deployment_id)
 
         if not result:
@@ -280,7 +282,7 @@ class AutomationService:
             yaml.dump(bs_yaml, f)
 
         # update git
-        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id)
+        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "activate")
 
         result = await self.deploy_automation(deployment_id)
 
@@ -293,7 +295,7 @@ class AutomationService:
             yaml.dump(bs_yaml, f)
 
         # update git
-        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id)
+        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "deactivate")
 
         self.remove_automation(deployment_id)
 

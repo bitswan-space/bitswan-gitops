@@ -149,7 +149,7 @@ def calculate_checksum(file_path):
     return sha256_hash.hexdigest()
 
 
-async def update_git(bitswan_home: str, bitswan_home_host: str, deployment_id: str):
+async def update_git(bitswan_home: str, bitswan_home_host: str, deployment_id: str, action: str):
     host_path = os.environ.get("HOST_PATH")
 
     if host_path:
@@ -181,7 +181,7 @@ async def update_git(bitswan_home: str, bitswan_home_host: str, deployment_id: s
             "--author",
             "gitops <info@bitswan.space>",
             "-m",
-            f"Update deployment {deployment_id}",
+            f"{action} deployment {deployment_id}",
             cwd=bitswan_dir,
         )
 
