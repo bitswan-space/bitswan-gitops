@@ -2,7 +2,7 @@ services:
   gitops-dev:
     build: .
     restart: always
-    priviledged: true
+    privileged: true
     pid: host
     ports:
       - "8079:8079"
