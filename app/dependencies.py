@@ -2,6 +2,7 @@ import os
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.services.automation_service import AutomationService
+from app.services.image_service import ImageService
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(HTTPBearer())):
@@ -12,6 +13,10 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Security(HTTPBearer
             detail="Unauthorized: Invalid or missing token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def get_image_service():
+    return ImageService()
 
 
 def get_automation_service():
