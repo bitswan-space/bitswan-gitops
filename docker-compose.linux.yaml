@@ -1,0 +1,27 @@
+services:
+  gitops-dev:
+    build: .
+    restart: always
+    priviledged: true
+    pid: host
+    ports:
+      - "8079:8079"
+    networks:
+      - bitswan_network
+    volumes:
+      - ${HOME}/.config/bitswan/dev-gitops/gitops:/repo/gitops
+      - ${HOME}/.config/bitswan/dev-gitops/secrets:/repo/secrets
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DEV_GITOPS_SRC}:/src/app
+    environment:
+      - BITSWAN_GITOPS_DIR=/repo
+      - BITSWAN_GITOPS_DIR_HOST=${HOME}/.config/bitswan/dev-gitops/gitops
+      - BITSWAN_GITOPS_SECRET=${DEV_GITOPS_SECRET}
+      - BITSWAN_GITOPS_DOMAIN=${DEV_GITOPS_DOMAIN}
+      - HOST_PATH=$PATH
+      - HOST_HOME=$HOME
+      - HOST_USER=$USER
+
+networks:
+  bitswan_network:
+    external: true

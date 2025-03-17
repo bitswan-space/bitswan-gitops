@@ -5,3 +5,4 @@ gitops.py
 *.pyo
 *.pyd
 .venv
+.env
