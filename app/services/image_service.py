@@ -1,7 +1,5 @@
 from datetime import datetime
 import os
-import shutil
-import threading
 from tempfile import NamedTemporaryFile
 import zipfile
 
