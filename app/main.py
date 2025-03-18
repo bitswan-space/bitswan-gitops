@@ -6,8 +6,12 @@ from app.routes.images import router as images_router
 from app.dependencies import verify_token
 
 
+import os
 
-app = FastAPI(lifespan=lifespan, dependencies=[Depends(verify_token)], debug=True)
+
+debug = os.environ.get("DEBUG", "false").lower() == "true"
+
+app = FastAPI(lifespan=lifespan, dependencies=[Depends(verify_token)], debug=debug)
 
 app.include_router(automations_router)
 app.include_router(images_router)
