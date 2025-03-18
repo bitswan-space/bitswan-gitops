@@ -12,6 +12,7 @@ async def get_images(
 ):
     return image_service.get_images()
 
+
 @router.get("/{image_tag}/logs")
 async def get_image_logs(
     image_tag: str,
