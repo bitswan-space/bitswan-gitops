@@ -6,7 +6,6 @@ import os
 
 
 def main():
-
     debug = os.environ.get("DEBUG", "false").lower() == "true"
     log_level = "debug" if debug else "info"
     uvicorn.run(
