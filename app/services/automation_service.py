@@ -31,6 +31,33 @@ class AutomationService:
         self.gitops_dir_host = os.path.join(self.bs_home_host, "gitops")
         self.secrets_dir = os.path.join(self.bs_home, "secrets")
 
+    def get_workspace_name(self):
+        return os.path.basename(self.gitops_dir_host)
+
+    def get_container(self, deployment_id):
+        return self.docker_client.containers.list(
+            all=True,  # Include stopped containers
+            filters={
+                "label": [
+                    "space.bitswan.pipeline.protocol-version",
+                    f"gitops.deployment_id={deployment_id}",
+                    f"gitops.workspace={self.get_workspace_name()}",
+                ]
+            },
+        )
+
+    def get_containers(self):
+        return self.docker_client.containers.list(
+            all=True,  # Include stopped containers
+            filters={
+                "label": [
+                    "space.bitswan.pipeline.protocol-version",
+                    "gitops.deployment_id",
+                    f"gitops.workspace={self.get_workspace_name()}",
+                ]
+            },
+        )
+
     def get_automations(self):
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
@@ -52,16 +79,7 @@ class AutomationService:
         }
 
         info = self.docker_client.info()
-        containers: list[docker.models.containers.Container] = (
-            self.docker_client.containers.list(
-                filters={
-                    "label": [
-                        "space.bitswan.pipeline.protocol-version",
-                        "gitops.deployment_id",
-                    ]
-                }
-            )
-        )
+        containers: list[docker.models.containers.Container] = self.get_containers()
 
         # updated pres with active containers
         for container in containers:
@@ -142,7 +160,7 @@ class AutomationService:
             yaml.dump(bs_yaml, f)
 
         await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "delete")
-        result = remove_route_from_caddy(deployment_id)
+        result = remove_route_from_caddy(deployment_id, self.get_workspace_name())
 
         if not result:
             message = f"Deployment {deployment_id} deleted successfully, but failed to remove route from Caddy"
@@ -199,15 +217,7 @@ class AutomationService:
         }
 
     def start_automation(self, deployment_id: str):
-        containers = self.docker_client.containers.list(
-            all=True,  # Include stopped containers
-            filters={
-                "label": [
-                    "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}",
-                ]
-            },
-        )
+        containers = self.get_container(deployment_id)
 
         if not containers:
             raise HTTPException(
@@ -225,15 +235,7 @@ class AutomationService:
         }
 
     def stop_automation(self, deployment_id: str):
-        containers = self.docker_client.containers.list(
-            all=True,  # Include stopped containers
-            filters={
-                "label": [
-                    "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}",
-                ]
-            },
-        )
+        containers = self.get_container(deployment_id)
 
         if not containers:
             raise HTTPException(
@@ -250,15 +252,7 @@ class AutomationService:
         }
 
     def restart_automation(self, deployment_id: str):
-        containers = self.docker_client.containers.list(
-            all=True,  # Include stopped containers
-            filters={
-                "label": [
-                    "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}",
-                ]
-            },
-        )
+        containers = self.get_container(deployment_id)
 
         if not containers:
             raise HTTPException(
@@ -309,15 +303,7 @@ class AutomationService:
         }
 
     def get_automation_logs(self, deployment_id: str, lines: int = 100):
-        containers = self.docker_client.containers.list(
-            all=True,  # Include stopped containers
-            filters={
-                "label": [
-                    "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}",
-                ]
-            },
-        )
+        containers = self.get_container(deployment_id)
 
         if not containers:
             raise HTTPException(
@@ -332,15 +318,7 @@ class AutomationService:
         return {"status": "success", "logs": logs.split("\n")}
 
     def remove_automation(self, deployment_id: str):
-        containers = self.docker_client.containers.list(
-            all=True,  # Include stopped containers
-            filters={
-                "label": [
-                    "space.bitswan.pipeline.protocol-version",
-                    f"gitops.deployment_id={deployment_id}",
-                ]
-            },
-        )
+        containers = self.get_container(deployment_id)
 
         if not containers:
             raise HTTPException(
@@ -380,10 +358,11 @@ class AutomationService:
                 pipeline_conf = read_pipeline_conf(source_dir)
 
             entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
-            entry["container_name"] = deployment_id
+            entry["container_name"] = f"{self.get_workspace_name()}__{deployment_id}"
             entry["restart"] = "always"
             entry["labels"] = {
                 "gitops.deployment_id": deployment_id,
+                "gitops.workspace": self.get_workspace_name(),
             }
             entry["image"] = "bitswan/pipeline-runtime-environment:latest"
 

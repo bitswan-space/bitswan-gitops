@@ -106,7 +106,7 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
 
     body = [
         {
-            "@id": deployment_id,
+            "@id": get_caddy_id(deployment_id, gitops_domain),
             "match": [{"host": ["{}.{}".format(deployment_id, gitops_domain)]}],
             "handle": [
                 {
@@ -134,9 +134,15 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
     return response.status_code == 200
 
 
-def remove_route_from_caddy(deployment_id: str):
+def get_caddy_id(deployment_id, workspace_name):
+    return "{}.{}".format(deployment_id, workspace_name)
+
+
+def remove_route_from_caddy(deployment_id: str, workspace_name: str):
     caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
-    routes_url = "{}/id/{}".format(caddy_url, deployment_id)
+    routes_url = "{}/id/{}".format(
+        caddy_url, get_caddy_id(deployment_id, workspace_name)
+    )
     response = requests.delete(routes_url)
     return response.status_code == 200
 
