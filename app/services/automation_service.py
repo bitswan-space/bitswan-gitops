@@ -105,6 +105,7 @@ class AutomationService:
             content = await file.read()
             temp_file.write(content)
 
+            temp_file.close()
             checksum = calculate_checksum(temp_file.name)
             output_dir = f"{checksum}"
             old_deploymend_checksum = None
@@ -115,7 +116,6 @@ class AutomationService:
                 output_dir = os.path.join(self.gitops_dir, output_dir)
 
                 os.makedirs(output_dir, exist_ok=True)
-                temp_file.close()
                 with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
                     zip_ref.extractall(output_dir)
 
