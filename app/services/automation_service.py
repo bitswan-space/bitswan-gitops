@@ -115,6 +115,7 @@ class AutomationService:
                 output_dir = os.path.join(self.gitops_dir, output_dir)
 
                 os.makedirs(output_dir, exist_ok=True)
+                temp_file.close()
                 with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
                     zip_ref.extractall(output_dir)
 
