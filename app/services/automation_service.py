@@ -105,6 +105,7 @@ class AutomationService:
             content = await file.read()
             temp_file.write(content)
 
+            temp_file.close()
             checksum = calculate_checksum(temp_file.name)
             output_dir = f"{checksum}"
             old_deploymend_checksum = None
