@@ -74,12 +74,15 @@ class AutomationService:
                 status=None,
                 deployment_id=deployment_id,
                 active=bs_yaml["deployments"][deployment_id].get("active", False),
+                automation_url=None
             )
             for deployment_id in bs_yaml["deployments"]
         }
 
         info = self.docker_client.info()
         containers: list[docker.models.containers.Container] = self.get_containers()
+
+        gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN",None)
 
         # updated pres with active containers
         for container in containers:
@@ -96,6 +99,7 @@ class AutomationService:
                     status=calculate_uptime(container.attrs["State"]["StartedAt"]),
                     deployment_id=deployment_id,
                     active=pres[deployment_id].active,
+                    automation_url=f"https://{deployment_id}.{gitops_domain}"
                 )
 
         return list(pres.values())
