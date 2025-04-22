@@ -22,6 +22,11 @@ class MQTTResource:
                     print(f"Failed to connect, return code {rc}")
 
             self.client.on_connect = on_connect
+            username, password = os.environ.get("MQTT_USERNAME"), os.environ.get(
+                "MQTT_PASSWORD"
+            )
+            if username and password:
+                self.client.username_pw_set(username, password)
             self.client.connect(broker, port)
             self.client.loop_start()
             print("MQTT client connected and loop started")
