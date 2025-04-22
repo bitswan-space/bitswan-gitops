@@ -107,7 +107,7 @@ async def retrieve_inactive_automations() -> Topology:
 
 
 async def publish_automations(client: mqtt_client.Client) -> Topology:
-    topic = os.environ.get("MQTT_TOPIC", "bitswan/topology")
+    topic = os.environ.get("MQTT_TOPIC", "/topology")
     active = await retrieve_active_automations()
     inactive = await retrieve_inactive_automations()
 
