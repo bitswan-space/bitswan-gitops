@@ -26,7 +26,9 @@ class AutomationService:
         self.bs_home_host = os.environ.get(
             "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
         )
-        self.workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+        self.workspace_name = os.environ.get(
+            "BITSWAN_WORKSPACE_NAME", "workspace-local"
+        )
         self.workspace_id = os.environ.get("BITSWAN_WORKSPACE_ID")
         self.aoc_url = os.environ.get("BITSWAN_AOC_URL")
         self.aoc_token = os.environ.get("BITSWAN_AOC_TOKEN")
@@ -339,12 +341,10 @@ class AutomationService:
             "status": "success",
             "message": f"Container for deployment {deployment_id} removed successfully",
         }
-    
+
     def get_emqx_jwt_token(self, deployment_id: str):
         url = f"{self.aoc_url}/api/workspaces/{self.workspace_id}/pipelines/{deployment_id}/emqx/jwt"
-        headers = {
-            "Authorization": f"Bearer {self.aoc_token}"
-        }
+        headers = {"Authorization": f"Bearer {self.aoc_token}"}
         response = requests.get(url, headers=headers)
         if response.status_code != 200:
             raise HTTPException(status_code=500, detail="Error generating JWT token")
