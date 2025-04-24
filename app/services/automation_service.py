@@ -5,6 +5,7 @@ from tempfile import NamedTemporaryFile
 import zipfile
 import docker
 import yaml
+import requests
 from app.models import DeployedAutomation
 from app.utils import (
     add_route_to_caddy,
@@ -25,7 +26,10 @@ class AutomationService:
         self.bs_home_host = os.environ.get(
             "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
         )
-        self.gitops_id = os.environ.get("BITSWAN_GITOPS_ID", "gitops-local")
+        self.workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+        self.workspace_id = os.environ.get("BITSWAN_WORKSPACE_ID")
+        self.aoc_url = os.environ.get("BITSWAN_AOC_URL")
+        self.aoc_token = os.environ.get("BITSWAN_AOC_TOKEN")
         self.docker_client = docker.from_env()
         self.gitops_dir = os.path.join(self.bs_home, "gitops")
         self.gitops_dir_host = os.path.join(self.bs_home_host, "gitops")
@@ -335,6 +339,16 @@ class AutomationService:
             "status": "success",
             "message": f"Container for deployment {deployment_id} removed successfully",
         }
+    
+    def get_emqx_jwt_token(self, deployment_id: str):
+        url = f"{self.aoc_url}/api/workspaces/{self.workspace_id}/pipelines/{deployment_id}/emqx/jwt"
+        headers = {
+            "Authorization": f"Bearer {self.aoc_token}"
+        }
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Error generating JWT token")
+        return response.json()
 
     def generate_docker_compose(self, bs_yaml: dict):
         dc = {
@@ -358,7 +372,19 @@ class AutomationService:
             else:
                 pipeline_conf = read_pipeline_conf(source_dir)
 
-            entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
+            if self.workspace_id and self.aoc_url and self.aoc_token:
+                # generate jwt token for automation
+                jwt_token_response = self.get_emqx_jwt_token(deployment_id)
+                jwt_token = jwt_token_response.get("token")
+                emqx_url = jwt_token_response.get("url")
+                entry["environment"] = {
+                    "MQTT_USERNAME": deployment_id,
+                    "MQTT_PASSWORD": jwt_token,
+                    "MQTT_BROKER_URL": emqx_url,
+                    "DEPLOYMENT_ID": deployment_id,
+                }
+            else:
+                entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
             entry["container_name"] = f"{self.get_workspace_name()}__{deployment_id}"
             entry["restart"] = "always"
             entry["labels"] = {
