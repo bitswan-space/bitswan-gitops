@@ -89,9 +89,10 @@ def test_read_pipeline_conf():
         assert config.get("pipeline1", "key1") == "value1"
 
 
-def generate_url(deployment_id,gitops_domain,full=False):
+def generate_url(deployment_id, gitops_domain, full=False):
     url = "{}.{}".format(deployment_id, gitops_domain)
     return f"https://{url}" if full else url
+
 
 def add_route_to_caddy(deployment_id: str, port: str) -> bool:
     caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
@@ -111,7 +112,7 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
     body = [
         {
             "@id": get_caddy_id(deployment_id, gitops_domain),
-            "match": [{"host": [generate_url(deployment_id,gitops_domain,False)]}],
+            "match": [{"host": [generate_url(deployment_id, gitops_domain, False)]}],
             "handle": [
                 {
                     "handler": "subroute",

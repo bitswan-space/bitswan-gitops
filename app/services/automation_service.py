@@ -93,7 +93,7 @@ class AutomationService:
                     "gitops.intended_exposed", "false"
                 )
 
-                url = generate_url(deployment_id,gitops_domain,True)
+                url = generate_url(deployment_id, gitops_domain, True)
 
                 if label != "true":
                     url = None
