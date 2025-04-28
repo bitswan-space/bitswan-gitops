@@ -74,7 +74,7 @@ class AutomationService:
                 status=None,
                 deployment_id=deployment_id,
                 active=bs_yaml["deployments"][deployment_id].get("active", False),
-                automation_url=None
+                automation_url=None,
             )
             for deployment_id in bs_yaml["deployments"]
         }
@@ -82,17 +82,19 @@ class AutomationService:
         info = self.docker_client.info()
         containers: list[docker.models.containers.Container] = self.get_containers()
 
-        gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN",None)
+        gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", None)
 
         # updated pres with active containers
         for container in containers:
             deployment_id = container.labels["gitops.deployment_id"]
             if deployment_id in pres:
-                label = container.attrs["Config"]["Labels"].get("gitops.intended_exposed","false")
+                label = container.attrs["Config"]["Labels"].get(
+                    "gitops.intended_exposed", "false"
+                )
 
-                url=f"https://{deployment_id}.{gitops_domain}"
+                url = f"https://{deployment_id}.{gitops_domain}"
 
-                if label != 'true':
+                if label != "true":
                     url = None
 
                 pres[deployment_id] = DeployedAutomation(
@@ -106,7 +108,7 @@ class AutomationService:
                     status=calculate_uptime(container.attrs["State"]["StartedAt"]),
                     deployment_id=deployment_id,
                     active=pres[deployment_id].active,
-                    automation_url=url
+                    automation_url=url,
                 )
 
         return list(pres.values())
@@ -431,7 +433,7 @@ class AutomationService:
                 )
                 if expose and port:
                     result = add_route_to_caddy(deployment_id, port)
-                    entry["labels"]["gitops.intended_exposed"]= "true"
+                    entry["labels"]["gitops.intended_exposed"] = "true"
                     if not result:
                         raise HTTPException(
                             status_code=500, detail="Error adding route to Caddy"
