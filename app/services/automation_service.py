@@ -11,6 +11,7 @@ from app.utils import (
     calculate_checksum,
     calculate_uptime,
     docker_compose_up,
+    generate_url,
     read_bitswan_yaml,
     read_pipeline_conf,
     remove_route_from_caddy,
@@ -92,7 +93,7 @@ class AutomationService:
                     "gitops.intended_exposed", "false"
                 )
 
-                url = f"https://{deployment_id}.{gitops_domain}"
+                url = generate_url(deployment_id,gitops_domain,True)
 
                 if label != "true":
                     url = None
