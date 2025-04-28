@@ -88,6 +88,13 @@ class AutomationService:
         for container in containers:
             deployment_id = container.labels["gitops.deployment_id"]
             if deployment_id in pres:
+                label = container.attrs["Config"]["Labels"].get("gitops.intended_exposed","false")
+
+                url=f"https://{deployment_id}.{gitops_domain}"
+
+                if label != 'true':
+                    url = None
+
                 pres[deployment_id] = DeployedAutomation(
                     container_id=container.id,
                     endpoint_name=info["Name"],
@@ -99,7 +106,7 @@ class AutomationService:
                     status=calculate_uptime(container.attrs["State"]["StartedAt"]),
                     deployment_id=deployment_id,
                     active=pres[deployment_id].active,
-                    automation_url=f"https://{deployment_id}.{gitops_domain}"
+                    automation_url=url
                 )
 
         return list(pres.values())
@@ -368,6 +375,7 @@ class AutomationService:
             entry["labels"] = {
                 "gitops.deployment_id": deployment_id,
                 "gitops.workspace": self.get_workspace_name(),
+                "gitops.intended_exposed": "false",
             }
             entry["image"] = "bitswan/pipeline-runtime-environment:latest"
 
@@ -423,6 +431,7 @@ class AutomationService:
                 )
                 if expose and port:
                     result = add_route_to_caddy(deployment_id, port)
+                    entry["labels"]["gitops.intended_exposed"]= "true"
                     if not result:
                         raise HTTPException(
                             status_code=500, detail="Error adding route to Caddy"
