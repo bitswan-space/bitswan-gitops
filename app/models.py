@@ -36,6 +36,7 @@ class DeployedAutomation(BaseModel):
     status: str | None
     deployment_id: str | None
     active: bool
+    automation_url: str | None
 
 
 def encode_pydantic_model(data: BaseModel) -> bytearray:
