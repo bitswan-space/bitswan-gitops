@@ -99,7 +99,7 @@ class AutomationService:
                     "gitops.intended_exposed", "false"
                 )
 
-                url = generate_url(deployment_id,gitops_domain,True)
+                url = generate_url(deployment_id, gitops_domain, True)
 
                 if label != "true":
                     url = None
@@ -192,7 +192,7 @@ class AutomationService:
         return {"status": "success", "message": message}
 
     async def deploy_automation(self, deployment_id: str):
-        os.environ["COMPOSE_PROJECT_NAME"] = self.gitops_id
+        os.environ["COMPOSE_PROJECT_NAME"] = self.get_workspace_name()
 
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
@@ -216,7 +216,7 @@ class AutomationService:
         }
 
     async def deploy_automations(self):
-        os.environ["COMPOSE_PROJECT_NAME"] = self.gitops_id
+        os.environ["COMPOSE_PROJECT_NAME"] = self.get_workspace_name()
 
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
