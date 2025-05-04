@@ -27,19 +27,13 @@ class AutomationService:
         self.bs_home_host = os.environ.get(
             "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
         )
-        self.workspace_name = os.environ.get(
-            "BITSWAN_WORKSPACE_NAME", "workspace-local"
-        )
-        self.workspace_id = os.environ.get("BITSWAN_WORKSPACE_ID")
+        self.workspace_id = os.environ.get("BITSWAN_GITOPS_ID", "workspace-local")
         self.aoc_url = os.environ.get("BITSWAN_AOC_URL")
         self.aoc_token = os.environ.get("BITSWAN_AOC_TOKEN")
         self.docker_client = docker.from_env()
         self.gitops_dir = os.path.join(self.bs_home, "gitops")
         self.gitops_dir_host = os.path.join(self.bs_home_host, "gitops")
         self.secrets_dir = os.path.join(self.bs_home, "secrets")
-
-    def get_workspace_name(self):
-        return os.path.basename(self.gitops_dir_host)
 
     def get_container(self, deployment_id):
         return self.docker_client.containers.list(
@@ -48,7 +42,7 @@ class AutomationService:
                 "label": [
                     "space.bitswan.pipeline.protocol-version",
                     f"gitops.deployment_id={deployment_id}",
-                    f"gitops.workspace={self.get_workspace_name()}",
+                    f"gitops.workspace={self.workspace_id}",
                 ]
             },
         )
@@ -60,7 +54,7 @@ class AutomationService:
                 "label": [
                     "space.bitswan.pipeline.protocol-version",
                     "gitops.deployment_id",
-                    f"gitops.workspace={self.get_workspace_name()}",
+                    f"gitops.workspace={self.workspace_id}",
                 ]
             },
         )
@@ -181,7 +175,7 @@ class AutomationService:
             yaml.dump(bs_yaml, f)
 
         await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "delete")
-        result = remove_route_from_caddy(deployment_id, self.get_workspace_name())
+        result = remove_route_from_caddy(deployment_id, self.workspace_id)
 
         if not result:
             message = f"Deployment {deployment_id} deleted successfully, but failed to remove route from Caddy"
@@ -192,8 +186,7 @@ class AutomationService:
         return {"status": "success", "message": message}
 
     async def deploy_automation(self, deployment_id: str):
-        os.environ["COMPOSE_PROJECT_NAME"] = self.get_workspace_name()
-
+        os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_id
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         if not bs_yaml:
@@ -216,8 +209,7 @@ class AutomationService:
         }
 
     async def deploy_automations(self):
-        os.environ["COMPOSE_PROJECT_NAME"] = self.get_workspace_name()
-
+        os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_id
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         if not bs_yaml:
@@ -404,11 +396,11 @@ class AutomationService:
                 }
             else:
                 entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
-            entry["container_name"] = f"{self.get_workspace_name()}__{deployment_id}"
+            entry["container_name"] = f"{self.workspace_id}__{deployment_id}"
             entry["restart"] = "always"
             entry["labels"] = {
                 "gitops.deployment_id": deployment_id,
-                "gitops.workspace": self.get_workspace_name(),
+                "gitops.workspace": self.workspace_id,
                 "gitops.intended_exposed": "false",
             }
             entry["image"] = "bitswan/pipeline-runtime-environment:latest"
