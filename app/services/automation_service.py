@@ -230,7 +230,12 @@ class AutomationService:
 
         for result in deployment_result.values():
             if result["return_code"] != 0:
-                raise HTTPException(status_code=500, detail="Error deploying services")
+                print(result["stdout"])
+                print(result["stderr"])
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error deploying services: \nstdout:\n {result['stdout']}\nstderr:\n{result['stderr']}\n",
+                )
         return {
             "message": "Deployed services successfully",
             "deployments": list(deployments.keys()),
