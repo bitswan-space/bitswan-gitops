@@ -21,12 +21,14 @@ from .mqtt import mqtt_resource
 async def retrieve_active_automations() -> Topology:
     client = docker.from_env()
     info = client.info()
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
 
     containers: list[docker.models.containers.Container] = client.containers.list(
         filters={
             "label": [
                 "space.bitswan.pipeline.protocol-version",
                 "gitops.deployment_id",
+                f"gitops.workspace={workspace_name}",
             ]
         }
     )
@@ -37,7 +39,7 @@ async def retrieve_active_automations() -> Topology:
                 "wires": [],
                 "properties": {
                     "container_id": c.id,
-                    "endpoint_name": info["Name"],  # FIXME: i hate docker sdk
+                    "endpoint_name": workspace_name,  # FIXME: i hate docker sdk
                     "created_at": datetime.strptime(
                         c.attrs["Created"][:26] + "Z", "%Y-%m-%dT%H:%M:%S.%fZ"
                     ),  # how tf does this work
