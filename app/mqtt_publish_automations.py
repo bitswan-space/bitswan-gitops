@@ -20,7 +20,6 @@ from .mqtt import mqtt_resource
 
 async def retrieve_active_automations() -> Topology:
     client = docker.from_env()
-    info = client.info()
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
 
     containers: list[docker.models.containers.Container] = client.containers.list(
