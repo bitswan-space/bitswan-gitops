@@ -124,7 +124,11 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
                                 {
                                     "handler": "reverse_proxy",
                                     "upstreams": [
-                                        {"dial": "{}__{}:{}".format(workspace_name, deployment_id, port)}
+                                        {
+                                            "dial": "{}__{}:{}".format(
+                                                workspace_name, deployment_id, port
+                                            )
+                                        }
                                     ],
                                 }
                             ]

@@ -28,7 +28,9 @@ class AutomationService:
             "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
         )
         self.workspace_id = os.environ.get("BITSWAN_WORKSPACE_ID", "")
-        self.workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+        self.workspace_name = os.environ.get(
+            "BITSWAN_WORKSPACE_NAME", "workspace-local"
+        )
         self.aoc_url = os.environ.get("BITSWAN_AOC_URL")
         self.aoc_token = os.environ.get("BITSWAN_AOC_TOKEN")
         self.docker_client = docker.from_env()
