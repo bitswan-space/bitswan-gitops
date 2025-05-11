@@ -89,8 +89,8 @@ def test_read_pipeline_conf():
         assert config.get("pipeline1", "key1") == "value1"
 
 
-def generate_url(workspace_id, deployment_id, gitops_domain, full=False):
-    url = "{}-{}.{}".format(workspace_id, deployment_id, gitops_domain)
+def generate_url(workspace_name, deployment_id, gitops_domain, full=False):
+    url = "{}-{}.{}".format(workspace_name, deployment_id, gitops_domain)
     return f"https://{url}" if full else url
 
 
@@ -98,8 +98,8 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
     caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
     upstreams = requests.get(f"{caddy_url}/reverse_proxy/upstreams")
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
-    workspace_id = os.environ.get("BITSWAN_GITOPS_ID", "workspace-local")
-    endpoint = generate_url(workspace_id, deployment_id, gitops_domain, False)
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "")
+    endpoint = generate_url(workspace_name, deployment_id, gitops_domain, False)
 
     if upstreams.status_code != 200:
         return False
@@ -113,7 +113,7 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
 
     body = [
         {
-            "@id": get_caddy_id(deployment_id, workspace_id),
+            "@id": get_caddy_id(deployment_id, workspace_name),
             "match": [{"host": [endpoint]}],
             "handle": [
                 {
@@ -124,7 +124,7 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
                                 {
                                     "handler": "reverse_proxy",
                                     "upstreams": [
-                                        {"dial": "{}__{}:{}".format(workspace_id, deployment_id, port)}
+                                        {"dial": "{}__{}:{}".format(workspace_name, deployment_id, port)}
                                     ],
                                 }
                             ]
