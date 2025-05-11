@@ -27,7 +27,7 @@ class AutomationService:
         self.bs_home_host = os.environ.get(
             "BITSWAN_GITOPS_DIR_HOST", "/home/root/.config/bitswan/local-gitops/"
         )
-        self.workspace_id = os.environ.get("BITSWAN_WORKSPACE_ID", "")
+        self.workspace_id = os.environ.get("BITSWAN_WORKSPACE_ID")
         self.workspace_name = os.environ.get(
             "BITSWAN_WORKSPACE_NAME", "workspace-local"
         )
@@ -357,6 +357,11 @@ class AutomationService:
         }
 
     def get_emqx_jwt_token(self, deployment_id: str):
+        if not self.workspace_id:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Workspace {self.workspace_name} is missing an ID",
+            )
         url = f"{self.aoc_url}/api/workspaces/{self.workspace_id}/pipelines/{deployment_id}/emqx/jwt"
         headers = {"Authorization": f"Bearer {self.aoc_token}"}
         response = requests.get(url, headers=headers)

@@ -98,7 +98,7 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
     caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
     upstreams = requests.get(f"{caddy_url}/reverse_proxy/upstreams")
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
-    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "")
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
     endpoint = generate_url(workspace_name, deployment_id, gitops_domain, False)
 
     if upstreams.status_code != 200:
