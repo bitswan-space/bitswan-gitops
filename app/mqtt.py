@@ -8,12 +8,19 @@ class MQTTResource:
 
     async def connect(self) -> bool:
         if self.client is None:
-            self.client = mqtt_client.Client()
-            broker = os.environ.get("MQTT_BROKER")
+            self.client = mqtt_client.Client(transport="websockets")
+            broker = os.environ.get("MQTT_BROKER", "mqtt.bitswan.space")
             if not broker:
                 print("There is no MQTT_BROKER env var..skipping connection to MQTT")
                 return False
-            port = int(os.environ.get("MQTT_PORT", 1883))
+            port = int(os.environ.get("MQTT_PORT", 443))
+
+            if port == 443:
+                # external communication with the public MQTT broker
+                self.client.tls_set(cert_reqs=mqtt_client.ssl.CERT_REQUIRED)
+            else:
+                # internal communication between bitswan services
+                self.client.tls_set(cert_reqs=mqtt_client.ssl.CERT_NONE)
 
             def on_connect(client, userdata, flags, rc):
                 if rc == 0:
