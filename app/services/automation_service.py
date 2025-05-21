@@ -6,6 +6,7 @@ import zipfile
 import docker
 import yaml
 import requests
+from fastapi.responses import FileResponse
 from app.models import DeployedAutomation
 from app.utils import (
     add_route_to_caddy,
@@ -210,6 +211,24 @@ class AutomationService:
             "deployments": list(deployments[deployment_id].keys()),
             "result": deployment_result,
         }
+
+    async def download_automation(self, deployment_id):
+        data = read_bitswan_yaml(self.gitops_dir)
+        data = data or {"deployments": {}}
+        deployments = data["deployments"]
+        deployments[deployment_id] = deployments.get(deployment_id, {})
+        checksum = deployments[deployment_id]["checksum"]
+        with zipfile.ZipFile("tmp.zip", "w", zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(checksum):
+                for file in files:
+                    abs_file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(abs_file_path, os.path.dirname(checksum))
+                    zipf.write(abs_file_path, arcname)
+        return FileResponse(
+            path="tmp.zip",
+            filename=f"{deployment_id}.zip",
+            media_type="application/octet-stream",
+        )
 
     async def deploy_automations(self):
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name

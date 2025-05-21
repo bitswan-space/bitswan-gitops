@@ -13,6 +13,14 @@ async def get_automations(
     return automation_service.get_automations()
 
 
+@router.get("/{deployment_id}/download")
+async def download_automation(
+    deployment_id: str,
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    return automation_service.download_automation(deployment_id)
+
+
 @router.post("/deploy")
 async def deploy_automations(
     automation_service: AutomationService = Depends(get_automation_service),
