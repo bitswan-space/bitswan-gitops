@@ -6,6 +6,7 @@ import zipfile
 import docker
 import yaml
 import requests
+from pathlib import Path
 from fastapi.responses import FileResponse
 from app.models import DeployedAutomation
 from app.utils import (
@@ -219,11 +220,11 @@ class AutomationService:
         deployments[deployment_id] = deployments.get(deployment_id, {})
         checksum = deployments[deployment_id]["checksum"]
         with zipfile.ZipFile("tmp.zip", "w", zipfile.ZIP_DEFLATED) as zipf:
-            for root, dirs, files in os.walk(checksum):
+            for root, dirs, files in os.walk(Path('/repo/gitops') / checksum):
                 for file in files:
                     abs_file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(abs_file_path, os.path.dirname(checksum))
-                    zipf.write(abs_file_path, arcname)
+                    rel_file_path = os.path.relpath(abs_file_path, os.path.join("/repo/gitops/", checksum))
+                    zipf.write(abs_file_path, rel_file_path)
         return FileResponse(
             path="tmp.zip",
             filename=f"{deployment_id}.zip",

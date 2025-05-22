@@ -18,7 +18,7 @@ async def download_automation(
     deployment_id: str,
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    return automation_service.download_automation(deployment_id)
+    return await automation_service.download_automation(deployment_id)
 
 
 @router.post("/deploy")
