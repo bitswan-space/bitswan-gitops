@@ -9,7 +9,7 @@ class MQTTResource:
     async def connect(self) -> bool:
         if self.client is None:
             self.client = mqtt_client.Client(transport="websockets")
-            broker = os.environ.get("MQTT_BROKER", "mqtt.bitswan.space")
+            broker = os.environ.get("MQTT_BROKER")
             if not broker:
                 print("There is no MQTT_BROKER env var..skipping connection to MQTT")
                 return False
