@@ -23,3 +23,5 @@ docker compose --env-file .env -f docker-compose.mac.yaml up  -d
 ```bash
 docker compose --env-file .env -f docker-compose.linux.yaml up -d
 ```
+
+In development you can then connect to the gitops either via curl / postman at `0.0.0.0:8079` or you can set it up as a gitops from a running vscode instance by adding the gitops to the vscode extension [https://github.com/bitswan-space/bitswan-editor](see the bitswan editor readme).
