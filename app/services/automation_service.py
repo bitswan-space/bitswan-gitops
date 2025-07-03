@@ -79,6 +79,7 @@ class AutomationService:
                 deployment_id=deployment_id,
                 active=bs_yaml["deployments"][deployment_id].get("active", False),
                 automation_url=None,
+                relative_path=bs_yaml["deployments"][deployment_id].get("relative_path", None),
             )
             for deployment_id in bs_yaml["deployments"]
         }
@@ -113,11 +114,12 @@ class AutomationService:
                     deployment_id=deployment_id,
                     active=pres[deployment_id].active,
                     automation_url=url,
+                    relative_path=pres[deployment_id].relative_path,
                 )
 
         return list(pres.values())
 
-    async def create_automation(self, deployment_id: str, file: UploadFile):
+    async def create_automation(self, deployment_id: str, file: UploadFile, relative_path: str = None):
         with NamedTemporaryFile(delete=False) as temp_file:
             content = await file.read()
             temp_file.write(content)
@@ -146,6 +148,9 @@ class AutomationService:
                 old_deploymend_checksum = deployments[deployment_id].get("checksum")
                 deployments[deployment_id]["checksum"] = checksum
                 deployments[deployment_id]["active"] = True
+
+                if relative_path:
+                    deployments[deployment_id]["relative_path"] = relative_path
 
                 data["deployments"] = deployments
                 with open(bitswan_yaml_path, "w") as f:
