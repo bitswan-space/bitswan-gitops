@@ -85,7 +85,9 @@ async def create_automation(
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     if file.filename.endswith(".zip"):
-        result = await automation_service.create_automation(deployment_id, file, relative_path)
+        result = await automation_service.create_automation(
+            deployment_id, file, relative_path
+        )
         return JSONResponse(content=result)
     else:
         raise HTTPException(status_code=400, detail="File must be a ZIP archive")

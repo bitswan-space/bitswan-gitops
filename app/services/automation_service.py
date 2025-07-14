@@ -79,7 +79,9 @@ class AutomationService:
                 deployment_id=deployment_id,
                 active=bs_yaml["deployments"][deployment_id].get("active", False),
                 automation_url=None,
-                relative_path=bs_yaml["deployments"][deployment_id].get("relative_path", None),
+                relative_path=bs_yaml["deployments"][deployment_id].get(
+                    "relative_path", None
+                ),
             )
             for deployment_id in bs_yaml["deployments"]
         }
@@ -119,7 +121,9 @@ class AutomationService:
 
         return list(pres.values())
 
-    async def create_automation(self, deployment_id: str, file: UploadFile, relative_path: str = None):
+    async def create_automation(
+        self, deployment_id: str, file: UploadFile, relative_path: str = None
+    ):
         with NamedTemporaryFile(delete=False) as temp_file:
             content = await file.read()
             temp_file.write(content)
