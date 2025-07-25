@@ -25,6 +25,7 @@ class Pipeline(BaseModel):
 class Topology(BaseModel):
     topology: dict[str, Pipeline]
     display_style: str
+    metadata: dict | None = None
 
 
 class DeployedAutomation(BaseModel):

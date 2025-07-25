@@ -11,9 +11,14 @@ class MQTTResource:
             self.client = mqtt_client.Client(transport="websockets")
             broker = os.environ.get("MQTT_BROKER")
             if not broker:
-                print("There is no MQTT_BROKER env var..skipping connection to MQTT")
+                print("ERROR: MQTT_BROKER environment variable is not set - skipping MQTT connection")
                 return False
-            port = int(os.environ.get("MQTT_PORT", 443))
+            
+            try:
+                port = int(os.environ.get("MQTT_PORT", 443))
+            except ValueError:
+                print("ERROR: MQTT_PORT must be a valid integer")
+                return False
 
             if port == 443:
                 # external communication with the public MQTT broker
@@ -26,7 +31,7 @@ class MQTTResource:
                 if rc == 0:
                     print("Connected to MQTT Broker!")
                 else:
-                    print(f"Failed to connect, return code {rc}")
+                    print(f"Failed to connect to MQTT Broker, return code {rc}")
 
             self.client.on_connect = on_connect
             username, password = os.environ.get("MQTT_USERNAME"), os.environ.get(
@@ -34,10 +39,18 @@ class MQTTResource:
             )
             if username and password:
                 self.client.username_pw_set(username, password)
-            self.client.connect(broker, port)
-            self.client.loop_start()
-            print("MQTT client connected and loop started")
-            return True
+            else:
+                print("WARNING: MQTT_USERNAME or MQTT_PASSWORD not set - attempting anonymous connection")
+            
+            try:
+                print(f"Attempting to connect to MQTT broker: {broker}:{port}")
+                self.client.connect(broker, port)
+                self.client.loop_start()
+                print("MQTT client connected and loop started")
+                return True
+            except Exception as e:
+                print(f"ERROR: Failed to connect to MQTT broker: {e}")
+                return False
 
     async def disconnect(self):
         if self.client is not None:
