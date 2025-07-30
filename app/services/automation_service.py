@@ -43,7 +43,6 @@ class AutomationService:
             all=True,  # Include stopped containers
             filters={
                 "label": [
-                    "space.bitswan.pipeline.protocol-version",
                     f"gitops.deployment_id={deployment_id}",
                     f"gitops.workspace={self.workspace_name}",
                 ]
@@ -55,7 +54,6 @@ class AutomationService:
             all=True,  # Include stopped containers
             filters={
                 "label": [
-                    "space.bitswan.pipeline.protocol-version",
                     "gitops.deployment_id",
                     f"gitops.workspace={self.workspace_name}",
                 ]
