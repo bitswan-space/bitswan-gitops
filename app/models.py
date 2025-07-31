@@ -10,6 +10,8 @@ class ContainerProperties(BaseModel):
     state: str | None
     status: str | None
     deployment_id: str | None = Field(alias="deployment-id", default=None)
+    automation_url: str | None = Field(alias="automation-url", default=None)
+    relative_path: str | None = Field(alias="relative-path", default=None)
 
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat()}
