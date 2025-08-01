@@ -9,10 +9,10 @@ services:
     networks:
       - bitswan_network
     volumes:
-      - ${HOME}/.config/bitswan/dev-gitops/gitops:/repo/gitops
-      - ${HOME}/.config/bitswan/dev-gitops/secrets:/repo/secrets
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${DEV_GITOPS_SRC}:/src/app
+      - ${HOME}/.config/bitswan/dev-gitops/gitops:/repo/gitops:z
+      - ${HOME}/.config/bitswan/dev-gitops/secrets:/repo/secrets:z
+      - /var/run/docker.sock:/var/run/docker.sock:z
+      - ${DEV_GITOPS_SRC}:/src/app:z
     environment:
       - BITSWAN_GITOPS_DIR=/repo
       - BITSWAN_GITOPS_DIR_HOST=${HOME}/.config/bitswan/dev-gitops
