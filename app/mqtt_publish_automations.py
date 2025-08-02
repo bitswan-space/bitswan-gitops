@@ -14,13 +14,18 @@ from .models import (
     Pipeline,
     encode_pydantic_model,
 )
-from .utils import calculate_uptime, read_bitswan_yaml
+from .utils import calculate_uptime, read_bitswan_yaml, generate_url
 from .mqtt import mqtt_resource
 
 
 async def retrieve_active_automations() -> Topology:
     client = docker.from_env()
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+    gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", None)
+    bs_home = os.environ.get("BITSWAN_BITSWAN_DIR", "/mnt/repo/pipeline")
+
+    # Read bitswan.yaml for relative path information
+    bs_yaml = read_bitswan_yaml(bs_home)
 
     containers: list[docker.models.containers.Container] = client.containers.list(
         filters={
@@ -46,6 +51,12 @@ async def retrieve_active_automations() -> Topology:
                     "state": c.status,
                     "status": calculate_uptime(c.attrs["State"]["StartedAt"]),
                     "deployment_id": c.labels["gitops.deployment_id"],
+                    "automation_url": get_automation_url(
+                        c, workspace_name, gitops_domain
+                    ),
+                    "relative_path": get_relative_path(
+                        c.labels["gitops.deployment_id"], bs_yaml
+                    ),
                 },
                 "metrics": [],
             },
@@ -68,6 +79,31 @@ async def retrieve_active_automations() -> Topology:
     return Topology(**topology)
 
 
+def get_automation_url(
+    container, workspace_name: str, gitops_domain: str | None
+) -> str | None:
+    """Generate automation URL if the container is exposed"""
+    if not gitops_domain:
+        return None
+
+    # Check if container is intended to be exposed
+    label = container.attrs["Config"]["Labels"].get("gitops.intended_exposed", "false")
+    if label != "true":
+        return None
+
+    deployment_id = container.labels["gitops.deployment_id"]
+    return generate_url(workspace_name, deployment_id, gitops_domain, True)
+
+
+def get_relative_path(deployment_id: str, bs_yaml: dict | None) -> str | None:
+    """Get relative path from bitswan.yaml"""
+    if not bs_yaml or "deployments" not in bs_yaml:
+        return None
+
+    deployment_config = bs_yaml["deployments"].get(deployment_id, {})
+    return deployment_config.get("relative_path")
+
+
 async def retrieve_inactive_automations() -> Topology:
     bs_home = os.environ.get("BITSWAN_BITSWAN_DIR", "/mnt/repo/pipeline")
     bs_yaml = read_bitswan_yaml(bs_home)
@@ -85,6 +121,8 @@ async def retrieve_inactive_automations() -> Topology:
             state=None,
             status=None,
             deployment_id=deployment_id,
+            automation_url=None,
+            relative_path=bs_yaml["deployments"][deployment_id].get("relative_path"),
         )
         for deployment_id in bs_yaml["deployments"]
         if not bs_yaml["deployments"][deployment_id].get("active", False)
