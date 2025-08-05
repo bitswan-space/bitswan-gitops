@@ -378,10 +378,9 @@ class AutomationService:
         response = requests.get(url, headers=headers)
         if response.status_code != 200:
             error_detail = f"AOC API error: {response.status_code} - {response.text}"
-            print(f"JWT Token generation failed: {error_detail}") 
+            print(f"JWT Token generation failed: {error_detail}")
             raise HTTPException(
-                status_code=500, 
-                detail=f"Error generating JWT token: {error_detail}"  
+                status_code=500, detail=f"Error generating JWT token: {error_detail}"
             )
         return response.json()
 
@@ -499,4 +498,3 @@ class AutomationService:
             dc["networks"][network] = {"external": True}
         dc_yaml = yaml.dump(dc)
         return dc_yaml
-
