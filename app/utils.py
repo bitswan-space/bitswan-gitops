@@ -5,6 +5,7 @@ import hashlib
 import os
 from typing import Any
 import shlex
+import subprocess
 
 from filelock import FileLock
 import humanize
@@ -203,6 +204,8 @@ async def update_git(
             f"{action} deployment {deployment_id}",
             cwd=bitswan_dir,
         )
+
+        subprocess.run(["chown", "-R", "1000:1000", "/gitops/gitops"], check=False)
 
         if has_remote:
             res = await call_git_command("git", "push", cwd=bitswan_dir)
