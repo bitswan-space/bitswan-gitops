@@ -377,7 +377,11 @@ class AutomationService:
         headers = {"Authorization": f"Bearer {self.aoc_token}"}
         response = requests.get(url, headers=headers)
         if response.status_code != 200:
-            raise HTTPException(status_code=500, detail="Error generating JWT token")
+            error_detail = f"AOC API error: {response.status_code} - {response.text}"
+            print(f"JWT Token generation failed: {error_detail}")
+            raise HTTPException(
+                status_code=500, detail=f"Error generating JWT token: {error_detail}"
+            )
         return response.json()
 
     def generate_docker_compose(self, bs_yaml: dict):
