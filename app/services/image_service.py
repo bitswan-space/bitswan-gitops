@@ -34,12 +34,32 @@ class ImageService:
                                 "tag": tag,
                                 "created": image.attrs.get("Created"),
                                 "size": image.attrs.get("Size"),
+                                "building": False,
+                            }
+                        )
+
+            # Check for images currently being built by scanning for .building log files
+            if os.path.exists(self.log_dir):
+                for filename in os.listdir(self.log_dir):
+                    if filename.endswith(".building"):
+                        # Extract image_tag from filename: {image_tag}:sha{checksum}.building
+                        base_name = filename[:-9]  # Remove '.building' suffix
+                        tag = f"internal/{base_name}"
+                        internal_images.append(
+                            {
+                                "id": None,
+                                "tag": tag,
+                                "created": None,
+                                "size": None,
+                                "building": True,
                             }
                         )
 
             return internal_images
         except docker.errors.DockerException as e:
             raise HTTPException(status_code=500, detail=f"Docker error: {str(e)}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
     async def create_image(self, image_tag: str, file: UploadFile):
         """
@@ -77,10 +97,16 @@ class ImageService:
                 checksum = calculate_checksum(temp_file.name)
 
                 full_tag = tag_root + ":sha" + checksum
-                log_file_path = os.path.join(
+                # Use .building suffix during build
+                building_log_file_path = os.path.join(
+                    self.log_dir, image_tag + ":sha" + checksum + ".building"
+                )
+                # Final log file path without .building suffix
+                final_log_file_path = os.path.join(
                     self.log_dir, image_tag + ":sha" + checksum
                 )
-                with open(log_file_path, "w") as log_file:
+
+                with open(building_log_file_path, "w") as log_file:
                     log_file.write(f"Build started at {datetime.now().isoformat()}\n")
 
                     # Start the build process asynchronously
@@ -91,14 +117,23 @@ class ImageService:
                                 path=temp_dir_path, tag=full_tag, rm=True, decode=True
                             ):
                                 if "stream" in line:
-                                    with open(log_file_path, "a") as f:
+                                    with open(building_log_file_path, "a") as f:
                                         f.write(line["stream"])
                             # Tag with latest
                             self.client.images.get(full_tag).tag(tag_root, tag="latest")
 
+                            # Build completed successfully, rename log file
+                            with open(building_log_file_path, "a") as f:
+                                f.write(
+                                    f"Build completed successfully at {datetime.now().isoformat()}\n"
+                                )
+                            os.rename(building_log_file_path, final_log_file_path)
+
                         except Exception as e:
-                            with open(log_file_path, "a") as f:
+                            with open(building_log_file_path, "a") as f:
                                 f.write(f"Build error: {str(e)}\n")
+                            # Build failed, still rename to final log file for error tracking
+                            os.rename(building_log_file_path, final_log_file_path)
                         finally:
                             # Clean up the temporary directory
                             import shutil
@@ -127,10 +162,18 @@ class ImageService:
             # Try to remove the image
             self.client.images.remove(full_tag, force=True)
 
-            # Also remove the log file if it exists
-            log_file_path = os.path.join(self.log_dir, image_tag)
-            if os.path.exists(log_file_path):
-                os.remove(log_file_path)
+            # Remove all log files associated with this image_tag
+            if os.path.exists(self.log_dir):
+                for filename in os.listdir(self.log_dir):
+                    if filename.startswith(image_tag + ":"):
+                        log_file_path = os.path.join(self.log_dir, filename)
+                        if os.path.exists(log_file_path):
+                            os.remove(log_file_path)
+
+            # Also try to remove the legacy log file format for backward compatibility
+            legacy_log_file_path = os.path.join(self.log_dir, image_tag)
+            if os.path.exists(legacy_log_file_path):
+                os.remove(legacy_log_file_path)
 
             return {
                 "status": "success",
@@ -147,7 +190,9 @@ class ImageService:
 
         /var/log/internal-image-build/{image_tag}
         """
-        log_file_path = self.log_dir + "/" + image_tag
+        log_file_path = os.path.join(self.log_dir, image_tag)
+        if not os.path.exists(log_file_path):
+            log_file_path += ".building"
         if not os.path.exists(log_file_path):
             print(log_file_path)
             raise HTTPException(
