@@ -11,12 +11,13 @@ services:
       - ${HOME}/.config/bitswan/dev-gitops/secrets:/repo/secrets
       - /var/run/docker.sock:/var/run/docker.sock
       - ${DEV_GITOPS_SRC}:/src/app
-      - /Users/lukasvecerka/.gitconfig:/root/.gitconfig
+      - ${HOME}/.gitconfig:/root/.gitconfig
     environment:
       - BITSWAN_GITOPS_DIR=/repo
       - BITSWAN_GITOPS_DIR_HOST=${HOME}/.config/bitswan/dev-gitops
       - BITSWAN_GITOPS_SECRET=${DEV_GITOPS_SECRET}
       - BITSWAN_GITOPS_DOMAIN=${DEV_GITOPS_DOMAIN}
+      - BITSWAN_USE_HTTPS=${DEV_USE_HTTPS}
 
 networks:
   bitswan_network:

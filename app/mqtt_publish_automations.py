@@ -1,21 +1,17 @@
 import functools
+import os
+from contextlib import asynccontextmanager
+from datetime import datetime
+
 import docker
 import docker.models.containers
-import os
-from fastapi import FastAPI
-from datetime import datetime
-from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from fastapi import FastAPI
 from paho.mqtt import client as mqtt_client
 
-from .models import (
-    ContainerProperties,
-    Topology,
-    Pipeline,
-    encode_pydantic_model,
-)
-from .utils import calculate_uptime, read_bitswan_yaml, generate_url
+from .models import ContainerProperties, Pipeline, Topology, encode_pydantic_model
 from .mqtt import mqtt_resource
+from .utils import calculate_uptime, generate_workspace_url, read_bitswan_yaml
 
 
 async def retrieve_active_automations() -> Topology:
@@ -92,7 +88,7 @@ def get_automation_url(
         return None
 
     deployment_id = container.labels["gitops.deployment_id"]
-    return generate_url(workspace_name, deployment_id, gitops_domain, True)
+    return generate_workspace_url(workspace_name, deployment_id, gitops_domain, True)
 
 
 def get_relative_path(deployment_id: str, bs_yaml: dict | None) -> str | None:
