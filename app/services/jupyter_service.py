@@ -42,9 +42,9 @@ class JupyterService:
             container_name, full=True
         )
         success = add_route_to_caddy(
-            route=jupyter_server_url,
-            caddy_id=container_name,
-            dial_address=f"{container_name}:8888",
+            jupyter_server_url,
+            container_name,
+            f"{container_name}:8888",
         )
         if not success:
             raise HTTPException(status_code=500, detail="Error adding route to Caddy")

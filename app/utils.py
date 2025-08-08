@@ -108,7 +108,7 @@ def add_workspace_route_to_caddy(deployment_id: str, port: str) -> bool:
     caddy_id = get_workspace_caddy_id(deployment_id, workspace_name)
     dial_address = f"{workspace_name}__{deployment_id}:{port}"
 
-    return add_route_to_caddy(endpoint, port, caddy_id, dial_address)
+    return add_route_to_caddy(endpoint, caddy_id, dial_address)
 
 
 def add_route_to_caddy(route: str, caddy_id: str, dial_address: str) -> bool:
