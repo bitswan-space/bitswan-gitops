@@ -1,4 +1,5 @@
 import os
+import secrets
 import socket
 import time
 
@@ -10,7 +11,10 @@ from app.utils import add_route_to_caddy
 
 class JupyterService:
     def __init__(self):
-        pass
+        self.token_auth_enabled = (
+            os.environ.get("JUPYTER_SERVER_ENABLE_TOKEN_AUTH", "false").lower()
+            == "true"
+        )
 
     def start_jupyter_server(self, automation_name: str, pre_image: str):
 
@@ -18,9 +22,14 @@ class JupyterService:
 
         self.check_container_exists(container_name)
 
+        token = ""
+        if self.token_auth_enabled:
+            token = self.generate_jupyter_server_token()
+
         jupyter_server_container = self.create_jupyter_server(
             pre_image=pre_image,
             container_name=container_name,
+            token=token,
         )
 
         jupyter_server_container.start()
@@ -42,17 +51,16 @@ class JupyterService:
         )
 
         if exit_code != 0:
-            print("error starting kernel: ", output)
             raise HTTPException(status_code=500, detail="Error installing ipykernel")
 
         container_name = jupyter_server_container.name
 
-        jupyter_server_url = self.generate_jupyter_server_caddy_url(
+        jupyter_server_host = self.generate_jupyter_server_caddy_url(
             container_name, full=False
         )
 
         success = add_route_to_caddy(
-            jupyter_server_url,
+            jupyter_server_host,
             container_name,
             f"{container_name}:8888",
         )
@@ -69,15 +77,21 @@ class JupyterService:
             "server_info": {
                 "pre": pre_image,
                 "url": jupyter_server_full_url,
-                "token": "",
+                "token": token,
             },
         }
 
     def create_jupyter_server(
-        self, pre_image: str, container_name: str
+        self, pre_image: str, container_name: str, token: str
     ) -> docker.models.containers.Container:
         try:
             docker_client = docker.from_env()
+
+            allowed_origins = os.environ.get("JUPYTER_SERVER_ALLOWED_ORIGINS", "*")
+            disable_xsrf_check = (
+                os.environ.get("JUPYTER_SERVER_DISABLE_XSRF_CHECK", "false").lower()
+                == "true"
+            )
 
             return docker_client.containers.create(
                 image=pre_image,
@@ -87,12 +101,11 @@ class JupyterService:
                     "--ip=0.0.0.0",
                     "--port=8888",
                     "--no-browser",
-                    "--NotebookApp.token=",
-                    "--NotebookApp.disable_check_xsrf=True",
-                    "--NotebookApp.allow_origin=*",
+                    f"--NotebookApp.token={token}",
+                    f"--NotebookApp.disable_check_xsrf={disable_xsrf_check}",
+                    f"--NotebookApp.allow_origin={allowed_origins}",
                 ],
                 name=container_name,
-                # ports={f"{host_port}/tcp": host_port},
                 network="bitswan_network",
             )
 
@@ -137,3 +150,6 @@ class JupyterService:
             status_code=500,
             detail=f"Jupyter server in container '{container_name}' did not become ready in time",
         )
+
+    def generate_jupyter_server_token(self, length: int = 32):
+        return secrets.token_hex(length // 2)
