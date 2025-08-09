@@ -1,8 +1,11 @@
 import os
+
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
 from app.services.automation_service import AutomationService
 from app.services.image_service import ImageService
+from app.services.jupyter_service import JupyterService
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(HTTPBearer())):
@@ -21,3 +24,7 @@ def get_image_service():
 
 def get_automation_service():
     return AutomationService()
+
+
+def get_jupyter_service():
+    return JupyterService()

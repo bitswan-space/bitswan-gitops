@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Form
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
-from app.services.automation_service import AutomationService
+
 from app.dependencies import get_automation_service
+from app.services.automation_service import AutomationService
 
 router = APIRouter(prefix="/automations", tags=["automations"])
 
