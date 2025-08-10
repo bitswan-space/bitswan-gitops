@@ -1,17 +1,21 @@
 import functools
-import os
-from contextlib import asynccontextmanager
-from datetime import datetime
-
 import docker
 import docker.models.containers
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import os
 from fastapi import FastAPI
+from datetime import datetime
+from contextlib import asynccontextmanager
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from paho.mqtt import client as mqtt_client
 
-from .models import ContainerProperties, Pipeline, Topology, encode_pydantic_model
+from .models import (
+    ContainerProperties,
+    Topology,
+    Pipeline,
+    encode_pydantic_model,
+)
+from .utils import calculate_uptime, read_bitswan_yaml, generate_workspace_url
 from .mqtt import mqtt_resource
-from .utils import calculate_uptime, generate_workspace_url, read_bitswan_yaml
 
 
 async def retrieve_active_automations() -> Topology:

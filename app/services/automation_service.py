@@ -1,14 +1,11 @@
 import os
 import shutil
-import zipfile
-from datetime import datetime
 from tempfile import NamedTemporaryFile
-
+import zipfile
 import docker
-import requests
 import yaml
-from fastapi import HTTPException, UploadFile
-
+import requests
+from datetime import datetime
 from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
@@ -21,6 +18,7 @@ from app.utils import (
     remove_route_from_caddy,
     update_git,
 )
+from fastapi import UploadFile, HTTPException
 
 
 class AutomationService:

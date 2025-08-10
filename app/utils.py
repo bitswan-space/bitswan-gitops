@@ -1,16 +1,16 @@
 import asyncio
-import hashlib
-import os
-import shlex
-import subprocess
 from configparser import ConfigParser
 from datetime import datetime, timezone
+import hashlib
+import os
 from typing import Any
+import shlex
+import subprocess
 
-import humanize
-import requests
-import yaml
 from filelock import FileLock
+import humanize
+import yaml
+import requests
 
 
 async def wait_coroutine(*args, **kwargs) -> int:
