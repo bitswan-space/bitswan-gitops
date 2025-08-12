@@ -22,10 +22,11 @@ async def retrieve_active_automations() -> Topology:
     client = docker.from_env()
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", None)
-    bs_home = os.environ.get("BITSWAN_BITSWAN_DIR", "/mnt/repo/pipeline")
+    bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
+    gitops_dir = os.path.join(bs_home, "gitops")
 
     # Read bitswan.yaml for relative path information
-    bs_yaml = read_bitswan_yaml(bs_home)
+    bs_yaml = read_bitswan_yaml(gitops_dir)
 
     containers: list[docker.models.containers.Container] = client.containers.list(
         filters={
@@ -97,11 +98,12 @@ def get_automation_url(
 
 def get_relative_path(deployment_id: str, bs_yaml: dict | None) -> str | None:
     """Get relative path from bitswan.yaml"""
-    if not bs_yaml or "deployments" not in bs_yaml:
+    if not bs_yaml:
         return None
 
-    deployment_config = bs_yaml["deployments"].get(deployment_id, {})
-    return deployment_config.get("relative_path")
+    return bs_yaml["deployments"][deployment_id].get(
+                    "relative_path", None
+                )
 
 
 async def retrieve_inactive_automations() -> Topology:
