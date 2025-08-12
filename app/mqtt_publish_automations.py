@@ -101,9 +101,7 @@ def get_relative_path(deployment_id: str, bs_yaml: dict | None) -> str | None:
     if not bs_yaml:
         return None
 
-    return bs_yaml["deployments"][deployment_id].get(
-                    "relative_path", None
-                )
+    return bs_yaml["deployments"][deployment_id].get("relative_path", None)
 
 
 async def retrieve_inactive_automations() -> Topology:
