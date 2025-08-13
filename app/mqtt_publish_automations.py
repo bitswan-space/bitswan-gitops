@@ -22,10 +22,11 @@ async def retrieve_active_automations() -> Topology:
     client = docker.from_env()
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", None)
-    bs_home = os.environ.get("BITSWAN_BITSWAN_DIR", "/mnt/repo/pipeline")
+    bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
+    gitops_dir = os.path.join(bs_home, "gitops")
 
     # Read bitswan.yaml for relative path information
-    bs_yaml = read_bitswan_yaml(bs_home)
+    bs_yaml = read_bitswan_yaml(gitops_dir)
 
     containers: list[docker.models.containers.Container] = client.containers.list(
         filters={
