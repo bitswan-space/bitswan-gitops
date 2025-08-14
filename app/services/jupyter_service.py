@@ -16,9 +16,11 @@ class JupyterService:
             == "true"
         )
 
-    def start_jupyter_server(self, automation_name: str, pre_image: str):
+    def start_jupyter_server(
+        self, automation_name: str, pre_image: str, session_id: str
+    ):
 
-        container_name = f"{automation_name}-jupyter-server"
+        container_name = f"{automation_name}-{session_id}-jupyter-server"
 
         self.check_container_exists(container_name)
 
@@ -30,6 +32,7 @@ class JupyterService:
             pre_image=pre_image,
             container_name=container_name,
             token=token,
+            session_id=session_id,
         )
 
         jupyter_server_container.start()
@@ -82,7 +85,7 @@ class JupyterService:
         }
 
     def create_jupyter_server(
-        self, pre_image: str, container_name: str, token: str
+        self, pre_image: str, container_name: str, token: str, session_id: str
     ) -> docker.models.containers.Container:
         try:
             docker_client = docker.from_env()
@@ -107,6 +110,11 @@ class JupyterService:
                 ],
                 name=container_name,
                 network="bitswan_network",
+                labels={
+                    "bitswan.type": "jupyter_server",
+                    "bitswan.automation_name": container_name,
+                    "bitswan.session_id": session_id,
+                },
             )
 
         except Exception as e:
@@ -123,6 +131,19 @@ class JupyterService:
             existing.remove()
         except docker.errors.NotFound:
             pass
+
+    def get_jupyter_servers(self):
+        docker_client = docker.from_env()
+        containers = docker_client.containers.list(
+            filters={"label": "bitswan.type=jupyter_server"}
+        )
+        return [container.name for container in containers]
+
+    def remove_jupyter_server(self, server_name: str):
+        docker_client = docker.from_env()
+        container = docker_client.containers.get(server_name)
+        container.stop()
+        container.remove()
 
     def generate_jupyter_server_caddy_url(self, server_name, full=False):
         gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")

@@ -1,11 +1,7 @@
-import functools
 import docker
 import docker.models.containers
 import os
-from fastapi import FastAPI
 from datetime import datetime
-from contextlib import asynccontextmanager
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from paho.mqtt import client as mqtt_client
 
 from .models import (
@@ -15,7 +11,6 @@ from .models import (
     encode_pydantic_model,
 )
 from .utils import calculate_uptime, read_bitswan_yaml, generate_workspace_url
-from .mqtt import mqtt_resource
 
 
 async def retrieve_active_automations() -> Topology:
@@ -163,18 +158,3 @@ async def publish_automations(client: mqtt_client.Client) -> Topology:
     )
 
     return topology
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    scheduler = AsyncIOScheduler(timezone="UTC")
-    result = await mqtt_resource.connect()
-
-    if result:
-        scheduler.add_job(
-            functools.partial(publish_automations, mqtt_resource.get_client()),
-            trigger="interval",
-            seconds=10,
-        )
-        scheduler.start()
-    yield
