@@ -133,7 +133,6 @@ class AutomationService:
             temp_file.close()
             checksum = calculate_checksum(temp_file.name)
             output_dir = f"{checksum}"
-            old_deploymend_checksum = None
 
             try:
                 bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
@@ -151,7 +150,9 @@ class AutomationService:
                 deployments = data["deployments"]  # should never raise KeyError
 
                 deployments[deployment_id] = deployments.get(deployment_id, {})
-                old_deploymend_checksum = deployments[deployment_id].get("checksum")
+                old_deployment_checksum = deployments[deployment_id].get("checksum")
+                if old_deployment_checksum == checksum:
+                    old_deployment_checksum = None
                 deployments[deployment_id]["checksum"] = checksum
                 deployments[deployment_id]["active"] = True
 
@@ -175,9 +176,9 @@ class AutomationService:
                 shutil.rmtree(output_dir, ignore_errors=True)
                 return {"error": f"Error processing file: {str(e)}"}
             finally:
-                if old_deploymend_checksum:
+                if old_deployment_checksum:
                     shutil.rmtree(
-                        os.path.join(self.gitops_dir, old_deploymend_checksum),
+                        os.path.join(self.gitops_dir, old_deployment_checksum),
                         ignore_errors=True,
                     )
                 os.unlink(temp_file.name)
