@@ -17,7 +17,11 @@ class JupyterService:
         )
 
     def start_jupyter_server(
-        self, automation_name: str, pre_image: str, session_id: str
+        self,
+        automation_name: str,
+        pre_image: str,
+        session_id: str,
+        server_token: str = None,
     ):
 
         container_name = f"{automation_name}-{session_id}-jupyter-server"
@@ -26,7 +30,10 @@ class JupyterService:
 
         token = ""
         if self.token_auth_enabled:
-            token = self.generate_jupyter_server_token()
+            if server_token:
+                token = server_token
+            else:
+                token = self.generate_jupyter_server_token()
 
         jupyter_server_container = self.create_jupyter_server(
             pre_image=pre_image,
@@ -132,14 +139,15 @@ class JupyterService:
         except docker.errors.NotFound:
             pass
 
-    def get_jupyter_servers(self):
+    def get_jupyter_server_containers(self, all: bool = False):
         docker_client = docker.from_env()
         containers = docker_client.containers.list(
-            filters={"label": "bitswan.type=jupyter_server"}
+            filters={"label": "bitswan.type=jupyter_server"},
+            all=all,
         )
-        return [container.name for container in containers]
+        return containers
 
-    def remove_jupyter_server(self, server_name: str):
+    def teardown_jupyter_server_container(self, server_name: str):
         docker_client = docker.from_env()
         container = docker_client.containers.get(server_name)
         container.stop()

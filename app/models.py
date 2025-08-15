@@ -46,6 +46,8 @@ class DeployedAutomation(BaseModel):
 class JupyterServer(BaseModel):
     automation_name: str
     session_id: str
+    pre_image: str
+    token: str
 
 
 class JupyterServerHeartbeatRequest(BaseModel):

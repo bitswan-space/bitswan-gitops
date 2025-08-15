@@ -1,3 +1,4 @@
+import logging
 from fastapi import Depends, FastAPI
 
 from app.lifespan import lifespan
@@ -9,6 +10,11 @@ from app.dependencies import verify_token
 
 import os
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 debug = os.environ.get("DEBUG", "false").lower() == "true"
 
