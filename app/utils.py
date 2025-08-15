@@ -45,7 +45,10 @@ async def call_git_command(*command, **kwargs) -> bool:
     # If all host environment variables are set, use nsenter to run git command on host
     if cwd and host_path and host_home and host_user:
         formatted_command = " ".join(shlex.quote(arg) for arg in command)
-        host_command = f'PATH={host_path} su - {host_user} -c "cd {cwd} && PATH={host_path} HOME={host_home} {formatted_command}"'
+        host_command = (
+            f"PATH={host_path} su - {host_user} -c "
+            f'"cd {cwd} && PATH={host_path} HOME={host_home} {formatted_command}"'
+        )
 
         nsenter_command = [
             "nsenter",
@@ -90,32 +93,41 @@ def test_read_pipeline_conf():
         assert config.get("pipeline1", "key1") == "value1"
 
 
-def generate_url(workspace_name, deployment_id, gitops_domain, full=False):
+def generate_workspace_url(workspace_name, deployment_id, gitops_domain, full=False):
     url = "{}-{}.{}".format(workspace_name, deployment_id, gitops_domain)
     return f"https://{url}" if full else url
 
 
-def add_route_to_caddy(deployment_id: str, port: str) -> bool:
-    caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
-    upstreams = requests.get(f"{caddy_url}/reverse_proxy/upstreams")
+def add_workspace_route_to_caddy(deployment_id: str, port: str) -> bool:
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
-    endpoint = generate_url(workspace_name, deployment_id, gitops_domain, False)
+    endpoint = generate_workspace_url(
+        workspace_name, deployment_id, gitops_domain, False
+    )
+
+    caddy_id = get_workspace_caddy_id(deployment_id, workspace_name)
+    dial_address = f"{workspace_name}__{deployment_id}:{port}"
+
+    return add_route_to_caddy(endpoint, caddy_id, dial_address)
+
+
+def add_route_to_caddy(route: str, caddy_id: str, dial_address: str) -> bool:
+    caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
+    upstreams = requests.get(f"{caddy_url}/reverse_proxy/upstreams")
 
     if upstreams.status_code != 200:
         return False
 
     upstreams = upstreams.json()
     for upstream in upstreams:
-        name = upstream.get("address").split(":")[0]
         # deployment_id is already in the upstreams
-        if name == endpoint:
+        if upstream.get("address") == dial_address:
             return True
 
     body = [
         {
-            "@id": get_caddy_id(deployment_id, workspace_name),
-            "match": [{"host": [endpoint]}],
+            "@id": caddy_id,
+            "match": [{"host": [route]}],
             "handle": [
                 {
                     "handler": "subroute",
@@ -124,13 +136,7 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
                             "handle": [
                                 {
                                     "handler": "reverse_proxy",
-                                    "upstreams": [
-                                        {
-                                            "dial": "{}__{}:{}".format(
-                                                workspace_name, deployment_id, port
-                                            )
-                                        }
-                                    ],
+                                    "upstreams": [{"dial": dial_address}],
                                 }
                             ]
                         }
@@ -146,14 +152,14 @@ def add_route_to_caddy(deployment_id: str, port: str) -> bool:
     return response.status_code == 200
 
 
-def get_caddy_id(deployment_id, workspace_name):
+def get_workspace_caddy_id(deployment_id, workspace_name):
     return "{}.{}".format(deployment_id, workspace_name)
 
 
 def remove_route_from_caddy(deployment_id: str, workspace_name: str):
     caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
     routes_url = "{}/id/{}".format(
-        caddy_url, get_caddy_id(deployment_id, workspace_name)
+        caddy_url, get_workspace_caddy_id(deployment_id, workspace_name)
     )
     response = requests.delete(routes_url)
     return response.status_code == 200

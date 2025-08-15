@@ -1,4 +1,3 @@
-from datetime import datetime
 import os
 import shutil
 from tempfile import NamedTemporaryFile
@@ -6,13 +5,14 @@ import zipfile
 import docker
 import yaml
 import requests
+from datetime import datetime
 from app.models import DeployedAutomation
 from app.utils import (
-    add_route_to_caddy,
+    add_workspace_route_to_caddy,
     calculate_checksum,
     calculate_uptime,
     docker_compose_up,
-    generate_url,
+    generate_workspace_url,
     read_bitswan_yaml,
     read_pipeline_conf,
     remove_route_from_caddy,
@@ -99,7 +99,7 @@ class AutomationService:
                     "gitops.intended_exposed", "false"
                 )
 
-                url = generate_url(
+                url = generate_workspace_url(
                     self.workspace_name, deployment_id, gitops_domain, True
                 )
 
@@ -480,7 +480,7 @@ class AutomationService:
                     "deployment", "port", fallback=conf.get("port", 8080)
                 )
                 if expose and port:
-                    result = add_route_to_caddy(deployment_id, port)
+                    result = add_workspace_route_to_caddy(deployment_id, port)
                     entry["labels"]["gitops.intended_exposed"] = "true"
                     if not result:
                         raise HTTPException(

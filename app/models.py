@@ -1,4 +1,5 @@
 from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -40,6 +41,17 @@ class DeployedAutomation(BaseModel):
     active: bool
     automation_url: str | None
     relative_path: str | None
+
+
+class JupyterServer(BaseModel):
+    automation_name: str
+    session_id: str
+    pre_image: str
+    token: str
+
+
+class JupyterServerHeartbeatRequest(BaseModel):
+    servers: list[JupyterServer]
 
 
 def encode_pydantic_model(data: BaseModel) -> bytearray:
