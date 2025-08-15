@@ -172,14 +172,8 @@ class AutomationService:
                     "checksum": checksum,
                 }
             except Exception as e:
-                shutil.rmtree(output_dir, ignore_errors=True)
                 return {"error": f"Error processing file: {str(e)}"}
             finally:
-                if old_deploymend_checksum:
-                    shutil.rmtree(
-                        os.path.join(self.gitops_dir, old_deploymend_checksum),
-                        ignore_errors=True,
-                    )
                 os.unlink(temp_file.name)
 
     async def delete_automation(self, deployment_id: str):
