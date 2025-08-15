@@ -25,7 +25,6 @@ async def retrieve_active_automations() -> Topology:
     containers: list[docker.models.containers.Container] = client.containers.list(
         filters={
             "label": [
-                "space.bitswan.pipeline.protocol-version",
                 "gitops.deployment_id",
                 f"gitops.workspace={workspace_name}",
             ]
