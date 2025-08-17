@@ -154,7 +154,7 @@ class JupyterService:
         container.remove()
 
     def generate_jupyter_server_caddy_url(self, server_name, full=False):
-        gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
+        gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN")
         url = f"{server_name}.{gitops_domain}"
 
         use_https = os.environ.get("BITSWAN_USE_HTTPS", "false").lower() == "true"
