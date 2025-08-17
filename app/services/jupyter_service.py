@@ -12,8 +12,8 @@ from app.utils import add_route_to_caddy
 class JupyterService:
     def __init__(self):
         self.token_auth_enabled = (
-            os.environ.get("JUPYTER_SERVER_ENABLE_TOKEN_AUTH", "false").lower()
-            == "true"
+            os.environ.get("JUPYTER_SERVER_ENABLE_TOKEN_AUTH", "true").lower()
+            != "false"
         )
 
     def start_jupyter_server(
