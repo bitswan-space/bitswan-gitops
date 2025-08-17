@@ -97,7 +97,7 @@ class JupyterService:
         try:
             docker_client = docker.from_env()
 
-            allowed_origins = os.environ.get("JUPYTER_SERVER_ALLOWED_ORIGINS", "*")
+            allowed_origins = os.environ.get("JUPYTER_SERVER_ALLOWED_ORIGINS", "")
             disable_xsrf_check = (
                 os.environ.get("JUPYTER_SERVER_DISABLE_XSRF_CHECK", "false").lower()
                 == "true"
