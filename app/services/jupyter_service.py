@@ -111,6 +111,7 @@ class JupyterService:
                     "--ip=0.0.0.0",
                     "--port=8888",
                     "--no-browser",
+                    "--allow-root",
                     f"--NotebookApp.token={token}",
                     f"--NotebookApp.disable_check_xsrf={disable_xsrf_check}",
                     f"--NotebookApp.allow_origin={allowed_origins}",
