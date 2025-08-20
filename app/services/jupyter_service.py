@@ -1,3 +1,4 @@
+import logging
 import os
 import secrets
 import socket
@@ -8,12 +9,18 @@ from fastapi import HTTPException
 
 from app.utils import add_route_to_caddy
 
+logger = logging.getLogger(__name__)
+
 
 class JupyterService:
     def __init__(self):
         self.token_auth_enabled = (
             os.environ.get("JUPYTER_SERVER_ENABLE_TOKEN_AUTH", "true").lower()
             != "false"
+        )
+        self.reverse_proxy_enabled = (
+            os.environ.get("JUPYTER_SERVER_ENABLE_REVERSE_PROXY", "true").lower()
+            == "true"
         )
 
     def start_jupyter_server(
@@ -65,35 +72,61 @@ class JupyterService:
 
         container_name = jupyter_server_container.name
 
-        jupyter_server_host = self.generate_jupyter_server_caddy_url(
-            container_name, full=False
+        if self.reverse_proxy_enabled:
+            jupyter_server_host = self.generate_jupyter_server_caddy_url(
+                container_name, full=False
+            )
+
+            success = add_route_to_caddy(
+                jupyter_server_host,
+                container_name,
+                f"{container_name}:8888",
+            )
+            if not success:
+                raise HTTPException(
+                    status_code=500, detail="Error adding route to Caddy"
+                )
+
+            jupyter_server_full_url = self.generate_jupyter_server_caddy_url(
+                container_name, full=True
+            )
+
+        # Ensures new attributes are updated
+        jupyter_server_container.reload()
+        host_port = (
+            jupyter_server_container.attrs.get("NetworkSettings", {})
+            .get("Ports", {})
+            .get("8888/tcp", [])[0]
+            .get("HostPort")
         )
 
-        success = add_route_to_caddy(
-            jupyter_server_host,
-            container_name,
-            f"{container_name}:8888",
-        )
-        if not success:
-            raise HTTPException(status_code=500, detail="Error adding route to Caddy")
-
-        jupyter_server_full_url = self.generate_jupyter_server_caddy_url(
-            container_name, full=True
-        )
+        logger.info(f"Host port: {host_port}")
+        logger.info(f"Jupyter URL: http://127.0.0.1:{host_port}")
+        logger.info(f"Jupyter Token: {token}")
 
         return {
             "status": "success",
             "message": "Jupyter server started successfully",
             "server_info": {
                 "pre": pre_image,
-                "url": jupyter_server_full_url,
+                "url": (
+                    jupyter_server_full_url
+                    if self.reverse_proxy_enabled
+                    else f"http://127.0.0.1:{host_port}"
+                ),
                 "token": token,
             },
         }
 
     def create_jupyter_server(
-        self, pre_image: str, container_name: str, token: str, session_id: str
+        self,
+        pre_image: str,
+        container_name: str,
+        token: str,
+        session_id: str,
+        host_port: int = None,
     ) -> docker.models.containers.Container:
+
         try:
             docker_client = docker.from_env()
 
@@ -123,6 +156,7 @@ class JupyterService:
                     "bitswan.automation_name": container_name,
                     "bitswan.session_id": session_id,
                 },
+                ports={"8888/tcp": host_port},
             )
 
         except Exception as e:
