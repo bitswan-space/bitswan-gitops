@@ -1,5 +1,4 @@
 import os
-import shutil
 from tempfile import NamedTemporaryFile
 import zipfile
 import docker
@@ -148,9 +147,6 @@ class AutomationService:
                 deployments = data["deployments"]  # should never raise KeyError
 
                 deployments[deployment_id] = deployments.get(deployment_id, {})
-                old_deployment_checksum = deployments[deployment_id].get("checksum")
-                if old_deployment_checksum == checksum:
-                    old_deployment_checksum = None
                 deployments[deployment_id]["checksum"] = checksum
                 deployments[deployment_id]["active"] = True
 
@@ -171,14 +167,8 @@ class AutomationService:
                     "checksum": checksum,
                 }
             except Exception as e:
-                shutil.rmtree(output_dir, ignore_errors=True)
                 return {"error": f"Error processing file: {str(e)}"}
             finally:
-                if old_deployment_checksum:
-                    shutil.rmtree(
-                        os.path.join(self.gitops_dir, old_deployment_checksum),
-                        ignore_errors=True,
-                    )
                 os.unlink(temp_file.name)
 
     async def delete_automation(self, deployment_id: str):
