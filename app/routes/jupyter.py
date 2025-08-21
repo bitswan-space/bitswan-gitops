@@ -24,11 +24,14 @@ async def start_jupyter_server(
     automation_directory_path: str = Form(...),
     jupyter_service: JupyterService = Depends(get_jupyter_service),
 ):
-    
+
     logger.info(f"automation_dir_path {automation_directory_path}")
 
     jupyter_server_payload = jupyter_service.start_jupyter_server(
-        automation_name, pre_image, session_id, automation_directory_path=automation_directory_path
+        automation_name,
+        pre_image,
+        session_id,
+        automation_directory_path=automation_directory_path,
     )
     active_jupyter_servers[session_id] = {
         "automation_name": automation_name,
@@ -61,7 +64,7 @@ async def heartbeat(
                 server.pre_image,
                 server.session_id,
                 server_token=server.token,
-                automation_directory_path=server.automation_directory_path
+                automation_directory_path=server.automation_directory_path,
             )
 
         active_jupyter_servers[server.session_id] = {
