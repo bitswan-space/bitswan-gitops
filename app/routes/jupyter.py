@@ -21,9 +21,22 @@ async def start_jupyter_server(
     automation_name: str = Form(...),
     pre_image: str = Form(...),
     session_id: str = Form(...),
+    automation_directory_path: str = Form(...),
     jupyter_service: JupyterService = Depends(get_jupyter_service),
 ):
-    return jupyter_service.start_jupyter_server(automation_name, pre_image, session_id)
+    
+    logger.info(f"automation_dir_path {automation_directory_path}")
+
+    jupyter_server_payload = jupyter_service.start_jupyter_server(
+        automation_name, pre_image, session_id, automation_directory_path=automation_directory_path
+    )
+    active_jupyter_servers[session_id] = {
+        "automation_name": automation_name,
+        "session_id": session_id,
+        "last_heartbeat": datetime.now(),
+    }
+
+    return jupyter_server_payload
 
 
 @router.post("/heartbeat")
@@ -31,6 +44,7 @@ async def heartbeat(
     heartbeat: JupyterServerHeartbeatRequest,
     jupyter_service: JupyterService = Depends(get_jupyter_service),
 ):
+    logger.info(f"Received heartbeat servers: {heartbeat.servers}")
     for server in heartbeat.servers:
 
         jupyter_server_containers = jupyter_service.get_jupyter_server_containers()
@@ -38,6 +52,7 @@ async def heartbeat(
             container.labels["bitswan.session_id"]
             for container in jupyter_server_containers
         }
+        logger.info(f"Current Jupyter server containers: {container_session_ids}")
 
         if server.session_id not in container_session_ids:
             logger.info(f"New jupyter server: {server.session_id}")
@@ -46,6 +61,7 @@ async def heartbeat(
                 server.pre_image,
                 server.session_id,
                 server_token=server.token,
+                automation_directory_path=server.automation_directory_path
             )
 
         active_jupyter_servers[server.session_id] = {
@@ -74,6 +90,8 @@ async def jupyter_server_cleanup(
 
             current_time = datetime.now()
             stale_threshold = current_time - timedelta(minutes=2)
+
+            logger.info(f"active jupyter servers: {active_jupyter_servers}")
 
             for container in jupyter_server_containers:
                 session_id = container.labels["bitswan.session_id"]

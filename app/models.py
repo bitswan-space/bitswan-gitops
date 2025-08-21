@@ -48,6 +48,7 @@ class JupyterServer(BaseModel):
     session_id: str
     pre_image: str
     token: str
+    automation_directory_path: str
 
 
 class JupyterServerHeartbeatRequest(BaseModel):

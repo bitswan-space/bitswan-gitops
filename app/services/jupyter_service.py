@@ -29,6 +29,7 @@ class JupyterService:
         pre_image: str,
         session_id: str,
         server_token: str = None,
+        automation_directory_path: str = None
     ):
 
         container_name = f"{automation_name}-{session_id}-jupyter-server"
@@ -47,6 +48,8 @@ class JupyterService:
             container_name=container_name,
             token=token,
             session_id=session_id,
+            automation_name=automation_name,
+            automation_directory_path=automation_directory_path
         )
 
         jupyter_server_container.start()
@@ -125,6 +128,8 @@ class JupyterService:
         token: str,
         session_id: str,
         host_port: int = None,
+        automation_name: str = None,
+        automation_directory_path: str = None
     ) -> docker.models.containers.Container:
 
         try:
@@ -157,6 +162,13 @@ class JupyterService:
                     "bitswan.session_id": session_id,
                 },
                 ports={"8888/tcp": host_port},
+                volumes={
+                    automation_directory_path: {
+                        "bind": f"/workspace/{automation_name}",
+                        "mode": "rw",
+                    }
+                },
+                working_dir=f"/workspace/{automation_name}",
             )
 
         except Exception as e:
