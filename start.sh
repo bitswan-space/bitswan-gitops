@@ -40,6 +40,18 @@ if [ -z "$HOST_PATH" ] && [ -z "$HOST_HOME" ] && [ -z "$HOST_USER" ]; then
     setup_docker_group
     mkdir -p /var/log/internal-image-build
     chown -R user1000:user1000 /var/log/internal-image-build
+    chown -R user1000:user1000 /home/user1000
+
+    # Setup SSH known_hosts for GitHub to avoid manual verification
+    echo "Setting up SSH known_hosts for GitHub"
+    mkdir -p /home/user1000/.ssh
+    if [ ! -f /home/user1000/.ssh/known_hosts ] || ! grep -q "github.com" /home/user1000/.ssh/known_hosts; then
+        ssh-keyscan -H github.com >> /home/user1000/.ssh/known_hosts 2>/dev/null
+    fi
+    chmod 700 /home/user1000/.ssh
+    chmod 600 /home/user1000/.ssh/known_hosts 2>/dev/null || true
+    chown -R user1000:user1000 /home/user1000/.ssh
+
     echo "Running as user1000"
     exec su -s /bin/bash user1000 -c "bitswan-gitops-server"
 else
