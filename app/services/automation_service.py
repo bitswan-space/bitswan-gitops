@@ -16,7 +16,10 @@ from app.utils import (
     read_pipeline_conf,
     remove_route_from_caddy,
     update_git,
+    call_git_command,
+    copy_worktree,
 )
+from app.services.image_service import ImageService
 from fastapi import UploadFile, HTTPException
 
 
@@ -161,6 +164,21 @@ class AutomationService:
                     self.gitops_dir, self.gitops_dir_host, deployment_id, "create"
                 )
 
+                # add this file to git
+                await call_git_command("git", "add", f"{checksum}", cwd=self.gitops_dir)
+
+                # commit the changes
+                await call_git_command(
+                    "git",
+                    "commit",
+                    "-m",
+                    f"Add {deployment_id} to bitswan.yaml",
+                    cwd=self.gitops_dir,
+                )
+
+                # push the changes
+                await call_git_command("git", "push", cwd=self.gitops_dir)
+
                 return {
                     "message": "File processed successfully",
                     "output_directory": output_dir,
@@ -188,6 +206,15 @@ class AutomationService:
         self.remove_automation(deployment_id)
         return {"status": "success", "message": message}
 
+    async def get_tag(self, image_tag: str, deployment_id: str):
+        expected_prefix = f"internal/{deployment_id}:sha"
+        image_obj = self.docker_client.images.get(image_tag)
+        for tag in image_obj.tags:
+            if tag.startswith(expected_prefix):
+                deployed_image_checksum_tag = tag[len(expected_prefix) :]
+                return deployed_image_checksum_tag
+        return None
+
     async def deploy_automation(self, deployment_id: str):
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
@@ -198,6 +225,14 @@ class AutomationService:
         dc_yaml = self.generate_docker_compose(bs_yaml)
         deployments = bs_yaml.get("deployments", {})
 
+        dc_config = yaml.safe_load(dc_yaml)
+
+        image_tag = None
+        if deployment_id in dc_config.get("services", {}):
+            deployed_image = dc_config["services"][deployment_id].get("image")
+            image_tag = await self.get_tag(deployed_image, deployment_id)
+
+        # deploy the automation
         deployment_result = await docker_compose_up(
             self.gitops_dir, dc_yaml, deployment_id
         )
@@ -205,6 +240,24 @@ class AutomationService:
         for result in deployment_result.values():
             if result["return_code"] != 0:
                 raise HTTPException(status_code=500, detail="Error deploying services")
+
+        if image_tag:
+            bs_yaml = read_bitswan_yaml(self.gitops_dir)
+            if (
+                bs_yaml
+                and "deployments" in bs_yaml
+                and deployment_id in bs_yaml["deployments"]
+            ):
+                bs_yaml["deployments"][deployment_id]["tag_checksum"] = image_tag
+
+                bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+                with open(bitswan_yaml_path, "w") as f:
+                    yaml.dump(bs_yaml, f)
+
+                await update_git(
+                    self.gitops_dir, self.gitops_dir_host, deployment_id, "deploy"
+                )
+
         return {
             "message": "Deployed services successfully",
             "deployments": list(deployments[deployment_id].keys()),
@@ -355,6 +408,59 @@ class AutomationService:
             "status": "success",
             "message": f"Container for deployment {deployment_id} removed successfully",
         }
+
+    async def pull_and_deploy(self, branch_name: str):
+        await copy_worktree(branch_name)
+
+        try:
+            bs_yaml = read_bitswan_yaml(self.gitops_dir)
+            if not bs_yaml or "deployments" not in bs_yaml:
+                raise HTTPException(
+                    status_code=404, detail="No deployments found in bitswan.yaml"
+                )
+
+            deployments = bs_yaml["deployments"]
+
+            # Build images for deployments with a custom image
+            build_results = {}
+            for deployment_id, config in deployments.items():
+                tag_checksum = config.get("tag_checksum")
+                if not tag_checksum:
+                    continue
+
+                images_dir = os.path.join(self.gitops_dir, "images", tag_checksum)
+
+                if not os.path.exists(images_dir):
+                    continue
+
+                try:
+                    image_service = ImageService()
+
+                    # Build the image directly from the directory
+                    build_result = await image_service.create_image_from_directory(
+                        deployment_id, images_dir, tag_checksum
+                    )
+                    build_results[deployment_id] = build_result
+
+                except Exception as e:
+                    build_results[deployment_id] = {"error": str(e)}
+
+            deploy_result = await self.deploy_automations()
+
+            final_result = {
+                "message": f"Successfully force-synced to origin/{branch_name} and processed automations",
+                "branch": branch_name,
+                "deployments_found": list(deployments.keys()),
+                "build_results": build_results,
+                "deploy_result": deploy_result,
+            }
+            return final_result
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error pulling branch and deploying all: {str(e)}",
+            )
 
     def get_emqx_jwt_token(self, deployment_id: str):
         if not self.workspace_id:

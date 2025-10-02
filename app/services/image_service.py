@@ -1,9 +1,11 @@
+import asyncio
 from datetime import datetime
 import os
 from tempfile import NamedTemporaryFile
 import zipfile
+import shutil
 
-from app.utils import calculate_checksum
+from app.utils import calculate_checksum, save_image
 
 import docker
 from fastapi import UploadFile, HTTPException
@@ -71,6 +73,7 @@ class ImageService:
 
         Streams all logs to a file in /var/log/internal-image-build/{image_tag}
 
+        Commits the build context to the git repository after successful build.
         """
         # Validate image tag
         if not image_tag or "/" in image_tag:
@@ -129,6 +132,20 @@ class ImageService:
                                 )
                             os.rename(building_log_file_path, final_log_file_path)
 
+                            try:
+                                asyncio.run(
+                                    save_image(temp_dir_path, checksum, image_tag)
+                                )
+                                with open(final_log_file_path, "a") as f:
+                                    f.write(
+                                        f"Build context committed to git successfully\n"
+                                    )
+                            except Exception as git_error:
+                                with open(final_log_file_path, "a") as f:
+                                    f.write(
+                                        f"Warning: Failed to commit to git: {str(git_error)}\n"
+                                    )
+
                         except Exception as e:
                             with open(building_log_file_path, "a") as f:
                                 f.write(f"Build error: {str(e)}\n")
@@ -136,7 +153,6 @@ class ImageService:
                             os.rename(building_log_file_path, final_log_file_path)
                         finally:
                             # Clean up the temporary directory
-                            import shutil
 
                             shutil.rmtree(temp_dir_path, ignore_errors=True)
 
@@ -150,6 +166,84 @@ class ImageService:
         return {
             "status": "success",
             "message": f"Image {image_tag} build started",
+        }
+
+    async def create_image_from_directory(
+        self, image_tag: str, build_context_path: str, checksum: str
+    ):
+        """
+        Builds a docker image directly from a directory path.
+
+        Args:
+            image_tag: The tag for the image (will be prefixed with "internal/")
+            build_context_path: Path to the directory containing the Docker build context
+            checksum: The checksum to use for tagging (typically the directory name)
+
+        Returns:
+            Dict with status and message
+        """
+        # Validate image tag
+        if not image_tag or "/" in image_tag:
+            raise HTTPException(status_code=400, detail="Invalid image tag")
+
+        if not os.path.exists(build_context_path):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Build context directory does not exist: {build_context_path}",
+            )
+
+        tag_root = f"internal/{image_tag}"
+        full_tag = tag_root + ":sha" + checksum
+
+        # Use .building suffix during build
+        building_log_file_path = os.path.join(
+            self.log_dir, image_tag + ":sha" + checksum + ".building"
+        )
+        # Final log file path without .building suffix
+        final_log_file_path = os.path.join(self.log_dir, image_tag + ":sha" + checksum)
+
+        with open(building_log_file_path, "w") as log_file:
+            log_file.write(f"Build started at {datetime.now().isoformat()}\n")
+
+            # Start the build process asynchronously
+            def build_callback():
+                try:
+                    # Build the Docker image and stream logs
+                    for line in self.client.api.build(
+                        path=build_context_path, tag=full_tag, rm=True, decode=True
+                    ):
+                        if "stream" in line:
+                            with open(building_log_file_path, "a") as f:
+                                f.write(line["stream"])
+                    # Tag with latest
+                    self.client.images.get(full_tag).tag(tag_root, tag="latest")
+
+                    # Build completed successfully, rename log file
+                    with open(building_log_file_path, "a") as f:
+                        f.write(
+                            f"Build completed successfully at {datetime.now().isoformat()}\n"
+                        )
+                    os.rename(building_log_file_path, final_log_file_path)
+
+                    # We don't need to save the image to git here, since this is called when we're pulling automations from a different branch
+                    # When we pull the automations it's already saved to git
+
+                except Exception as e:
+                    with open(building_log_file_path, "a") as f:
+                        f.write(f"Build error: {str(e)}\n")
+                    # Build failed, still rename to final log file for error tracking
+                    os.rename(building_log_file_path, final_log_file_path)
+
+            # Start the build in a separate thread
+            import threading
+
+            thread = threading.Thread(target=build_callback)
+            thread.daemon = True
+            thread.start()
+
+        return {
+            "status": "success",
+            "message": f"Image {image_tag} build started from directory",
         }
 
     async def delete_image(self, image_tag: str):

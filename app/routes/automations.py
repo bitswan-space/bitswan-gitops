@@ -20,6 +20,14 @@ async def deploy_automations(
     return await automation_service.deploy_automations()
 
 
+@router.post("/pull-and-deploy/{branch_name}")
+async def pull_and_deploy(
+    branch_name: str,
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    return await automation_service.pull_and_deploy(branch_name)
+
+
 @router.post("/{deployment_id}/deploy")
 async def deploy_automation(
     deployment_id: str,
