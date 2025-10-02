@@ -6,11 +6,14 @@ import os
 from typing import Any
 import shlex
 import subprocess
+import shutil
+import tempfile
 
 from filelock import FileLock
 import humanize
 import yaml
 import requests
+from fastapi import HTTPException
 
 
 async def wait_coroutine(*args, **kwargs) -> int:
@@ -258,3 +261,212 @@ async def docker_compose_up(
     return {
         "up_result": up_result,
     }
+
+
+async def save_image(build_context_path: str, build_context_hash: str, image_tag: str):
+    """
+    Save and commit the build context (extracted zip contents) to git.
+    Uses the build_context_hash as the directory name for deduplication.
+    """
+
+    bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
+    bitswan_dir = os.path.join(bs_home, "gitops")
+
+    images_base_dir = os.path.join(bitswan_dir, "images")
+    image_dir = os.path.join(images_base_dir, build_context_hash)
+
+    try:
+        if not os.path.exists(images_base_dir):
+            subprocess.run(["mkdir", "-p", images_base_dir], check=True)
+            subprocess.run(["chown", "-R", "1000:1000", images_base_dir], check=False)
+
+        # Create the specific image directory
+        os.makedirs(image_dir, exist_ok=True)
+
+    except Exception as e:
+        print(f"Error creating directory {image_dir}: {e}")
+
+    # Copy the build context to the gitops directory
+    for item in os.listdir(build_context_path):
+        src = os.path.join(build_context_path, item)
+        dst = os.path.join(image_dir, item)
+        if os.path.isdir(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+
+    lock_file = os.path.join(bitswan_dir, "bitswan_git.lock")
+    lock = FileLock(lock_file, timeout=30)
+
+    with lock:
+        has_remote = await call_git_command(
+            "git", "remote", "show", "origin", cwd=bitswan_dir
+        )
+
+        if has_remote:
+            res = await call_git_command("git", "pull", cwd=bitswan_dir)
+            if not res:
+                raise Exception("Error pulling from git")
+
+        add_result = await call_git_command(
+            "git", "add", os.path.join("images", build_context_hash), cwd=bitswan_dir
+        )
+        if not add_result:
+            raise Exception("Error adding files to git")
+
+        commit_message = f"Add build context {build_context_hash}"
+        if image_tag:
+            commit_message += f" for image {image_tag}"
+        await call_git_command(
+            "git",
+            "commit",
+            "-m",
+            commit_message,
+            cwd=bitswan_dir,
+        )
+
+        subprocess.run(["chown", "-R", "1000:1000", "/gitops/gitops"], check=False)
+
+        if has_remote:
+            res = await call_git_command("git", "push", cwd=bitswan_dir)
+            if not res:
+                raise Exception("Error pushing to git")
+
+
+async def merge_bitswan_yaml(src_path: str, dst_path: str):
+    """
+    Merge bitswan.yaml files by combining deployments from both files.
+    """
+    try:
+        # Load existing bitswan.yaml if it exists
+        existing_yaml = {}
+        if os.path.exists(dst_path):
+            with open(dst_path, "r") as f:
+                existing_yaml = yaml.safe_load(f) or {}
+
+        # Load new bitswan.yaml from worktree
+        new_yaml = {}
+        if os.path.exists(src_path):
+            with open(src_path, "r") as f:
+                new_yaml = yaml.safe_load(f) or {}
+
+        # Merge deployments
+        merged_yaml = existing_yaml.copy()
+        if "deployments" not in merged_yaml:
+            merged_yaml["deployments"] = {}
+
+        if "deployments" in new_yaml:
+            merged_yaml["deployments"].update(new_yaml["deployments"])
+
+        # Write merged yaml
+        with open(dst_path, "w") as f:
+            yaml.dump(merged_yaml, f, default_flow_style=False, sort_keys=False)
+
+    except Exception:
+        shutil.copy2(src_path, dst_path)
+
+
+async def merge_worktree(worktree_path: str, repo: str):
+    for item in os.listdir(worktree_path):
+        if item == ".git":
+            continue
+
+        src_path = os.path.join(worktree_path, item)
+        dst_path = os.path.join(repo, item)
+
+        if item == "bitswan.yaml":
+            await merge_bitswan_yaml(src_path, dst_path)
+            continue
+
+        if os.path.exists(dst_path):
+            if os.path.isdir(dst_path):
+                shutil.rmtree(dst_path)
+            else:
+                os.remove(dst_path)
+
+        if os.path.isdir(src_path):
+            shutil.copytree(src_path, dst_path)
+        else:
+            shutil.copy2(src_path, dst_path)
+
+
+async def copy_worktree(branch_name: str = None):
+    """
+    Create a temp worktree for the target branch, copy files to main repo, then clean up.
+    This works regardless of whether the current directory is already a worktree.
+    """
+    bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
+    repo = os.path.join(bs_home, "gitops")
+
+    lock = FileLock(os.path.join(repo, "bitswan_git.lock"), timeout=30)
+    with lock:
+        if not await call_git_command(
+            "git", "fetch", "origin", "--prune", "--tags", cwd=repo
+        ):
+            raise HTTPException(status_code=500, detail="Failed to fetch from origin")
+        if not await call_git_command(
+            "git", "rev-parse", f"origin/{branch_name}", cwd=repo
+        ):
+            raise HTTPException(
+                status_code=404, detail=f"Remote branch origin/{branch_name} not found"
+            )
+
+        temp_dir = tempfile.mkdtemp(prefix=f"gitops_worktree_{branch_name}_")
+        worktree_path = os.path.join(temp_dir, "worktree")
+
+        try:
+            if not await call_git_command(
+                "git",
+                "worktree",
+                "add",
+                worktree_path,
+                f"origin/{branch_name}",
+                cwd=repo,
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Failed to create worktree for origin/{branch_name}",
+                )
+            if not await call_git_command("git", "reset", "--hard", "HEAD", cwd=repo):
+                raise HTTPException(
+                    status_code=409, detail="Failed to reset working tree"
+                )
+
+            await merge_worktree(worktree_path, repo)
+
+            if not await call_git_command("git", "add", "-A", cwd=repo):
+                raise HTTPException(status_code=409, detail="Failed to stage files")
+
+            msg = f"Switch to content from origin/{branch_name} using worktree"
+            await call_git_command("git", "commit", "-m", msg, cwd=repo)
+
+            has_remote = await call_git_command(
+                "git", "remote", "show", "origin", cwd=repo
+            )
+            if has_remote:
+                if not await call_git_command(
+                    "git", "push", "-u", "origin", "HEAD", cwd=repo
+                ):
+                    raise HTTPException(status_code=500, detail="Push failed")
+
+        finally:
+            try:
+                if os.path.exists(worktree_path):
+                    await call_git_command(
+                        "git", "worktree", "remove", worktree_path, cwd=repo
+                    )
+            except Exception as e:
+                print(f"Failed to remove worktree: {e}")
+
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+            except Exception as e:
+                print(f"Failed to remove temp directory: {e}")
+
+        return {
+            "status": "ok",
+            "message": f"Switched to content from origin/{branch_name} using worktree",
+        }
