@@ -462,4 +462,3 @@ async def copy_worktree(branch_name: str = None):
                     shutil.rmtree(temp_dir)
             except Exception as e:
                 print(f"Failed to remove temp directory: {e}")
-
