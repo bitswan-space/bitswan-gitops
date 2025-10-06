@@ -275,16 +275,13 @@ async def save_image(build_context_path: str, build_context_hash: str, image_tag
     images_base_dir = os.path.join(bitswan_dir, "images")
     image_dir = os.path.join(images_base_dir, build_context_hash)
 
-    try:
-        if not os.path.exists(images_base_dir):
-            subprocess.run(["mkdir", "-p", images_base_dir], check=True)
-            subprocess.run(["chown", "-R", "1000:1000", images_base_dir], check=False)
+    if not os.path.exists(images_base_dir):
+        os.makedirs(images_base_dir, exist_ok=True)
+        subprocess.run(["chown", "-R", "1000:1000", images_base_dir], check=False)
 
-        # Create the specific image directory
-        os.makedirs(image_dir, exist_ok=True)
-
-    except Exception as e:
-        print(f"Error creating directory {image_dir}: {e}")
+    # Create the specific image directory
+    os.makedirs(image_dir, exist_ok=True)
+    subprocess.run(["chown", "-R", "1000:1000", image_dir], check=False)
 
     # Copy the build context to the gitops directory
     for item in os.listdir(build_context_path):
@@ -466,7 +463,3 @@ async def copy_worktree(branch_name: str = None):
             except Exception as e:
                 print(f"Failed to remove temp directory: {e}")
 
-        return {
-            "status": "ok",
-            "message": f"Switched to content from origin/{branch_name} using worktree",
-        }

@@ -49,7 +49,7 @@ async def stop_automation(
     deployment_id: str,
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    return automation_service.stop_automation(deployment_id)
+    return await automation_service.stop_automation(deployment_id)
 
 
 @router.post("/{deployment_id}/restart")
