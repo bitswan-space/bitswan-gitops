@@ -16,7 +16,10 @@ from app.utils import (
     read_pipeline_conf,
     remove_route_from_caddy,
     update_git,
+    call_git_command,
+    copy_worktree,
 )
+from app.services.image_service import ImageService
 from fastapi import UploadFile, HTTPException
 
 
@@ -161,6 +164,21 @@ class AutomationService:
                     self.gitops_dir, self.gitops_dir_host, deployment_id, "create"
                 )
 
+                # add this file to git
+                await call_git_command("git", "add", f"{checksum}", cwd=self.gitops_dir)
+
+                # commit the changes
+                await call_git_command(
+                    "git",
+                    "commit",
+                    "-m",
+                    f"Add {deployment_id} to bitswan.yaml",
+                    cwd=self.gitops_dir,
+                )
+
+                # push the changes
+                await call_git_command("git", "push", cwd=self.gitops_dir)
+
                 return {
                     "message": "File processed successfully",
                     "output_directory": output_dir,
@@ -172,10 +190,7 @@ class AutomationService:
                 os.unlink(temp_file.name)
 
     async def delete_automation(self, deployment_id: str):
-        bs_yaml = read_bitswan_yaml(self.gitops_dir)
-        bs_yaml["deployments"].pop(deployment_id)
-        with open(os.path.join(self.gitops_dir, "bitswan.yaml"), "w") as f:
-            yaml.dump(bs_yaml, f)
+        await self.remove_automation_from_bitswan(deployment_id)
 
         await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "delete")
         result = remove_route_from_caddy(deployment_id, self.workspace_name)
@@ -185,8 +200,19 @@ class AutomationService:
         else:
             message = f"Deployment {deployment_id} deleted successfully"
 
-        self.remove_automation(deployment_id)
+        containers = self.get_container(deployment_id)
+        if containers:
+            self.remove_automation(deployment_id)
         return {"status": "success", "message": message}
+
+    async def get_tag(self, deployed_image: str):
+        expected_prefix = f"{deployed_image}:sha"
+        image_obj = self.docker_client.images.get(deployed_image)
+        for tag in image_obj.tags:
+            if tag.startswith(expected_prefix):
+                deployed_image_checksum_tag = tag[len(expected_prefix) :]
+                return deployed_image_checksum_tag
+        return None
 
     async def deploy_automation(self, deployment_id: str):
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
@@ -198,6 +224,14 @@ class AutomationService:
         dc_yaml = self.generate_docker_compose(bs_yaml)
         deployments = bs_yaml.get("deployments", {})
 
+        dc_config = yaml.safe_load(dc_yaml)
+
+        image_tag = None
+        if deployment_id in dc_config.get("services", {}):
+            deployed_image = dc_config["services"][deployment_id].get("image")
+            image_tag = await self.get_tag(deployed_image)
+
+        # deploy the automation
         deployment_result = await docker_compose_up(
             self.gitops_dir, dc_yaml, deployment_id
         )
@@ -205,6 +239,24 @@ class AutomationService:
         for result in deployment_result.values():
             if result["return_code"] != 0:
                 raise HTTPException(status_code=500, detail="Error deploying services")
+
+        if image_tag:
+            bs_yaml = read_bitswan_yaml(self.gitops_dir)
+            if (
+                bs_yaml
+                and "deployments" in bs_yaml
+                and deployment_id in bs_yaml["deployments"]
+            ):
+                bs_yaml["deployments"][deployment_id]["tag_checksum"] = image_tag
+
+                bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+                with open(bitswan_yaml_path, "w") as f:
+                    yaml.dump(bs_yaml, f)
+
+                await update_git(
+                    self.gitops_dir, self.gitops_dir_host, deployment_id, "deploy"
+                )
+
         return {
             "message": "Deployed services successfully",
             "deployments": list(deployments[deployment_id].keys()),
@@ -218,8 +270,12 @@ class AutomationService:
         if not bs_yaml:
             raise HTTPException(status_code=500, detail="Error reading bitswan.yaml")
 
-        dc_yaml = self.generate_docker_compose(bs_yaml)
-        deployments = bs_yaml.get("deployments", {})
+        active_deployments = self.get_active_automations()
+
+        filtered_bs_yaml = {"deployments": active_deployments}
+
+        dc_yaml = self.generate_docker_compose(filtered_bs_yaml)
+        deployments = active_deployments
 
         deployment_result = await docker_compose_up(self.gitops_dir, dc_yaml)
 
@@ -255,7 +311,60 @@ class AutomationService:
             "message": f"Container for deployment {deployment_id} started successfully",
         }
 
-    def stop_automation(self, deployment_id: str):
+    async def mark_as_inactive(self, deployment_id: str):
+        """
+        Mark the automation as inactive in bitswan.yaml
+        and update git
+        """
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+        bs_yaml["deployments"][deployment_id]["active"] = False
+        with open(os.path.join(self.gitops_dir, "bitswan.yaml"), "w") as f:
+            yaml.dump(bs_yaml, f)
+        await update_git(
+            self.gitops_dir, self.gitops_dir_host, deployment_id, "mark_as_inactive"
+        )
+
+    async def mark_as_active(self, deployment_id: str):
+        """
+        Mark the automation as active in bitswan.yaml
+        and update git
+        """
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+        bs_yaml["deployments"][deployment_id]["active"] = True
+        with open(os.path.join(self.gitops_dir, "bitswan.yaml"), "w") as f:
+            yaml.dump(bs_yaml, f)
+        await update_git(
+            self.gitops_dir, self.gitops_dir_host, deployment_id, "mark_as_active"
+        )
+
+    async def remove_automation_from_bitswan(self, deployment_id: str):
+        """
+        Remove the automation from bitswan.yaml
+        and update git
+        """
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+
+        if deployment_id not in bs_yaml["deployments"]:
+            return
+
+        bs_yaml["deployments"].pop(deployment_id)
+        with open(os.path.join(self.gitops_dir, "bitswan.yaml"), "w") as f:
+            yaml.dump(bs_yaml, f)
+        await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "remove")
+
+    # get active automations from bitswan.yaml
+    def get_active_automations(self):
+        """
+        Get the active automations from bitswan.yaml
+        """
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+        active_deployments = {}
+        for deployment_id, config in bs_yaml["deployments"].items():
+            if config.get("active", False):
+                active_deployments[deployment_id] = config
+        return active_deployments
+
+    async def stop_automation(self, deployment_id: str):
         containers = self.get_container(deployment_id)
 
         if not containers:
@@ -266,6 +375,8 @@ class AutomationService:
 
         container = containers[0]
         container.stop()
+
+        await self.mark_as_inactive(deployment_id)
 
         return {
             "status": "success",
@@ -291,10 +402,7 @@ class AutomationService:
         }
 
     async def activate_automation(self, deployment_id: str):
-        bs_yaml = read_bitswan_yaml(self.gitops_dir)
-        bs_yaml["deployments"][deployment_id]["active"] = True
-        with open(os.path.join(self.gitops_dir, "bitswan.yaml"), "w") as f:
-            yaml.dump(bs_yaml, f)
+        await self.mark_as_active(deployment_id)
 
         # update git
         await update_git(
@@ -306,10 +414,7 @@ class AutomationService:
         return result
 
     async def deactivate_automation(self, deployment_id: str):
-        bs_yaml = read_bitswan_yaml(self.gitops_dir)
-        bs_yaml["deployments"][deployment_id]["active"] = False
-        with open(os.path.join(self.gitops_dir, "bitswan.yaml"), "w") as f:
-            yaml.dump(bs_yaml, f)
+        await self.mark_as_inactive(deployment_id)
 
         # update git
         await update_git(
@@ -338,7 +443,7 @@ class AutomationService:
 
         return {"status": "success", "logs": logs.split("\n")}
 
-    def remove_automation(self, deployment_id: str):
+    async def remove_automation(self, deployment_id: str):
         containers = self.get_container(deployment_id)
 
         if not containers:
@@ -354,6 +459,40 @@ class AutomationService:
         return {
             "status": "success",
             "message": f"Container for deployment {deployment_id} removed successfully",
+        }
+
+    async def pull_and_deploy(self, branch_name: str):
+        await copy_worktree(branch_name)
+
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+        if not bs_yaml or "deployments" not in bs_yaml:
+            raise HTTPException(
+                status_code=404, detail="No deployments found in bitswan.yaml"
+            )
+
+        active_deployments = self.get_active_automations()
+
+        for deployment_id, config in active_deployments.items():
+            tag_checksum = config.get("tag_checksum")
+            if not tag_checksum:
+                continue
+
+            images_dir = os.path.join(self.gitops_dir, "images", tag_checksum)
+            if not os.path.exists(images_dir):
+                continue
+
+            image_service = ImageService()
+            await image_service.create_image(
+                image_tag=deployment_id,
+                build_context_path=images_dir,
+                checksum=tag_checksum,
+            )
+
+        await self.deploy_automations()
+
+        return {
+            "status": "success",
+            "message": f"Successfully synced branch {branch_name} and processed automations",
         }
 
     def get_emqx_jwt_token(self, deployment_id: str):
