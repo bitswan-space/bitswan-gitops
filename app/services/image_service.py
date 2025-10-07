@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime
 import os
 from tempfile import NamedTemporaryFile
