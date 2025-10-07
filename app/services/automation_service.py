@@ -362,15 +362,13 @@ class AutomationService:
                 status_code=500,
                 detail=f"Workspace {self.workspace_name} is missing an ID",
             )
-        url = f"{self.aoc_url}/api/workspaces/{self.workspace_id}/pipelines/{deployment_id}/emqx/jwt"
+        url = f"{self.aoc_url}/api/automation_server/workspaces/{self.workspace_id}/pipelines/{deployment_id}/emqx/jwt"
         headers = {"Authorization": f"Bearer {self.aoc_token}"}
         response = requests.get(url, headers=headers)
         if response.status_code != 200:
             error_detail = f"AOC API error: {response.status_code} - {response.text}"
             print(f"JWT Token generation failed: {error_detail}")
-            raise HTTPException(
-                status_code=500, detail=f"Error generating JWT token: {error_detail}"
-            )
+            return None
         return response.json()
 
     def generate_docker_compose(self, bs_yaml: dict):
@@ -398,14 +396,15 @@ class AutomationService:
             if self.workspace_id and self.aoc_url and self.aoc_token:
                 # generate jwt token for automation
                 jwt_token_response = self.get_emqx_jwt_token(deployment_id)
-                jwt_token = jwt_token_response.get("token")
-                emqx_url = jwt_token_response.get("url")
-                entry["environment"] = {
-                    "MQTT_USERNAME": deployment_id,
-                    "MQTT_PASSWORD": jwt_token,
-                    "MQTT_BROKER_URL": emqx_url,
-                    "DEPLOYMENT_ID": deployment_id,
-                }
+                if jwt_token_response is not None:
+                    jwt_token = jwt_token_response.get("token")
+                    emqx_url = jwt_token_response.get("url")
+                    entry["environment"] = {
+                        "MQTT_USERNAME": deployment_id,
+                        "MQTT_PASSWORD": jwt_token,
+                        "MQTT_BROKER_URL": emqx_url,
+                        "DEPLOYMENT_ID": deployment_id,
+                    }
             else:
                 entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
             entry["container_name"] = f"{self.workspace_name}__{deployment_id}"
