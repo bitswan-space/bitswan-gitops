@@ -64,11 +64,17 @@ class ImageService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-    def _start_build_process(self, build_context_path: str, full_tag: str, tag_root: str, 
-                           building_log_file_path: str, final_log_file_path: str):
+    def _start_build_process(
+        self,
+        build_context_path: str,
+        full_tag: str,
+        tag_root: str,
+        building_log_file_path: str,
+        final_log_file_path: str,
+    ):
         """
         Common build process logic shared between directory and zip file builds.
-        
+
         Args:
             build_context_path: Path to the build context directory
             full_tag: Full Docker tag for the image
@@ -76,6 +82,7 @@ class ImageService:
             building_log_file_path: Path to the building log file
             final_log_file_path: Path to the final log file
         """
+
         def build_callback():
             try:
                 # Build the Docker image and stream logs
@@ -99,16 +106,22 @@ class ImageService:
                 with open(building_log_file_path, "a") as f:
                     f.write(f"Build error: {str(e)}\n")
                 # Build failed, still rename to final log file for error tracking
-                os.rename(building_log_file_path, final_log_file_path) 
+                os.rename(building_log_file_path, final_log_file_path)
 
         # Start the build in a separate thread
         import threading
+
         thread = threading.Thread(target=build_callback)
         thread.daemon = True
         thread.start()
 
-    async def create_image(self, image_tag: str, file: Optional[UploadFile] = None, checksum: Optional[str] = None,
-    build_context_path: Optional[str] = None,):
+    async def create_image(
+        self,
+        image_tag: str,
+        file: Optional[UploadFile] = None,
+        checksum: Optional[str] = None,
+        build_context_path: Optional[str] = None,
+    ):
         """
         Builds a docker image either from a zipfile upload or from a directory path.
 
@@ -130,9 +143,15 @@ class ImageService:
 
         # Validate that either file or build_context_path is provided, but not both
         if not file and not build_context_path:
-            raise HTTPException(status_code=400, detail="Either file or build_context_path must be provided")
+            raise HTTPException(
+                status_code=400,
+                detail="Either file or build_context_path must be provided",
+            )
         if file and build_context_path:
-            raise HTTPException(status_code=400, detail="Cannot provide both file and build_context_path")
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot provide both file and build_context_path",
+            )
 
         tag_root = f"internal/{image_tag}"
 
@@ -143,18 +162,20 @@ class ImageService:
                     status_code=400,
                     detail=f"Build context directory does not exist: {build_context_path}",
                 )
-            
+
             # Use provided checksum or generate one from directory
             if not checksum:
                 checksum = os.path.basename(build_context_path)
-            
+
             full_tag = tag_root + ":sha" + checksum
             # Use .building suffix during build
             building_log_file_path = os.path.join(
                 self.log_dir, image_tag + ":sha" + checksum + ".building"
             )
             # Final log file path without .building suffix
-            final_log_file_path = os.path.join(self.log_dir, image_tag + ":sha" + checksum)
+            final_log_file_path = os.path.join(
+                self.log_dir, image_tag + ":sha" + checksum
+            )
 
             with open(building_log_file_path, "w") as log_file:
                 log_file.write(f"Build started at {datetime.now().isoformat()}\n")
@@ -165,7 +186,7 @@ class ImageService:
                 full_tag=full_tag,
                 tag_root=tag_root,
                 building_log_file_path=building_log_file_path,
-                final_log_file_path=final_log_file_path
+                final_log_file_path=final_log_file_path,
             )
 
             return {
@@ -206,7 +227,9 @@ class ImageService:
                     )
 
                     with open(building_log_file_path, "w") as log_file:
-                        log_file.write(f"Build started at {datetime.now().isoformat()}\n")
+                        log_file.write(
+                            f"Build started at {datetime.now().isoformat()}\n"
+                        )
 
                     # Start the build process using shared logic
                     self._start_build_process(
@@ -214,16 +237,14 @@ class ImageService:
                         full_tag=full_tag,
                         tag_root=tag_root,
                         building_log_file_path=building_log_file_path,
-                        final_log_file_path=final_log_file_path
+                        final_log_file_path=final_log_file_path,
                     )
 
                     # Handle git operations for zip file uploads
                     try:
                         await save_image(temp_dir_path, checksum, image_tag)
                         with open(final_log_file_path, "a") as f:
-                            f.write(
-                                "Build context committed to git successfully\n"
-                            )
+                            f.write("Build context committed to git successfully\n")
                     except Exception as git_error:
                         with open(final_log_file_path, "a") as f:
                             f.write(
