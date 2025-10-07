@@ -138,7 +138,7 @@ class ImageService:
                                 )
                                 with open(final_log_file_path, "a") as f:
                                     f.write(
-                                        f"Build context committed to git successfully\n"
+                                        "Build context committed to git successfully\n"
                                     )
                             except Exception as git_error:
                                 with open(final_log_file_path, "a") as f:
