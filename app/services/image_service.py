@@ -6,6 +6,7 @@ import shutil
 from typing import Optional
 
 from app.utils import calculate_checksum, save_image
+from app.mqtt_publish_logs import log_publisher
 
 import docker
 from fastapi import UploadFile, HTTPException
@@ -82,35 +83,58 @@ class ImageService:
             final_log_file_path: Path to the final log file
         """
 
-        def build_callback():
+        async def build_callback():
             try:
+                # Publish build start message
+                await log_publisher.publish_build_start(tag_root)
+                
                 # Build the Docker image and stream logs
                 for line in self.client.api.build(
                     path=build_context_path, tag=full_tag, rm=True, decode=True
                 ):
                     if "stream" in line:
+                        log_line = line["stream"]
+                        # Write to file
                         with open(building_log_file_path, "a") as f:
-                            f.write(line["stream"])
+                            f.write(log_line)
+                        # Publish to MQTT
+                        await log_publisher.publish_log_line(log_line, tag_root)
+                
                 # Tag with latest
                 self.client.images.get(full_tag).tag(tag_root, tag="latest")
 
                 # Build completed successfully, rename log file
+                success_message = f"Build completed successfully at {datetime.now().isoformat()}\n"
                 with open(building_log_file_path, "a") as f:
-                    f.write(
-                        f"Build completed successfully at {datetime.now().isoformat()}\n"
-                    )
+                    f.write(success_message)
+                # Publish success message to MQTT
+                await log_publisher.publish_log_line(success_message, tag_root)
+                await log_publisher.publish_build_complete(tag_root, success=True)
                 os.rename(building_log_file_path, final_log_file_path)
 
             except Exception as e:
+                error_message = f"Build error: {str(e)}\n"
                 with open(building_log_file_path, "a") as f:
-                    f.write(f"Build error: {str(e)}\n")
+                    f.write(error_message)
+                # Publish error message to MQTT
+                await log_publisher.publish_log_line(error_message, tag_root)
+                await log_publisher.publish_build_complete(tag_root, success=False, error_message=str(e))
                 # Build failed, still rename to final log file for error tracking
                 os.rename(building_log_file_path, final_log_file_path)
 
-        # Start the build in a separate thread
+        # Start the build in a separate thread using asyncio
+        import asyncio
         import threading
 
-        thread = threading.Thread(target=build_callback)
+        def run_async_build():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(build_callback())
+            finally:
+                loop.close()
+
+        thread = threading.Thread(target=run_async_build)
         thread.daemon = True
         thread.start()
 
@@ -242,13 +266,17 @@ class ImageService:
                     # Handle git operations for zip file uploads
                     try:
                         await save_image(temp_dir_path, checksum, image_tag)
+                        git_success_message = "Build context committed to git successfully\n"
                         with open(final_log_file_path, "a") as f:
-                            f.write("Build context committed to git successfully\n")
+                            f.write(git_success_message)
+                        # Publish git success to MQTT
+                        await log_publisher.publish_log_line(git_success_message, tag_root)
                     except Exception as git_error:
+                        git_error_message = f"Warning: Failed to commit to git: {str(git_error)}\n"
                         with open(final_log_file_path, "a") as f:
-                            f.write(
-                                f"Warning: Failed to commit to git: {str(git_error)}\n"
-                            )
+                            f.write(git_error_message)
+                        # Publish git error to MQTT
+                        await log_publisher.publish_log_line(git_error_message, tag_root)
                 finally:
                     # Clean up the temporary directory
                     shutil.rmtree(temp_dir_path, ignore_errors=True)
