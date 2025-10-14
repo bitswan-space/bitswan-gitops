@@ -471,6 +471,7 @@ class AutomationService:
             )
 
         active_deployments = self.get_active_automations()
+        image_tags = []
 
         for deployment_id, config in active_deployments.items():
             tag_checksum = config.get("tag_checksum")
@@ -482,17 +483,18 @@ class AutomationService:
                 continue
 
             image_service = ImageService()
-            await image_service.create_image(
+
+            result = await image_service.create_image(
                 image_tag=deployment_id,
                 build_context_path=images_dir,
                 checksum=tag_checksum,
             )
-
-        await self.deploy_automations()
+            image_tags.append(result["tag"])
 
         return {
             "status": "success",
             "message": f"Successfully synced branch {branch_name} and processed automations",
+            "image_tags": image_tags,
         }
 
     def get_emqx_jwt_token(self, deployment_id: str):
