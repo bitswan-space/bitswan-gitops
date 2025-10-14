@@ -256,6 +256,7 @@ class ImageService:
         return {
             "status": "success",
             "message": f"Image {image_tag} build started",
+            "tag": full_tag,
         }
 
     async def delete_image(self, image_tag: str):
