@@ -191,6 +191,7 @@ class ImageService:
             return {
                 "status": "success",
                 "message": f"Image {image_tag} build started from directory",
+                "tag": full_tag,
             }
 
         # Handle zip file upload
