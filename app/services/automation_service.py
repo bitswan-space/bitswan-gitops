@@ -21,6 +21,7 @@ from app.utils import (
 )
 from app.services.image_service import ImageService
 from fastapi import UploadFile, HTTPException
+import docker.errors
 
 
 class AutomationService:
@@ -207,7 +208,10 @@ class AutomationService:
 
     async def get_tag(self, deployed_image: str):
         expected_prefix = f"{deployed_image}:sha"
-        image_obj = self.docker_client.images.get(deployed_image)
+        try:
+            image_obj = self.docker_client.images.get(deployed_image)
+        except docker.errors.ImageNotFound:
+            return None
         for tag in image_obj.tags:
             if tag.startswith(expected_prefix):
                 deployed_image_checksum_tag = tag[len(expected_prefix) :]
@@ -226,15 +230,17 @@ class AutomationService:
 
         dc_config = yaml.safe_load(dc_yaml)
 
-        image_tag = None
-        if deployment_id in dc_config.get("services", {}):
-            deployed_image = dc_config["services"][deployment_id].get("image")
-            image_tag = await self.get_tag(deployed_image)
-
         # deploy the automation
         deployment_result = await docker_compose_up(
             self.gitops_dir, dc_yaml, deployment_id
         )
+
+        # record deployment in bitswan.yaml
+
+        image_tag = None
+        if deployment_id in dc_config.get("services", {}):
+            deployed_image = dc_config["services"][deployment_id].get("image")
+            image_tag = await self.get_tag(deployed_image)
 
         for result in deployment_result.values():
             if result["return_code"] != 0:
