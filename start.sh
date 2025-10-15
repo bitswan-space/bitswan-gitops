@@ -35,6 +35,8 @@ setup_docker_group() {
     fi
 }
 
+chown -R 1000 /gitops/gitops/
+
 # Main execution
 if [ -z "$HOST_PATH" ] && [ -z "$HOST_HOME" ] && [ -z "$HOST_USER" ]; then
     setup_docker_group
