@@ -21,6 +21,7 @@ dependencies = [
  "paho-mqtt",
  "humanize",
  "toml",
+ "watchdog",
 ]
 
 [project.optional-dependencies]
