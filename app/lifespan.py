@@ -1,5 +1,4 @@
 import asyncio
-import functools
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -10,6 +9,10 @@ from app.routes.jupyter import jupyter_server_cleanup
 
 from .mqtt import mqtt_resource
 from .mqtt_publish_automations import publish_automations
+from .mqtt_processes import (
+    publish_processes,
+    setup_mqtt_subscriptions,
+)
 
 
 @asynccontextmanager
@@ -26,11 +29,23 @@ async def lifespan(app: FastAPI):
     result = await mqtt_resource.connect()
 
     if result:
+        client = mqtt_resource.get_client()
+
+        # Set up MQTT subscriptions for process operations
+        await setup_mqtt_subscriptions(client)
+
+        async def publish_mqtt_data():
+            await publish_processes(client)
+            await publish_automations(client)
+
+        # Schedule periodic updates
         scheduler.add_job(
-            functools.partial(publish_automations, mqtt_resource.get_client()),
+            publish_mqtt_data,
             trigger="interval",
             seconds=10,
+            name="publish_mqtt_data",
         )
+
         scheduler.start()
 
     try:

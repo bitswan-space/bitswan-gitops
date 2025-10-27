@@ -20,6 +20,7 @@ dependencies = [
  "apscheduler",
  "paho-mqtt",
  "humanize",
+ "toml",
 ]
 
 [project.optional-dependencies]
