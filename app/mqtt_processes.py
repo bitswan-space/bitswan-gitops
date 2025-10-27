@@ -86,9 +86,11 @@ class ProcessService:
         """Get attachments for a specific process."""
         attachments = []
 
-        process_path = os.path.join(
-            self.workspace_repo_dir, self._find_process_dir_by_id(process_id)
-        )
+        process_dir = self._find_process_dir_by_id(process_id)
+        if not process_dir:
+            return attachments
+
+        process_path = os.path.join(self.workspace_repo_dir, process_dir)
         if not process_path or not os.path.exists(process_path):
             return attachments
 
@@ -128,7 +130,8 @@ class ProcessService:
                 deployment_id = self._find_deployment_for_path(
                     f"{process_dir}/{item}", bs_yaml
                 )
-                automation_sources.append(deployment_id)
+                if deployment_id is not None:
+                    automation_sources.append(deployment_id)
 
         return automation_sources
 
