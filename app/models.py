@@ -54,6 +54,21 @@ class JupyterServerHeartbeatRequest(BaseModel):
     servers: list[JupyterServer]
 
 
+class ProcessInfo(BaseModel):
+    id: str
+    name: str
+    attachments: list[str]
+    automation_sources: list[str]
+
+
+class ProcessList(BaseModel):
+    processes: dict[str, ProcessInfo]
+
+
+class ProcessMarkdown(BaseModel):
+    content: str
+
+
 def encode_pydantic_model(data: BaseModel) -> bytearray:
     json_str = data.model_dump_json(by_alias=True)
     return bytearray(json_str.encode("utf-8"))
