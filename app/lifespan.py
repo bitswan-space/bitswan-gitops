@@ -1,8 +1,12 @@
 import asyncio
 from contextlib import asynccontextmanager
+import os
+import functools
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 from app.dependencies import get_jupyter_service
 from app.routes.jupyter import jupyter_server_cleanup
@@ -15,9 +19,45 @@ from .mqtt_processes import (
 )
 
 
+class WorkspaceChangeHandler(FileSystemEventHandler):
+    """Handle file system changes in the workspace directory."""
+
+    def __init__(self, client, event_loop):
+        super().__init__()
+        self.client = client
+        self.event_loop = event_loop
+        self.update_scheduled = False
+
+    def schedule_update(self):
+        """Schedule an update to avoid multiple rapid updates."""
+        if not self.update_scheduled:
+            self.update_scheduled = True
+
+            # Use asyncio.sleep to debounce updates
+            async def delayed_update():
+                await asyncio.sleep(0.5)  # Wait 500ms for multiple events
+                try:
+                    await publish_processes(self.client)
+                except Exception as e:
+                    print(f"Error publishing processes: {e}")
+                self.update_scheduled = False
+
+            asyncio.run_coroutine_threadsafe(delayed_update(), self.event_loop)
+
+    def on_created(self, event):
+        self.schedule_update()
+
+    def on_deleted(self, event):
+        self.schedule_update()
+
+    def on_modified(self, event):
+        self.schedule_update()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     stop = asyncio.Event()
+    observer = None
 
     jupyter_service = get_jupyter_service()
 
@@ -34,17 +74,28 @@ async def lifespan(app: FastAPI):
         # Set up MQTT subscriptions for process operations
         await setup_mqtt_subscriptions(client)
 
-        async def publish_mqtt_data():
-            await publish_processes(client)
-            await publish_automations(client)
+        # Publish processes and automations
+        await publish_processes(client)
+        await publish_automations(client)
 
         # Schedule periodic updates
         scheduler.add_job(
-            publish_mqtt_data,
+            functools.partial(publish_automations, client),
             trigger="interval",
             seconds=10,
-            name="publish_mqtt_data",
+            name="publish_automations",
         )
+
+        # Set up file system watcher for workspace directory
+        workspace_dir = os.environ.get("BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo")
+        if os.path.exists(workspace_dir):
+            event_handler = WorkspaceChangeHandler(client, asyncio.get_event_loop())
+            observer = Observer()
+            observer.schedule(event_handler, workspace_dir, recursive=True)
+            observer.start()
+            print(f"Started watching workspace directory: {workspace_dir}")
+        else:
+            print(f"Workspace directory does not exist: {workspace_dir}")
 
         scheduler.start()
 
@@ -54,3 +105,6 @@ async def lifespan(app: FastAPI):
         stop.set()
         jupyter_server_cleanup_task.cancel()
         await jupyter_server_cleanup_task
+        if observer:
+            observer.stop()
+            observer.join()

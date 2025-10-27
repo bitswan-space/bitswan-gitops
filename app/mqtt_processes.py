@@ -451,10 +451,7 @@ async def handle_attachment_request(
             client.publish(content_topic, payload=content, qos=1)
     elif action == "delete":
         success = process_service.delete_attachment(process_id, filename)
-        if success:
-            # Republish attachments list
-            await publish_processes(client)
-        else:
+        if not success:
             logger.error(
                 f"Failed to delete attachment {filename} for process {process_id}"
             )
@@ -472,10 +469,7 @@ async def handle_attachment_set(
 
     content = base64.b64decode(payload.get("content"))
     success = process_service.set_attachment_content(process_id, filename, content)
-    if success:
-        # Republish attachments list
-        await publish_processes(client)
-    else:
+    if not success:
         logger.error(f"Failed to set attachment {filename} for process {process_id}")
 
 
@@ -487,10 +481,7 @@ async def handle_process_request(
 
     if action == "delete":
         success = process_service.delete_process(process_id)
-        if success:
-            # Republish processes list
-            await publish_processes(client)
-        else:
+        if not success:
             logger.error(f"Failed to delete process {process_id}")
 
     elif action == "get":
@@ -514,10 +505,7 @@ async def handle_process_set(
     """Handle process markdown setting."""
     content = payload.get("content", "")
     success = process_service.set_process_markdown(process_id, content)
-    if success:
-        # Republish processes list (name might have changed)
-        await publish_processes(client)
-    else:
+    if not success:
         logger.error(
             f"Failed to set process markdown for process {process_id}: {content}"
         )
@@ -532,8 +520,5 @@ async def handle_process_create(
         logger.error(f"Failed to create process {process_id}: {process_name}")
         return
     success = process_service.create_process(process_id, process_name)
-    if success:
-        # Republish processes list
-        await publish_processes(client)
-    else:
+    if not success:
         logger.error(f"Failed to create process {process_id}: {process_name}")
