@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import os
 import functools
+import threading
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
@@ -27,22 +28,27 @@ class WorkspaceChangeHandler(FileSystemEventHandler):
         self.client = client
         self.event_loop = event_loop
         self.update_scheduled = False
+        self.update_lock = threading.Lock()
 
     def schedule_update(self):
         """Schedule an update to avoid multiple rapid updates."""
-        if not self.update_scheduled:
+        with self.update_lock:
+            if self.update_scheduled:
+                return
             self.update_scheduled = True
 
-            # Use asyncio.sleep to debounce updates
-            async def delayed_update():
-                await asyncio.sleep(0.5)  # Wait 500ms for multiple events
-                try:
-                    await publish_processes(self.client)
-                except Exception as e:
-                    print(f"Error publishing processes: {e}")
-                self.update_scheduled = False
+        # Use asyncio.sleep to debounce updates
+        async def delayed_update():
+            await asyncio.sleep(0.5)  # Wait 500ms for multiple events
+            try:
+                await publish_processes(self.client)
+            except Exception as e:
+                print(f"Error publishing processes: {e}")
+            finally:
+                with self.update_lock:
+                    self.update_scheduled = False
 
-            asyncio.run_coroutine_threadsafe(delayed_update(), self.event_loop)
+        asyncio.run_coroutine_threadsafe(delayed_update(), self.event_loop)
 
     def on_created(self, event):
         self.schedule_update()
@@ -50,8 +56,12 @@ class WorkspaceChangeHandler(FileSystemEventHandler):
     def on_deleted(self, event):
         self.schedule_update()
 
-    def on_modified(self, event):
+    def on_moved(self, event):
         self.schedule_update()
+
+    def on_modified(self, event):
+        if event.src_path.endswith("process.toml"):
+            self.schedule_update()
 
 
 @asynccontextmanager
@@ -107,4 +117,5 @@ async def lifespan(app: FastAPI):
         await jupyter_server_cleanup_task
         if observer:
             observer.stop()
-            observer.join()
+            # Run blocking join in executor to avoid blocking event loop
+            await asyncio.to_thread(observer.join)
