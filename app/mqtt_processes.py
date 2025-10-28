@@ -61,17 +61,9 @@ class ProcessService:
                 if not process_id:
                     continue
 
-                # Read README.md to get human-readable name (first line as title)
-                with open(process_md_path, "r") as f:
-                    first_line = f.readline().strip()
-                    # Remove markdown heading markers
-                    name = first_line.lstrip("#").strip()
-                    if not name:
-                        name = item  # Fallback to directory name
-
                 processes[process_id] = ProcessInfo(
                     id=process_id,
-                    name=name,
+                    name=item,
                     attachments=self.get_process_attachments(process_id),
                     automation_sources=self.get_process_automation_sources(process_id),
                 )
@@ -165,7 +157,8 @@ class ProcessService:
         """Find deployment ID for a given path."""
 
         for deployment_id, config in bs_yaml["deployments"].items():
-            if path in config.get("relative_path"):
+            relative_path = config.get("relative_path") or ""
+            if relative_path.endswith(path):
                 return deployment_id
 
         return None
@@ -175,6 +168,9 @@ class ProcessService:
         process_dir = self._find_process_dir_by_id(process_id)
         if not process_dir:
             return None
+
+        # Sanitize filename to prevent path traversal
+        filename = os.path.basename(filename)
 
         attachment_path = os.path.join(
             self.workspace_repo_dir, process_dir, "Attachments", filename
@@ -197,6 +193,9 @@ class ProcessService:
         if not process_dir:
             return False
 
+        # Sanitize filename to prevent path traversal
+        filename = os.path.basename(filename)
+
         attachments_dir = os.path.join(
             self.workspace_repo_dir, process_dir, "Attachments"
         )
@@ -216,6 +215,9 @@ class ProcessService:
         process_dir = self._find_process_dir_by_id(process_id)
         if not process_dir:
             return False
+
+        # Sanitize filename to prevent path traversal
+        filename = os.path.basename(filename)
 
         attachment_path = os.path.join(
             self.workspace_repo_dir, process_dir, "Attachments", filename
@@ -285,9 +287,17 @@ class ProcessService:
 
     def create_process(self, process_id: str, process_name: str) -> bool:
         """Create a new process."""
+        # Sanitize process_name to prevent path traversal
+        process_name = os.path.basename(process_name.strip())
+        if not process_name:
+            logger.error(
+                f"Failed to create process {process_id}: process_name is empty or invalid"
+            )
+            return False
+
         try:
             process_dir = os.path.join(self.workspace_repo_dir, process_name)
-            os.makedirs(process_dir, exist_ok=True)
+            os.makedirs(process_dir)
             with open(os.path.join(process_dir, "process.toml"), "w") as f:
                 f.write(f'process-id = "{process_id}"\n')
             with open(os.path.join(process_dir, "README.md"), "w") as f:
@@ -316,7 +326,19 @@ def run_coroutine_safe(coro: Coroutine):
     if _event_loop is None:
         logger.error("Event loop not set. Cannot run coroutine.")
         return
-    asyncio.run_coroutine_threadsafe(coro, _event_loop)
+
+    future = asyncio.run_coroutine_threadsafe(coro, _event_loop)
+
+    def log_exception(fut):
+        """Log any exceptions from the coroutine."""
+        try:
+            # This will raise the exception if one occurred
+            fut.result()
+        except Exception as e:
+            logger.error(f"Unhandled exception in coroutine: {e}", exc_info=True)
+
+    # Add callback to log exceptions when the future completes
+    future.add_done_callback(log_exception)
 
 
 # MQTT topic patterns for process-related operations
@@ -517,7 +539,7 @@ async def handle_process_create(
     """Handle process creation."""
     process_name = payload.get("name")
     if not process_name:
-        logger.error(f"Failed to create process {process_id}: {process_name}")
+        logger.error(f"Failed to create process {process_id}: process name is missing")
         return
     success = process_service.create_process(process_id, process_name)
     if not success:
