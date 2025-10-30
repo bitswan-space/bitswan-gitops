@@ -176,6 +176,18 @@ def calculate_checksum(file_path):
     return sha256_hash.hexdigest()
 
 
+def calculate_deployment_checksum(deployment_id: str, stage: str = "testing"):
+    """
+    Calculate checksum based on deployment_id and stage.
+    Stages: testing, staging, production (no prefix)
+    """
+    # Create the checksum input string
+    checksum_input = f"{deployment_id}:{stage}"
+    sha256_hash = hashlib.sha256()
+    sha256_hash.update(checksum_input.encode('utf-8'))
+    return sha256_hash.hexdigest()
+
+
 async def update_git(
     bitswan_home: str, bitswan_home_host: str, deployment_id: str, action: str
 ):

@@ -31,9 +31,20 @@ async def pull_and_deploy(
 @router.post("/{deployment_id}/deploy")
 async def deploy_automation(
     deployment_id: str,
+    file: UploadFile = File(None),
+    relative_path: str = Form(None),
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    return await automation_service.deploy_automation(deployment_id)
+    return await automation_service.deploy_automation(deployment_id, file, relative_path)
+
+
+@router.post("/{deployment_id}/promote")
+async def promote_automation(
+    deployment_id: str,
+    checksum: str = Form(...),
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    return await automation_service.promote_automation(deployment_id, checksum)
 
 
 @router.post("/{deployment_id}/start")

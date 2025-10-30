@@ -1,4 +1,5 @@
 import os
+import shutil
 from tempfile import NamedTemporaryFile
 import zipfile
 import docker
@@ -9,6 +10,7 @@ from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
     calculate_checksum,
+    calculate_deployment_checksum,
     calculate_uptime,
     docker_compose_up,
     generate_workspace_url,
@@ -68,8 +70,23 @@ class AutomationService:
         if not bs_yaml:
             return []
 
-        pres = {
-            deployment_id: DeployedAutomation(
+        pres = {}
+        for deployment_id, deployment_config in bs_yaml["deployments"].items():
+            # Get the active stage
+            active_stage = deployment_config.get("active_stage", "testing")
+            
+            # Get stage information
+            stages_info = {}
+            if "stages" in deployment_config:
+                for stage, stage_config in deployment_config["stages"].items():
+                    stages_info[stage] = {
+                        "checksum": stage_config.get("checksum"),
+                        "active": stage_config.get("active", False),
+                        "deployed_at": stage_config.get("deployed_at"),
+                        "promoted_from": stage_config.get("promoted_from")
+                    }
+            
+            pres[deployment_id] = DeployedAutomation(
                 container_id=None,
                 endpoint_name=None,
                 created_at=None,
@@ -77,14 +94,13 @@ class AutomationService:
                 state=None,
                 status=None,
                 deployment_id=deployment_id,
-                active=bs_yaml["deployments"][deployment_id].get("active", False),
+                active=deployment_config.get("active", False),
                 automation_url=None,
-                relative_path=bs_yaml["deployments"][deployment_id].get(
-                    "relative_path", None
-                ),
+                relative_path=deployment_config.get("relative_path", None),
+                # Add stage information as additional attributes
+                active_stage=active_stage,
+                stages=stages_info
             )
-            for deployment_id in bs_yaml["deployments"]
-        }
 
         info = self.docker_client.info()
         containers: list[docker.models.containers.Container] = self.get_containers()
@@ -106,6 +122,8 @@ class AutomationService:
                 if label != "true":
                     url = None
 
+                # Preserve the stage information when updating with container info
+                original_pres = pres[deployment_id]
                 pres[deployment_id] = DeployedAutomation(
                     container_id=container.id,
                     endpoint_name=info["Name"],
@@ -116,21 +134,25 @@ class AutomationService:
                     state=container.status,
                     status=calculate_uptime(container.attrs["State"]["StartedAt"]),
                     deployment_id=deployment_id,
-                    active=pres[deployment_id].active,
+                    active=original_pres.active,
                     automation_url=url,
-                    relative_path=pres[deployment_id].relative_path,
+                    relative_path=original_pres.relative_path,
+                    # Preserve stage information
+                    active_stage=getattr(original_pres, 'active_stage', None),
+                    stages=getattr(original_pres, 'stages', {})
                 )
 
         return list(pres.values())
 
     async def create_automation(
-        self, deployment_id: str, file: UploadFile, relative_path: str = None
+        self, deployment_id: str, file: UploadFile, relative_path: str = None, stage: str = "testing"
     ):
         with NamedTemporaryFile(delete=False) as temp_file:
             content = await file.read()
             temp_file.write(content)
 
             temp_file.close()
+            # Use new checksum calculation based on deployment_id and stage
             checksum = calculate_checksum(temp_file.name)
             output_dir = f"{checksum}"
 
@@ -149,8 +171,23 @@ class AutomationService:
                 data = data or {"deployments": {}}
                 deployments = data["deployments"]  # should never raise KeyError
 
-                deployments[deployment_id] = deployments.get(deployment_id, {})
-                deployments[deployment_id]["checksum"] = checksum
+                # Initialize deployment if it doesn't exist
+                if deployment_id not in deployments:
+                    deployments[deployment_id] = {}
+
+                # Initialize stages if it doesn't exist
+                if "stages" not in deployments[deployment_id]:
+                    deployments[deployment_id]["stages"] = {}
+
+                # Set up the stage
+                deployments[deployment_id]["stages"][stage] = {
+                    "checksum": checksum,
+                    "active": True,
+                    "deployed_at": datetime.now().isoformat()
+                }
+
+                # Set the current active stage (testing by default for new deployments)
+                deployments[deployment_id]["active_stage"] = stage
                 deployments[deployment_id]["active"] = True
 
                 if relative_path:
@@ -172,7 +209,7 @@ class AutomationService:
                     "git",
                     "commit",
                     "-m",
-                    f"Add {deployment_id} to bitswan.yaml",
+                    f"Add {deployment_id} to bitswan.yaml (stage: {stage})",
                     cwd=self.gitops_dir,
                 )
 
@@ -183,6 +220,7 @@ class AutomationService:
                     "message": "File processed successfully",
                     "output_directory": output_dir,
                     "checksum": checksum,
+                    "stage": stage,
                 }
             except Exception as e:
                 return {"error": f"Error processing file: {str(e)}"}
@@ -214,16 +252,51 @@ class AutomationService:
                 return deployed_image_checksum_tag
         return None
 
-    async def deploy_automation(self, deployment_id: str):
+    async def deploy_automation(self, deployment_id: str, file: UploadFile = None, relative_path: str = None):
+        """
+        Deploy automation - now handles both creating new automations and deploying existing ones.
+        If file is provided, creates new automation in testing stage.
+        If no file, deploys the currently active stage.
+        """
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
+        
+        # If file is provided, create the automation first (always goes to testing stage)
+        if file:
+            if not file.filename.endswith(".zip"):
+                raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+            
+            create_result = await self.create_automation(deployment_id, file, relative_path, "testing")
+            if "error" in create_result:
+                raise HTTPException(status_code=500, detail=create_result["error"])
+        
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         if not bs_yaml:
             raise HTTPException(status_code=500, detail="Error reading bitswan.yaml")
 
-        dc_yaml = self.generate_docker_compose(bs_yaml)
-        deployments = bs_yaml.get("deployments", {})
+        # Check if deployment exists
+        if deployment_id not in bs_yaml.get("deployments", {}):
+            raise HTTPException(status_code=404, detail=f"Deployment {deployment_id} not found")
 
+        deployment_config = bs_yaml["deployments"][deployment_id]
+        
+        # Get the active stage
+        active_stage = deployment_config.get("active_stage", "testing")
+        
+        # Get the checksum for the active stage
+        if "stages" not in deployment_config or active_stage not in deployment_config["stages"]:
+            raise HTTPException(status_code=404, detail=f"No active stage found for deployment {deployment_id}")
+        
+        stage_config = deployment_config["stages"][active_stage]
+        checksum = stage_config["checksum"]
+        
+        # Update the deployment config to use the checksum for deployment
+        deployment_config["checksum"] = checksum
+        
+        # Create a temporary bitswan.yaml with just this deployment for docker-compose generation
+        temp_bs_yaml = {"deployments": {deployment_id: deployment_config}}
+        
+        dc_yaml = self.generate_docker_compose(temp_bs_yaml)
         dc_config = yaml.safe_load(dc_yaml)
 
         image_tag = None
@@ -247,7 +320,11 @@ class AutomationService:
                 and "deployments" in bs_yaml
                 and deployment_id in bs_yaml["deployments"]
             ):
-                bs_yaml["deployments"][deployment_id]["tag_checksum"] = image_tag
+                # Update the stage config with the image tag
+                if "stages" in bs_yaml["deployments"][deployment_id]:
+                    active_stage = bs_yaml["deployments"][deployment_id].get("active_stage", "testing")
+                    if active_stage in bs_yaml["deployments"][deployment_id]["stages"]:
+                        bs_yaml["deployments"][deployment_id]["stages"][active_stage]["tag_checksum"] = image_tag
 
                 bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
                 with open(bitswan_yaml_path, "w") as f:
@@ -259,8 +336,128 @@ class AutomationService:
 
         return {
             "message": "Deployed services successfully",
-            "deployments": list(deployments[deployment_id].keys()),
+            "deployment_id": deployment_id,
+            "stage": active_stage,
+            "checksum": checksum,
             "result": deployment_result,
+        }
+
+    async def promote_automation(self, deployment_id: str, checksum: str):
+        """
+        Promote an automation from one stage to the next.
+        Flow: testing -> staging -> production
+        """
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+        
+        if not bs_yaml or deployment_id not in bs_yaml.get("deployments", {}):
+            raise HTTPException(status_code=404, detail=f"Deployment {deployment_id} not found")
+        
+        deployment_config = bs_yaml["deployments"][deployment_id]
+        
+        if "stages" not in deployment_config:
+            raise HTTPException(status_code=400, detail=f"No stages found for deployment {deployment_id}")
+        
+        # Find which stage contains this checksum
+        source_stage = None
+        for stage, stage_config in deployment_config["stages"].items():
+            if stage_config.get("checksum") == checksum:
+                source_stage = stage
+                break
+        
+        if not source_stage:
+            raise HTTPException(status_code=404, detail=f"Checksum {checksum} not found in any stage for deployment {deployment_id}")
+        
+        # Determine the target stage
+        stage_progression = {"testing": "staging", "staging": "production"}
+        target_stage = stage_progression.get(source_stage)
+        
+        if not target_stage:
+            raise HTTPException(status_code=400, detail=f"Cannot promote from {source_stage} stage")
+        
+        # Check if target stage already exists and has a different checksum
+        if target_stage in deployment_config["stages"]:
+            existing_checksum = deployment_config["stages"][target_stage].get("checksum")
+            if existing_checksum != checksum:
+                # Copy the source directory to the target checksum directory
+                source_checksum = checksum
+                target_checksum = calculate_deployment_checksum(deployment_id, target_stage)
+                
+                source_dir = os.path.join(self.gitops_dir, source_checksum)
+                target_dir = os.path.join(self.gitops_dir, target_checksum)
+                
+                if os.path.exists(source_dir):
+                    # Remove existing target directory if it exists
+                    if os.path.exists(target_dir):
+                        shutil.rmtree(target_dir)
+                    
+                    # Copy source to target
+                    shutil.copytree(source_dir, target_dir)
+                    
+                    # Update the target stage with new checksum
+                    deployment_config["stages"][target_stage] = {
+                        "checksum": target_checksum,
+                        "active": True,
+                        "deployed_at": datetime.now().isoformat(),
+                        "promoted_from": source_stage
+                    }
+                else:
+                    raise HTTPException(status_code=500, detail=f"Source directory {source_dir} not found")
+            else:
+                # Same checksum, just update the stage info
+                deployment_config["stages"][target_stage]["active"] = True
+                deployment_config["stages"][target_stage]["promoted_at"] = datetime.now().isoformat()
+                deployment_config["stages"][target_stage]["promoted_from"] = source_stage
+        else:
+            # Target stage doesn't exist, create it
+            target_checksum = calculate_deployment_checksum(deployment_id, target_stage)
+            
+            source_dir = os.path.join(self.gitops_dir, checksum)
+            target_dir = os.path.join(self.gitops_dir, target_checksum)
+            
+            if os.path.exists(source_dir):
+                # Copy source to target
+                shutil.copytree(source_dir, target_dir)
+                
+                # Create the target stage
+                deployment_config["stages"][target_stage] = {
+                    "checksum": target_checksum,
+                    "active": True,
+                    "deployed_at": datetime.now().isoformat(),
+                    "promoted_from": source_stage
+                }
+            else:
+                raise HTTPException(status_code=500, detail=f"Source directory {source_dir} not found")
+        
+        # Update the active stage to the target stage
+        deployment_config["active_stage"] = target_stage
+        
+        # Update bitswan.yaml
+        bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+        with open(bitswan_yaml_path, "w") as f:
+            yaml.dump(bs_yaml, f)
+        
+        # Add the new directory to git
+        target_checksum = deployment_config["stages"][target_stage]["checksum"]
+        await call_git_command("git", "add", f"{target_checksum}", cwd=self.gitops_dir)
+        
+        # Commit the changes
+        await call_git_command(
+            "git",
+            "commit",
+            "-m",
+            f"Promote {deployment_id} from {source_stage} to {target_stage}",
+            cwd=self.gitops_dir,
+        )
+        
+        # Push the changes
+        await call_git_command("git", "push", cwd=self.gitops_dir)
+        
+        return {
+            "message": f"Successfully promoted {deployment_id} from {source_stage} to {target_stage}",
+            "deployment_id": deployment_id,
+            "source_stage": source_stage,
+            "target_stage": target_stage,
+            "checksum": target_checksum,
         }
 
     async def deploy_automations(self):
@@ -361,7 +558,20 @@ class AutomationService:
         active_deployments = {}
         for deployment_id, config in bs_yaml["deployments"].items():
             if config.get("active", False):
-                active_deployments[deployment_id] = config
+                # For new stage-based structure, include the active stage's checksum
+                if "stages" in config and config.get("active_stage"):
+                    active_stage = config.get("active_stage", "testing")
+                    stage_config = config["stages"].get(active_stage, {})
+                    if stage_config.get("checksum"):
+                        # Create a config with the active stage's checksum
+                        active_config = config.copy()
+                        active_config["checksum"] = stage_config["checksum"]
+                        active_deployments[deployment_id] = active_config
+                    else:
+                        active_deployments[deployment_id] = config
+                else:
+                    # Legacy structure
+                    active_deployments[deployment_id] = config
         return active_deployments
 
     async def stop_automation(self, deployment_id: str):
@@ -521,7 +731,16 @@ class AutomationService:
             conf = conf or {}
             entry = {}
 
-            source = conf.get("source") or conf.get("checksum") or deployment_id
+            # Handle both old and new structure
+            if "stages" in conf and conf.get("active_stage"):
+                # New stage-based structure
+                active_stage = conf.get("active_stage", "testing")
+                stage_config = conf["stages"].get(active_stage, {})
+                source = stage_config.get("checksum") or deployment_id
+            else:
+                # Legacy structure
+                source = conf.get("source") or conf.get("checksum") or deployment_id
+            
             source_dir = os.path.join(self.gitops_dir, source)
 
             if not os.path.exists(source_dir):
