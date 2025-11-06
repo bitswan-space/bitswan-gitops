@@ -1,10 +1,13 @@
 import os
+import asyncio
+import json
 from tempfile import NamedTemporaryFile
 import zipfile
 import docker
 import yaml
 import requests
 from datetime import datetime
+from typing import Callable
 from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
@@ -17,6 +20,7 @@ from app.utils import (
     remove_route_from_caddy,
     update_git,
     call_git_command,
+    call_git_command_with_output,
     copy_worktree,
 )
 from app.services.image_service import ImageService
@@ -83,6 +87,7 @@ class AutomationService:
                 relative_path=bs_yaml["deployments"][deployment_id].get(
                     "relative_path", None
                 ),
+                stage=bs_yaml["deployments"][deployment_id].get("stage", "production"),
             )
             for deployment_id in bs_yaml["deployments"]
         }
@@ -120,13 +125,20 @@ class AutomationService:
                     active=pres[deployment_id].active,
                     automation_url=url,
                     relative_path=pres[deployment_id].relative_path,
+                    stage=pres[deployment_id].stage,
                 )
 
         return list(pres.values())
 
-    async def create_automation(
-        self, deployment_id: str, file: UploadFile, relative_path: str = None
-    ):
+    async def _upload_and_commit_asset(
+        self, file: UploadFile, commit_message: str | Callable[[str], str]
+    ) -> dict:
+        """
+        Shared logic for uploading an asset (zip file), unpacking it,
+        and committing it to git. Returns dict with checksum and output_directory.
+        
+        commit_message can be a string or a callable that takes checksum and returns a string.
+        """
         with NamedTemporaryFile(delete=False) as temp_file:
             content = await file.read()
             temp_file.write(content)
@@ -136,34 +148,17 @@ class AutomationService:
             output_dir = f"{checksum}"
 
             try:
-                bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
-
                 output_dir = os.path.join(self.gitops_dir, output_dir)
 
                 os.makedirs(output_dir, exist_ok=True)
                 with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
                     zip_ref.extractall(output_dir)
 
-                # Update or create bitswan.yaml
-                data = read_bitswan_yaml(self.gitops_dir)
-
-                data = data or {"deployments": {}}
-                deployments = data["deployments"]  # should never raise KeyError
-
-                deployments[deployment_id] = deployments.get(deployment_id, {})
-                deployments[deployment_id]["checksum"] = checksum
-                deployments[deployment_id]["active"] = True
-
-                if relative_path:
-                    deployments[deployment_id]["relative_path"] = relative_path
-
-                data["deployments"] = deployments
-                with open(bitswan_yaml_path, "w") as f:
-                    yaml.dump(data, f)
-
-                await update_git(
-                    self.gitops_dir, self.gitops_dir_host, deployment_id, "create"
-                )
+                # Generate commit message if it's a callable
+                if callable(commit_message):
+                    final_commit_message = commit_message(checksum)
+                else:
+                    final_commit_message = commit_message
 
                 # add this file to git
                 await call_git_command("git", "add", f"{checksum}", cwd=self.gitops_dir)
@@ -173,7 +168,7 @@ class AutomationService:
                     "git",
                     "commit",
                     "-m",
-                    f"Add {deployment_id} to bitswan.yaml",
+                    final_commit_message,
                     cwd=self.gitops_dir,
                 )
 
@@ -181,14 +176,203 @@ class AutomationService:
                 await call_git_command("git", "push", cwd=self.gitops_dir)
 
                 return {
-                    "message": "File processed successfully",
-                    "output_directory": output_dir,
                     "checksum": checksum,
+                    "output_directory": output_dir,
                 }
             except Exception as e:
-                return {"error": f"Error processing file: {str(e)}"}
+                raise Exception(f"Error processing file: {str(e)}")
             finally:
                 os.unlink(temp_file.name)
+
+    async def create_automation(
+        self, deployment_id: str, file: UploadFile, relative_path: str = None
+    ):
+        result = await self._upload_and_commit_asset(
+            file, f"Add {deployment_id} to bitswan.yaml"
+        )
+        checksum = result["checksum"]
+        output_dir = result["output_directory"]
+
+        try:
+            bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+
+            # Update or create bitswan.yaml
+            data = read_bitswan_yaml(self.gitops_dir)
+
+            data = data or {"deployments": {}}
+            deployments = data["deployments"]  # should never raise KeyError
+
+            deployments[deployment_id] = deployments.get(deployment_id, {})
+            deployments[deployment_id]["checksum"] = checksum
+            deployments[deployment_id]["active"] = True
+
+            if relative_path:
+                deployments[deployment_id]["relative_path"] = relative_path
+
+            data["deployments"] = deployments
+            with open(bitswan_yaml_path, "w") as f:
+                yaml.dump(data, f)
+
+            await update_git(
+                self.gitops_dir, self.gitops_dir_host, deployment_id, "create"
+            )
+
+            return {
+                "message": "File processed successfully",
+                "output_directory": output_dir,
+                "checksum": checksum,
+            }
+        except Exception as e:
+            return {"error": f"Error processing file: {str(e)}"}
+
+    async def upload_asset(self, file: UploadFile):
+        """
+        Upload an asset (zip file), unpack it, and return the checksum.
+        Similar to create_automation but without deployment_id.
+        """
+        try:
+            result = await self._upload_and_commit_asset(
+                file, lambda checksum: f"Add asset {checksum}"
+            )
+            return {
+                "message": "Asset uploaded successfully",
+                "output_directory": result["output_directory"],
+                "checksum": result["checksum"],
+            }
+        except Exception as e:
+            return {"error": f"Error processing file: {str(e)}"}
+
+    def list_assets(self):
+        """
+        List all assets (checksum directories) in the gitops directory.
+        """
+        assets = []
+        if not os.path.exists(self.gitops_dir):
+            return assets
+
+        for item in os.listdir(self.gitops_dir):
+            item_path = os.path.join(self.gitops_dir, item)
+            # Check if it's a directory and looks like a checksum (hex string, typically 64 chars for SHA256)
+            if os.path.isdir(item_path) and len(item) == 64 and all(
+                c in "0123456789abcdef" for c in item.lower()
+            ):
+                assets.append(
+                    {
+                        "checksum": item,
+                        "path": item_path,
+                        "exists": os.path.exists(item_path),
+                    }
+                )
+        return assets
+
+    async def get_automation_history(
+        self, deployment_id: str, page: int = 1, page_size: int = 20
+    ):
+        """
+        Get paginated history of automation changes from git.
+        Only includes entries where there are actual changes to the automation.
+        """
+
+        # Get git log for bitswan.yaml file
+        # Use git log to get commits that modified bitswan.yaml
+        # Then parse each commit to see if it affected the deployment_id
+
+        host_path = os.environ.get("HOST_PATH")
+        if host_path:
+            bitswan_dir = self.gitops_dir_host
+        else:
+            bitswan_dir = self.gitops_dir
+
+        # Get commits that modified bitswan.yaml
+        log_format = (
+            '{"commit": "%H", "author": "%an", "date": "%ai", "message": "%s"}'
+        )
+        stdout, stderr, return_code = await call_git_command_with_output(
+            "git",
+            "log",
+            "--format=" + log_format,
+            "--date=iso",
+            "--",
+            "bitswan.yaml",
+            cwd=bitswan_dir,
+        )
+
+        if return_code != 0:
+            raise HTTPException(
+                status_code=500, detail=f"Error getting git history: {stderr}"
+            )
+
+        commits = []
+        for line in stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            try:
+                commit_data = json.loads(line)
+                commits.append(commit_data)
+            except json.JSONDecodeError:
+                continue
+
+        # Now check each commit to see if it actually changed the deployment_id
+        history_entries = []
+        previous_config = None
+
+        for commit in commits:
+            commit_hash = commit["commit"]
+
+            # Get the bitswan.yaml content at this commit
+            stdout, stderr, return_code = await call_git_command_with_output(
+                "git",
+                "show",
+                f"{commit_hash}:bitswan.yaml",
+                cwd=bitswan_dir,
+            )
+
+            if return_code != 0:
+                # File might not exist at this commit, skip
+                continue
+
+            try:
+                commit_yaml = yaml.safe_load(stdout)
+                if not commit_yaml or "deployments" not in commit_yaml:
+                    continue
+
+                deployment_config = commit_yaml.get("deployments", {}).get(
+                    deployment_id
+                )
+
+                # Only add entry if there's a change from previous config
+                if deployment_config != previous_config:
+                    # Extract relevant fields
+                    entry = {
+                        "commit": commit_hash,
+                        "author": commit["author"],
+                        "date": commit["date"],
+                        "message": commit["message"],
+                        "checksum": deployment_config.get("checksum"),
+                        "stage": deployment_config.get("stage", "production"),
+                        "relative_path": deployment_config.get("relative_path"),
+                        "active": deployment_config.get("active"),
+                        "tag_checksum": deployment_config.get("tag_checksum"),
+                    }
+                    history_entries.append(entry)
+                    previous_config = deployment_config
+
+            except yaml.YAMLError:
+                continue
+
+        # Paginate results
+        total = len(history_entries)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paginated_entries = history_entries[start:end]
+
+        return {
+            "items": paginated_entries,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total + page_size - 1) // page_size,
+        }
 
     async def delete_automation(self, deployment_id: str):
         await self.remove_automation_from_bitswan(deployment_id)
@@ -218,12 +402,46 @@ class AutomationService:
                 return deployed_image_checksum_tag
         return None
 
-    async def deploy_automation(self, deployment_id: str):
+    async def deploy_automation(
+        self,
+        deployment_id: str,
+        checksum: str | None = None,
+        stage: str | None = None,
+        relative_path: str | None = None,
+    ):
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         if not bs_yaml:
             raise HTTPException(status_code=500, detail="Error reading bitswan.yaml")
+
+        # Update bitswan.yaml with new parameters if provided
+        if checksum is not None or stage is not None or relative_path is not None:
+            if deployment_id not in bs_yaml.get("deployments", {}):
+                bs_yaml.setdefault("deployments", {})[deployment_id] = {}
+
+            deployment_config = bs_yaml["deployments"][deployment_id]
+
+            if checksum is not None:
+                deployment_config["checksum"] = checksum
+
+            if stage is not None:
+                # Map production to empty string
+                deployment_config["stage"] = "" if stage == "production" else stage
+
+            if relative_path is not None:
+                deployment_config["relative_path"] = relative_path
+
+            bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+            with open(bitswan_yaml_path, "w") as f:
+                yaml.dump(bs_yaml, f)
+
+            await update_git(
+                self.gitops_dir, self.gitops_dir_host, deployment_id, "deploy"
+            )
+
+            # Re-read to get updated config
+            bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         dc_yaml = self.generate_docker_compose(bs_yaml)
         deployments = bs_yaml.get("deployments", {})

@@ -22,6 +22,7 @@ dependencies = [
  "humanize",
  "toml",
  "watchdog",
+ "markdown",
 ]
 
 [project.optional-dependencies]
