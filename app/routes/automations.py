@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query
 from fastapi.responses import JSONResponse
 from app.services.automation_service import AutomationService
 from app.dependencies import get_automation_service
@@ -31,9 +31,20 @@ async def pull_and_deploy(
 @router.post("/{deployment_id}/deploy")
 async def deploy_automation(
     deployment_id: str,
+    checksum: str | None = Form(None),
+    stage: str | None = Form(None),
+    relative_path: str | None = Form(None),
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    return await automation_service.deploy_automation(deployment_id)
+    # Validate stage if provided
+    if stage is not None and stage not in ["dev", "staging", "production"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Stage must be one of: dev, staging, production",
+        )
+    return await automation_service.deploy_automation(
+        deployment_id, checksum=checksum, stage=stage, relative_path=relative_path
+    )
 
 
 @router.post("/{deployment_id}/start")
@@ -107,3 +118,34 @@ async def delete_automation(
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     return await automation_service.delete_automation(deployment_id)
+
+
+@router.post("/assets/upload")
+async def upload_asset(
+    file: UploadFile = File(...),
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    if file.filename.endswith(".zip"):
+        result = await automation_service.upload_asset(file)
+        return JSONResponse(content=result)
+    else:
+        raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+
+
+@router.get("/assets")
+async def list_assets(
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    return automation_service.list_assets()
+
+
+@router.get("/{deployment_id}/history")
+async def get_automation_history(
+    deployment_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    return await automation_service.get_automation_history(
+        deployment_id, page=page, page_size=page_size
+    )

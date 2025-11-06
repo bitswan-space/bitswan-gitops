@@ -22,6 +22,67 @@ async def wait_coroutine(*args, **kwargs) -> int:
     return result
 
 
+def _build_git_command(*command, cwd=None):
+    """
+    Build the command to execute, handling HOST_PATH case with nsenter if needed.
+    Returns (exec_command, proc_kwargs) where exec_command is the command list
+    and proc_kwargs are kwargs for subprocess execution.
+    """
+    host_path = os.environ.get("HOST_PATH")
+    host_home = os.environ.get("HOST_HOME")
+    host_user = os.environ.get("HOST_USER")
+
+    # If all host environment variables are set, use nsenter to run git command on host
+    if cwd and host_path and host_home and host_user:
+        formatted_command = " ".join(shlex.quote(arg) for arg in command)
+        host_command = (
+            f"PATH={host_path} su - {host_user} -c "
+            f'"cd {cwd} && PATH={host_path} HOME={host_home} {formatted_command}"'
+        )
+        exec_command = [
+            "nsenter",
+            "-t",
+            "1",
+            "-m",
+            "-u",
+            "-n",
+            "-i",
+            "sh",
+            "-c",
+            host_command,
+        ]
+        return exec_command, {}
+    else:
+        # Fallback to local git command
+        return list(command), {"cwd": cwd}
+
+
+async def call_git_command(*command, **kwargs) -> bool:
+    cwd = kwargs.get("cwd")
+    exec_command, proc_kwargs = _build_git_command(*command, cwd=cwd)
+    result = await wait_coroutine(*exec_command, **proc_kwargs)
+    return result == 0
+
+
+async def call_git_command_with_output(*command, **kwargs) -> tuple[str, str, int]:
+    """
+    Execute a git command and return (stdout, stderr, return_code).
+    Handles HOST_PATH case using nsenter if needed.
+    """
+    cwd = kwargs.get("cwd")
+    exec_command, proc_kwargs = _build_git_command(*command, cwd=cwd)
+    
+    # Execute the command and capture output
+    proc = await asyncio.create_subprocess_exec(
+        *exec_command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **proc_kwargs,
+    )
+    stdout, stderr = await proc.communicate()
+    return stdout.decode(), stderr.decode(), proc.returncode
+
+
 def read_bitswan_yaml(bitswan_dir: str) -> dict[str, Any] | None:
     bitswan_yaml_path = os.path.join(bitswan_dir, "bitswan.yaml")
     try:
@@ -37,40 +98,6 @@ def calculate_uptime(created_at: str) -> str:
     created_at = datetime.fromisoformat(created_at)
     uptime = datetime.now(timezone.utc) - created_at
     return humanize.naturaldelta(uptime)
-
-
-async def call_git_command(*command, **kwargs) -> bool:
-    cwd = kwargs.get("cwd")
-    host_path = os.environ.get("HOST_PATH")
-    host_home = os.environ.get("HOST_HOME")
-    host_user = os.environ.get("HOST_USER")
-
-    # If all host environment variables are set, use nsenter to run git command on host
-    if cwd and host_path and host_home and host_user:
-        formatted_command = " ".join(shlex.quote(arg) for arg in command)
-        host_command = (
-            f"PATH={host_path} su - {host_user} -c "
-            f'"cd {cwd} && PATH={host_path} HOME={host_home} {formatted_command}"'
-        )
-
-        nsenter_command = [
-            "nsenter",
-            "-t",
-            "1",
-            "-m",
-            "-u",
-            "-n",
-            "-i",
-            "sh",
-            "-c",
-            host_command,
-        ]
-        result = await wait_coroutine(*nsenter_command)
-        return result == 0
-
-    # Fallback to local git command
-    result = await wait_coroutine(*command, **kwargs)
-    return result == 0
 
 
 def read_pipeline_conf(source_dir: str) -> ConfigParser | None:

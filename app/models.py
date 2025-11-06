@@ -41,6 +41,7 @@ class DeployedAutomation(BaseModel):
     active: bool
     automation_url: str | None
     relative_path: str | None
+    stage: str | None
 
 
 class JupyterServer(BaseModel):
