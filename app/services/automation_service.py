@@ -314,7 +314,7 @@ class AutomationService:
 
         # Now check each commit to see if it actually changed the deployment_id
         history_entries = []
-        previous_config = None
+        previous_checksum = None
 
         for commit in commits:
             commit_hash = commit["commit"]
@@ -340,22 +340,28 @@ class AutomationService:
                     deployment_id
                 )
 
-                # Only add entry if there's a change from previous config
-                if deployment_config != previous_config:
-                    # Extract relevant fields
+                # Only add entry if there's a checksum and it's different from the previous one
+                if deployment_config is None:
+                    # Deployment doesn't exist in this commit, skip
+                    continue
+                
+                current_checksum = deployment_config.get("checksum")
+                
+                # Only add entry if checksum exists and is different from previous checksum
+                if current_checksum and current_checksum != previous_checksum:
                     entry = {
                         "commit": commit_hash,
                         "author": commit["author"],
                         "date": commit["date"],
                         "message": commit["message"],
-                        "checksum": deployment_config.get("checksum"),
+                        "checksum": current_checksum,
                         "stage": deployment_config.get("stage", "production"),
                         "relative_path": deployment_config.get("relative_path"),
                         "active": deployment_config.get("active"),
                         "tag_checksum": deployment_config.get("tag_checksum"),
                     }
                     history_entries.append(entry)
-                    previous_config = deployment_config
+                    previous_checksum = current_checksum
 
             except yaml.YAMLError:
                 continue
@@ -431,6 +437,10 @@ class AutomationService:
 
             if relative_path is not None:
                 deployment_config["relative_path"] = relative_path
+
+            # Set active to True by default when deploying (unless explicitly set to False)
+            if "active" not in deployment_config:
+                deployment_config["active"] = True
 
             bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
             with open(bitswan_yaml_path, "w") as f:
