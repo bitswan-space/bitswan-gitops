@@ -418,8 +418,15 @@ class AutomationService:
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
+        # Initialize bitswan.yaml if it doesn't exist
         if not bs_yaml:
-            raise HTTPException(status_code=500, detail="Error reading bitswan.yaml")
+            bs_yaml = {"deployments": {}}
+            bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+            with open(bitswan_yaml_path, "w") as f:
+                yaml.dump(bs_yaml, f)
+            await update_git(
+                self.gitops_dir, self.gitops_dir_host, deployment_id, "initialize"
+            )
 
         # Update bitswan.yaml with new parameters if provided
         if checksum is not None or stage is not None or relative_path is not None:
@@ -493,7 +500,7 @@ class AutomationService:
 
         return {
             "message": "Deployed services successfully",
-            "deployments": list(deployments[deployment_id].keys()),
+            "deployments": list(deployments.get(deployment_id, {}).keys()),
             "result": deployment_result,
         }
 
@@ -501,8 +508,15 @@ class AutomationService:
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
+        # Initialize bitswan.yaml if it doesn't exist
         if not bs_yaml:
-            raise HTTPException(status_code=500, detail="Error reading bitswan.yaml")
+            bs_yaml = {"deployments": {}}
+            bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+            with open(bitswan_yaml_path, "w") as f:
+                yaml.dump(bs_yaml, f)
+            await update_git(
+                self.gitops_dir, self.gitops_dir_host, "all", "initialize"
+            )
 
         active_deployments = self.get_active_automations()
 
