@@ -791,15 +791,35 @@ class AutomationService:
             }
             entry["image"] = "bitswan/pipeline-runtime-environment:latest"
 
+            # Determine the stage (empty string means production)
+            stage = conf.get("stage", "production")
+            if stage == "":
+                stage = "production"
+            
+            # Set BITSWAN_AUTOMATION_STAGE environment variable
+            if "environment" not in entry:
+                entry["environment"] = {}
+            entry["environment"]["BITSWAN_AUTOMATION_STAGE"] = stage
+
             network_mode = None
             secret_groups = []
             if pipeline_conf:
                 network_mode = pipeline_conf.get(
                     "docker.compose", "network_mode", fallback=conf.get("network_mode")
                 )
-                secret_groups = pipeline_conf.get(
-                    "secrets", "groups", fallback=""
-                ).split(" ")
+                
+                # Check for stage-specific secret groups first, then fall back to groups
+                stage_groups_key = f"{stage}_groups"
+                secret_groups_str = pipeline_conf.get(
+                    "secrets", stage_groups_key, fallback=""
+                )
+                if not secret_groups_str:
+                    # Fall back to generic groups if stage-specific groups not set
+                    secret_groups_str = pipeline_conf.get(
+                        "secrets", "groups", fallback=""
+                    )
+                secret_groups = secret_groups_str.split(" ") if secret_groups_str else []
+            
             for secret_group in secret_groups:
                 # Skip empty secret groups
                 if not secret_group:
