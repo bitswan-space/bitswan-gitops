@@ -71,7 +71,7 @@ async def call_git_command_with_output(*command, **kwargs) -> tuple[str, str, in
     """
     cwd = kwargs.get("cwd")
     exec_command, proc_kwargs = _build_git_command(*command, cwd=cwd)
-    
+
     # Execute the command and capture output
     proc = await asyncio.create_subprocess_exec(
         *exec_command,

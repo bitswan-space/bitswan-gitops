@@ -1,5 +1,4 @@
 import os
-import asyncio
 import json
 from tempfile import NamedTemporaryFile
 import zipfile
@@ -136,7 +135,7 @@ class AutomationService:
         """
         Shared logic for uploading an asset (zip file), unpacking it,
         and committing it to git. Returns dict with checksum and output_directory.
-        
+
         commit_message can be a string or a callable that takes checksum and returns a string.
         """
         with NamedTemporaryFile(delete=False) as temp_file:
@@ -253,8 +252,10 @@ class AutomationService:
         for item in os.listdir(self.gitops_dir):
             item_path = os.path.join(self.gitops_dir, item)
             # Check if it's a directory and looks like a checksum (hex string, typically 64 chars for SHA256)
-            if os.path.isdir(item_path) and len(item) == 64 and all(
-                c in "0123456789abcdef" for c in item.lower()
+            if (
+                os.path.isdir(item_path)
+                and len(item) == 64
+                and all(c in "0123456789abcdef" for c in item.lower())
             ):
                 assets.append(
                     {
@@ -284,9 +285,7 @@ class AutomationService:
             bitswan_dir = self.gitops_dir
 
         # Get commits that modified bitswan.yaml
-        log_format = (
-            '{"commit": "%H", "author": "%an", "date": "%ai", "message": "%s"}'
-        )
+        log_format = '{"commit": "%H", "author": "%an", "date": "%ai", "message": "%s"}'
         stdout, stderr, return_code = await call_git_command_with_output(
             "git",
             "log",
@@ -344,9 +343,9 @@ class AutomationService:
                 if deployment_config is None:
                     # Deployment doesn't exist in this commit, skip
                     continue
-                
+
                 current_checksum = deployment_config.get("checksum")
-                
+
                 # Only add entry if checksum exists and is different from previous checksum
                 if current_checksum and current_checksum != previous_checksum:
                     entry = {
@@ -514,9 +513,7 @@ class AutomationService:
             bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
             with open(bitswan_yaml_path, "w") as f:
                 yaml.dump(bs_yaml, f)
-            await update_git(
-                self.gitops_dir, self.gitops_dir_host, "all", "initialize"
-            )
+            await update_git(self.gitops_dir, self.gitops_dir_host, "all", "initialize")
 
         active_deployments = self.get_active_automations()
 
@@ -809,7 +806,7 @@ class AutomationService:
             stage = conf.get("stage", "production")
             if stage == "":
                 stage = "production"
-            
+
             # Set BITSWAN_AUTOMATION_STAGE environment variable
             if "environment" not in entry:
                 entry["environment"] = {}
@@ -821,7 +818,7 @@ class AutomationService:
                 network_mode = pipeline_conf.get(
                     "docker.compose", "network_mode", fallback=conf.get("network_mode")
                 )
-                
+
                 # Check for stage-specific secret groups first, then fall back to groups
                 stage_groups_key = f"{stage}_groups"
                 secret_groups_str = pipeline_conf.get(
@@ -832,8 +829,10 @@ class AutomationService:
                     secret_groups_str = pipeline_conf.get(
                         "secrets", "groups", fallback=""
                     )
-                secret_groups = secret_groups_str.split(" ") if secret_groups_str else []
-            
+                secret_groups = (
+                    secret_groups_str.split(" ") if secret_groups_str else []
+                )
+
             for secret_group in secret_groups:
                 # Skip empty secret groups
                 if not secret_group:
