@@ -10,26 +10,29 @@ router = APIRouter(prefix="/docs", tags=["documentation"])
 async def get_promotion_guide():
     """
     Get the promotion workflow guide.
-    
+
     This guide explains how to use the promotion workflow to deploy automations
     through different stages (dev → staging → production) and how to rollback deployments.
     """
     guide_path = os.path.join(
         os.path.dirname(os.path.dirname(__file__)), "docs", "promotion_guide.md"
     )
-    
+
     try:
         with open(guide_path, "r") as f:
             markdown_content = f.read()
-        
+
         # Convert markdown to HTML
         try:
             import markdown
-            html_content = markdown.markdown(markdown_content, extensions=['extra', 'fenced_code', 'tables', 'nl2br'])
+
+            html_content = markdown.markdown(
+                markdown_content, extensions=["extra", "fenced_code", "tables", "nl2br"]
+            )
         except ImportError:
             # Fallback: wrap markdown in pre tags if markdown library not available
             html_content = f"<pre>{markdown_content}</pre>"
-        
+
         # Wrap in a nice HTML template
         html_template = f"""
 <!DOCTYPE html>
@@ -129,4 +132,3 @@ async def get_promotion_guide():
         raise HTTPException(status_code=404, detail="Promotion guide not found")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading guide: {str(e)}")
-

@@ -33,7 +33,7 @@ app.include_router(docs_router)
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
-    
+
     openapi_schema = get_openapi(
         title="Bitswan GitOps API",
         version="0.1.0",
@@ -48,7 +48,7 @@ This API allows you to manage Bitswan automations, including deployment, monitor
         """,
         routes=app.routes,
     )
-    
+
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
