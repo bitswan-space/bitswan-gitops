@@ -18,18 +18,25 @@ setup_docker_group() {
     if [ -n "$docker_gid" ]; then
         echo "Docker socket group ID: $docker_gid"
         
-        # Check if docker group exists with this GID
-        if ! getent group $docker_gid >/dev/null 2>&1; then
-            echo "Creating docker group with GID $docker_gid"
-            groupadd -g $docker_gid docker
+        # Get the group name that owns the socket (if socket exists)
+        local docker_group=""
+        if [ -S /var/run/docker.sock ]; then
+            docker_group=$(stat -c %G /var/run/docker.sock)
         fi
         
-        # Add user1000 to the docker group
-        echo "Adding user1000 to docker group (GID: $docker_gid)"
-        usermod -aG docker user1000
+        # Check if a group with this GID already exists
+        local existing_group=$(getent group $docker_gid | cut -d: -f1)
         
-        # Update the docker group GID to match the socket
-        groupmod -g $docker_gid docker 2>/dev/null || true
+        if [ -n "$existing_group" ]; then
+            # Use the existing group
+            echo "Using existing group: $existing_group (GID: $docker_gid)"
+            usermod -aG $existing_group user1000
+        else
+            # Create a new docker group with the socket's GID
+            echo "Creating docker group with GID $docker_gid"
+            groupadd -g $docker_gid docker 2>/dev/null || true
+            usermod -aG docker user1000
+        fi
     else
         echo "Warning: Could not determine docker group ID"
     fi
@@ -37,9 +44,12 @@ setup_docker_group() {
 
 chown -R 1000 /gitops/gitops/
 
+# Always set up Docker group permissions for user1000
+# This ensures user1000 can access Docker socket even when running as root
+setup_docker_group
+
 # Main execution
 if [ -z "$HOST_PATH" ] && [ -z "$HOST_HOME" ] && [ -z "$HOST_USER" ]; then
-    setup_docker_group
     mkdir -p /var/log/internal-image-build
     chown -R user1000:user1000 /var/log/internal-image-build
     chown -R user1000:user1000 /home/user1000
