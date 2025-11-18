@@ -32,6 +32,7 @@ setup_docker_group() {
             echo "Using existing group: $existing_group (GID: $docker_gid)"
             usermod -aG $existing_group user1000
         else
+            groupdel docker
             # Create a new docker group with the socket's GID
             echo "Creating docker group with GID $docker_gid"
             groupadd -g $docker_gid docker 2>/dev/null || true
