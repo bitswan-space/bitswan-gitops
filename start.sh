@@ -43,6 +43,26 @@ setup_docker_group() {
     fi
 }
 
+if [ "$UPDATE_CA_CERTIFICATES" = "true" ]; then
+    echo "Updating CA certificates..."
+    if [ -d /usr/local/share/ca-certificates/custom ]; then
+        # Copy certificates from read-only mount to writable location
+        cp /usr/local/share/ca-certificates/custom/*.crt /usr/local/share/ca-certificates/ 2>/dev/null || true
+        cp /usr/local/share/ca-certificates/custom/*.pem /usr/local/share/ca-certificates/ 2>/dev/null || true
+        
+        # Rename .pem files to .crt (update-ca-certificates requires .crt)
+        for f in /usr/local/share/ca-certificates/*.pem; do
+            [ -f "$f" ] && mv "$f" "${f%.pem}.crt"
+        done
+        
+        # Update the system CA certificates
+        update-ca-certificates 2>&1 | grep -v "WARNING: ca-certificates.crt does not contain exactly one certificate or CRL"
+        echo "CA certificates updated successfully"
+    else
+        echo "No custom CA certificates found at /usr/local/share/ca-certificates/custom"
+    fi
+fi
+
 chown -R 1000 /gitops/gitops/
 
 # Always set up Docker group permissions for user1000
