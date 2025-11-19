@@ -43,6 +43,8 @@ class AutomationService:
         self.gitops_dir = os.path.join(self.bs_home, "gitops")
         self.gitops_dir_host = os.path.join(self.bs_home_host, "gitops")
         self.secrets_dir = os.path.join(self.bs_home, "secrets")
+        # Cache for automation history: key is (deployment_id, page, page_size), value is (commit_hash, response)
+        self._history_cache: dict[tuple[str, int, int], tuple[str, dict]] = {}
 
     def get_container(self, deployment_id):
         return self.docker_client.containers.list(
@@ -266,12 +268,29 @@ class AutomationService:
                 )
         return assets
 
+    async def _get_latest_commit_hash(self, bitswan_dir: str) -> str:
+        """
+        Get the latest commit hash (HEAD) from the git repository.
+        """
+        stdout, stderr, return_code = await call_git_command_with_output(
+            "git",
+            "rev-parse",
+            "HEAD",
+            cwd=bitswan_dir,
+        )
+        if return_code != 0:
+            raise HTTPException(
+                status_code=500, detail=f"Error getting latest commit hash: {stderr}"
+            )
+        return stdout.strip()
+
     async def get_automation_history(
         self, deployment_id: str, page: int = 1, page_size: int = 20
     ):
         """
         Get paginated history of automation changes from git.
         Only includes entries where there are actual changes to the automation.
+        Cached responses are invalidated when the commit hash changes.
         """
 
         # Get git log for bitswan.yaml file
@@ -283,6 +302,24 @@ class AutomationService:
             bitswan_dir = self.gitops_dir_host
         else:
             bitswan_dir = self.gitops_dir
+
+        # Get the latest commit hash
+        current_commit_hash = await self._get_latest_commit_hash(bitswan_dir)
+
+        # Check cache
+        cache_key = (deployment_id, page, page_size)
+        if cache_key in self._history_cache:
+            cached_commit_hash, cached_response = self._history_cache[cache_key]
+            # If commit hash matches, return cached response
+            if cached_commit_hash == current_commit_hash:
+                return cached_response
+            # If commit hash changed, invalidate all caches
+            else:
+                self._history_cache.clear()
+
+        # Get git log for bitswan.yaml file
+        # Use git log to get commits that modified bitswan.yaml
+        # Then parse each commit to see if it affected the deployment_id
 
         # Get commits that modified bitswan.yaml
         log_format = '{"commit": "%H", "author": "%an", "date": "%ai", "message": "%s"}'
@@ -371,13 +408,19 @@ class AutomationService:
         end = start + page_size
         paginated_entries = history_entries[start:end]
 
-        return {
+        response = {
             "items": paginated_entries,
             "total": total,
             "page": page,
             "page_size": page_size,
             "total_pages": (total + page_size - 1) // page_size,
         }
+
+        # Cache the response with the current commit hash
+        cache_key = (deployment_id, page, page_size)
+        self._history_cache[cache_key] = (current_commit_hash, response)
+
+        return response
 
     async def delete_automation(self, deployment_id: str):
         await self.remove_automation_from_bitswan(deployment_id)
