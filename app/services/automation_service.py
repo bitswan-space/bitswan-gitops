@@ -89,6 +89,9 @@ class AutomationService:
                     "relative_path", None
                 ),
                 stage=bs_yaml["deployments"][deployment_id].get("stage", "production"),
+                version_hash=bs_yaml["deployments"][deployment_id].get(
+                    "checksum", None
+                ),
             )
             for deployment_id in bs_yaml["deployments"]
         }
@@ -127,6 +130,7 @@ class AutomationService:
                     automation_url=url,
                     relative_path=pres[deployment_id].relative_path,
                     stage=pres[deployment_id].stage,
+                    version_hash=pres[deployment_id].version_hash,
                 )
 
         return list(pres.values())
