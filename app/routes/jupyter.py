@@ -32,7 +32,6 @@ async def heartbeat(
     jupyter_service: JupyterService = Depends(get_jupyter_service),
 ):
     for server in heartbeat.servers:
-
         jupyter_server_containers = jupyter_service.get_jupyter_server_containers()
         container_session_ids = {
             container.labels["bitswan.session_id"]
