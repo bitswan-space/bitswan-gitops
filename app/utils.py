@@ -1,5 +1,6 @@
 import asyncio
 from configparser import ConfigParser
+from io import StringIO
 from datetime import datetime, timezone
 import hashlib
 import os
@@ -100,12 +101,25 @@ def calculate_uptime(created_at: str) -> str:
     return humanize.naturaldelta(uptime)
 
 
+def parse_pipeline_conf(content: str) -> ConfigParser | None:
+    """Parse pipelines.conf content from a string."""
+    if not content or not content.strip():
+        return None
+    try:
+        config = ConfigParser()
+        config.read_file(StringIO(content))
+        return config
+    except Exception:
+        return None
+
+
 def read_pipeline_conf(source_dir: str) -> ConfigParser | None:
+    """Read pipelines.conf from a directory (legacy method, uses parse_pipeline_conf internally)."""
     conf_file_path = os.path.join(source_dir, "pipelines.conf")
     if os.path.exists(conf_file_path):
-        config = ConfigParser()
-        config.read(conf_file_path)
-        return config
+        with open(conf_file_path, "r") as f:
+            content = f.read()
+        return parse_pipeline_conf(content)
     return None
 
 

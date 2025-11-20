@@ -9,8 +9,6 @@ from fastapi import FastAPI
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from app.dependencies import get_jupyter_service
-from app.routes.jupyter import jupyter_server_cleanup
 
 from .mqtt import mqtt_resource
 from .mqtt_publish_automations import publish_automations
@@ -66,14 +64,7 @@ class WorkspaceChangeHandler(FileSystemEventHandler):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    stop = asyncio.Event()
     observer = None
-
-    jupyter_service = get_jupyter_service()
-
-    jupyter_server_cleanup_task = asyncio.create_task(
-        jupyter_server_cleanup(stop, jupyter_service)
-    )
 
     scheduler = AsyncIOScheduler(timezone="UTC")
     result = await mqtt_resource.connect()
@@ -112,9 +103,6 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        stop.set()
-        jupyter_server_cleanup_task.cancel()
-        await jupyter_server_cleanup_task
         if observer:
             observer.stop()
             # Run blocking join in executor to avoid blocking event loop
