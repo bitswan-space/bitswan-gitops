@@ -23,6 +23,7 @@ dependencies = [
  "toml",
  "watchdog",
  "markdown",
+ "aiohttp",
 ]
 
 [project.optional-dependencies]
