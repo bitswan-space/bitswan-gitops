@@ -23,7 +23,6 @@ class JupyterService:
         session_id: str,
         server_token: str = None,
     ):
-
         container_name = f"{automation_name}-{session_id}-jupyter-server"
 
         self.check_container_exists(container_name)
@@ -171,7 +170,6 @@ class JupyterService:
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
-
                 with socket.create_connection((container_name, port), timeout=2):
                     return True
             except (socket.timeout, ConnectionRefusedError, OSError):
