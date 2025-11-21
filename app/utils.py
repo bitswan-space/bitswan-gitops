@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import shutil
 import tempfile
+import stat
 
 from filelock import FileLock
 import humanize
@@ -215,6 +216,92 @@ def calculate_checksum(file_path):
         for byte_block in iter(lambda: f.read(4096), b""):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
+
+
+def _calculate_git_blob_hash(file_path: str) -> str:
+    """
+    Calculate git blob hash for a file (SHA1 of "blob <size>\\0<content>").
+    """
+    with open(file_path, "rb") as f:
+        content = f.read()
+    
+    size = len(content)
+    header = f"blob {size}\0".encode("utf-8")
+    blob = header + content
+    return hashlib.sha1(blob).hexdigest()
+
+
+def _calculate_git_tree_hash_recursive(dir_path: str) -> str:
+    """
+    Calculate git tree hash for a directory recursively.
+    Implements git's tree object format directly without spawning git processes.
+    Tree format: "tree <size>\\0<entries>" where each entry is "<mode> <name>\\0<20-byte-sha1>"
+    """
+    entries = []
+    
+    # Get all entries and sort them (directories first, then alphabetical)
+    items = []
+    for item in os.listdir(dir_path):
+        if item == ".git":
+            continue
+        item_path = os.path.join(dir_path, item)
+        is_dir = os.path.isdir(item_path)
+        items.append((item, is_dir))
+    
+    # Sort: directories first, then alphabetical
+    items.sort(key=lambda x: (not x[1], x[0]))
+    
+    for name, is_dir in items:
+        item_path = os.path.join(dir_path, name)
+        
+        if is_dir:
+            # Recursively calculate tree hash for subdirectory
+            tree_hash = _calculate_git_tree_hash_recursive(item_path)
+            entries.append({
+                "mode": "040000",  # Directory mode
+                "name": name,
+                "hash": tree_hash
+            })
+        else:
+            # Calculate blob hash for file
+            # Check if file is executable
+            file_stat = os.stat(item_path)
+            mode = "100755" if (file_stat.st_mode & stat.S_IEXEC) else "100644"
+            
+            blob_hash = _calculate_git_blob_hash(item_path)
+            entries.append({
+                "mode": mode,
+                "name": name,
+                "hash": blob_hash
+            })
+    
+    # Build tree object: "tree <size>\\0<entries>"
+    entry_bytes = bytearray()
+    for entry in entries:
+        # Each entry: "<mode> <name>\\0<20-byte-sha1>"
+        hash_bytes = bytes.fromhex(entry["hash"])
+        entry_str = f"{entry['mode']} {entry['name']}\0"
+        entry_bytes.extend(entry_str.encode("utf-8"))
+        entry_bytes.extend(hash_bytes)
+    
+    tree_content = bytes(entry_bytes)
+    tree_size = len(tree_content)
+    tree_header = f"tree {tree_size}\0".encode("utf-8")
+    tree_object = tree_header + tree_content
+    
+    # Calculate SHA1 hash of tree object
+    return hashlib.sha1(tree_object).hexdigest()
+
+
+async def calculate_git_tree_hash(dir_path: str) -> str:
+    """
+    Calculate git tree hash for a directory using git's tree object format.
+    This implementation directly calculates the hash without spawning git processes,
+    making it much more efficient.
+    """
+    # Run the recursive calculation in a thread pool to keep it async
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _calculate_git_tree_hash_recursive, dir_path)
 
 
 async def update_git(

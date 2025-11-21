@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from app.services.image_service import ImageService
 from app.dependencies import get_image_service
@@ -26,10 +26,11 @@ async def get_image_logs(
 async def create_image(
     image_tag: str,
     file: UploadFile = File(...),
+    checksum: str = Form(...),
     image_service: ImageService = Depends(get_image_service),
 ):
     if file.filename.endswith(".zip"):
-        result = await image_service.create_image(image_tag, file)
+        result = await image_service.create_image(image_tag, file, checksum=checksum)
         return JSONResponse(content=result)
     else:
         raise HTTPException(status_code=400, detail="File must be a ZIP archive")

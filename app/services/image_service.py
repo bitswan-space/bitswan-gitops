@@ -5,7 +5,7 @@ import zipfile
 import shutil
 from typing import Optional
 
-from app.utils import calculate_checksum, save_image
+from app.utils import calculate_checksum, calculate_git_tree_hash, save_image
 
 import docker
 from fastapi import UploadFile, HTTPException
@@ -121,6 +121,12 @@ class ImageService:
         checksum: Optional[str] = None,
         build_context_path: Optional[str] = None,
     ):
+        # If file is provided, checksum is required
+        if file and not checksum:
+            raise HTTPException(
+                status_code=400,
+                detail="Checksum is required when uploading a file",
+            )
         """
         Builds a docker image either from a zipfile upload or from a directory path.
 
@@ -212,9 +218,13 @@ class ImageService:
                     with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
                         zip_ref.extractall(temp_dir_path)
 
-                    # Use provided checksum or calculate from file
-                    if not checksum:
-                        checksum = calculate_checksum(temp_file.name)
+                    # Verify the checksum using git tree hash algorithm
+                    calculated_hash = await calculate_git_tree_hash(temp_dir_path)
+                    if calculated_hash != checksum:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Checksum verification failed. Expected {checksum}, got {calculated_hash}",
+                        )
 
                     full_tag = tag_root + ":sha" + checksum
                     # Use .building suffix during build
