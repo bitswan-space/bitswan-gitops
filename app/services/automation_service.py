@@ -448,29 +448,32 @@ class AutomationService:
         self._history_cache[cache_key] = (current_commit_hash, response)
 
         return response
-    
+
     def start_oauth2_proxy_in_container(self, deployment_id: str):
         """Start oauth2-proxy in a running container after deployment"""
         containers = self.get_container(deployment_id)
 
         container = containers[0]
         labels = container.labels
-        
+
         # Check if oauth2 is enabled via labels
         if labels.get("gitops.oauth2.enabled") != "true":
             return False
-        
+
         # Ensure container is running
         if container.status != "running":
-            print(f"Warning: Container {container.name} is not running (status: {container.status}), cannot start oauth2-proxy")
+            print(
+                f"Warning: Container {container.name} is not running (status: {container.status}), cannot start oauth2-proxy"
+            )
             return False
-        
-        
+
         upstream_url = labels.get("gitops.oauth2.upstream")
         if not upstream_url:
-            print(f"Warning: No upstream URL found for oauth2-proxy in deployment {deployment_id}")
+            print(
+                f"Warning: No upstream URL found for oauth2-proxy in deployment {deployment_id}"
+            )
             return False
-        
+
         try:
             # Check if oauth2-proxy is already running to avoid duplicates
             check_result = container.exec_run(
@@ -481,30 +484,41 @@ class AutomationService:
             if check_result.exit_code == 0 and check_result.output.strip():
                 print(f"oauth2-proxy already running in container {container.name}")
                 return True
-            
+
             # Start oauth2-proxy in the background using sh -c to properly handle backgrounding
-            print(f"Starting oauth2-proxy with upstream: {upstream_url} in container {container.name}")
+            print(
+                f"Starting oauth2-proxy with upstream: {upstream_url} in container {container.name}"
+            )
             # Use sh -c with proper backgrounding that returns immediately
             cmd = f"sh -c 'oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &'"
             exec_result = container.exec_run(
                 cmd,
                 stdout=True,
                 stderr=True,
-                detach=False,  
+                detach=False,
             )
-            
+
             if exec_result.exit_code == 0:
-                print(f"Successfully started oauth2-proxy in container {container.name}")
+                print(
+                    f"Successfully started oauth2-proxy in container {container.name}"
+                )
                 return True
             else:
-                error_msg = exec_result.output.decode("utf-8") if exec_result.output else "Unknown error"
-                print(f"Failed to start oauth2-proxy in container {container.name}: {error_msg}")
+                error_msg = (
+                    exec_result.output.decode("utf-8")
+                    if exec_result.output
+                    else "Unknown error"
+                )
+                print(
+                    f"Failed to start oauth2-proxy in container {container.name}: {error_msg}"
+                )
                 return False
-                
-        except Exception as e:
-            print(f"Exception while starting oauth2-proxy in container {container.name}: {str(e)}")
-            return False
 
+        except Exception as e:
+            print(
+                f"Exception while starting oauth2-proxy in container {container.name}: {str(e)}"
+            )
+            return False
 
     async def delete_automation(self, deployment_id: str):
         await self.remove_automation_from_bitswan(deployment_id)
@@ -605,7 +619,10 @@ class AutomationService:
 
         for result in deployment_result.values():
             if result["return_code"] != 0:
-                raise HTTPException(status_code=500, detail="Error deploying services")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error deploying services: \ndocker-compose:\n {dc_yaml}\n\nstdout:\n {result['stdout']}\nstderr:\n{result['stderr']}\n",
+                )
 
         self.start_oauth2_proxy_in_container(deployment_id)
 
@@ -901,28 +918,36 @@ class AutomationService:
     def add_keycloak_redirect_uri(self, redirect_uri: str):
         """Add a redirect URI to the workspace's Keycloak client"""
         if not self.workspace_id:
-            print(f"Warning: Workspace {self.workspace_name} is missing an ID, skipping Keycloak redirect URI registration")
+            print(
+                f"Warning: Workspace {self.workspace_name} is missing an ID, skipping Keycloak redirect URI registration"
+            )
             return None
         if not self.aoc_url or not self.aoc_token:
-            print("Warning: AOC URL or token not configured, skipping Keycloak redirect URI registration")
+            print(
+                "Warning: AOC URL or token not configured, skipping Keycloak redirect URI registration"
+            )
             return None
-        
+
         url = f"{self.aoc_url}/api/automation_server/workspaces/{self.workspace_id}/keycloak/add-redirect-uri/"
 
         headers = {
             "Authorization": f"Bearer {self.aoc_token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
         payload = {"redirect_uri": redirect_uri.strip()}
-        
+
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             if response.status_code == 200:
                 result = response.json()
                 return result
             else:
-                error_detail = f"Keycloak API error: {response.status_code} - {response.text}"
-                print(f"Warning: Failed to add redirect URI to Keycloak: {error_detail}")
+                error_detail = (
+                    f"Keycloak API error: {response.status_code} - {response.text}"
+                )
+                print(
+                    f"Warning: Failed to add redirect URI to Keycloak: {error_detail}"
+                )
                 return None
         except Exception as e:
             print(f"Warning: Exception while adding redirect URI to Keycloak: {str(e)}")
@@ -1050,13 +1075,17 @@ class AutomationService:
                 expose_to_groups = []
                 if pipeline_conf.has_option("deployment", "expose_to"):
                     expose_to_value = pipeline_conf.get("deployment", "expose_to")
-                    expose_to_groups = [group.strip() for group in expose_to_value.split() if group.strip()]
+                    expose_to_groups = [
+                        group.strip()
+                        for group in expose_to_value.split()
+                        if group.strip()
+                    ]
 
                 # Error if both expose and expose_to_groups are set
                 if expose and expose_to_groups:
                     raise HTTPException(
                         status_code=400,
-                        detail="Cannot specify both 'expose' and 'expose_to' in pipelines.conf. Use 'expose_to' alone to enable exposure with OAuth2."
+                        detail="Cannot specify both 'expose' and 'expose_to' in pipelines.conf. Use 'expose_to' alone to enable exposure with OAuth2.",
                     )
 
                 # If expose_to_groups is set, automatically enable exposure
@@ -1065,30 +1094,46 @@ class AutomationService:
 
                 if expose and port:
                     if expose_to_groups:
-                        endpoint=f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
+                        endpoint = f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
                         redirect_uri = f"{endpoint}/oauth2/callback"
-                        
+
                         # Register the redirect URI with Keycloak
                         self.add_keycloak_redirect_uri(redirect_uri)
-                        
-                        oauth2_envs = {k: v for k, v in os.environ.items() if k.startswith("OAUTH2")}
-                        oauth2_envs.update({
-                            "OAUTH_ENABLED": "true",
-                        })
-        
-                        oauth2_envs.update({
-                            "OAUTH2_PROXY_UPSTREAM": f"http://127.0.0.1:{port}",
-                            "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
-                            "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(expose_to_groups),
-                        })
+
+                        oauth2_envs = {
+                            k: v
+                            for k, v in os.environ.items()
+                            if k.startswith("OAUTH2")
+                        }
+                        oauth2_envs.update(
+                            {
+                                "OAUTH_ENABLED": "true",
+                            }
+                        )
+
+                        oauth2_envs.update(
+                            {
+                                "OAUTH2_PROXY_UPSTREAM": f"http://127.0.0.1:{port}",
+                                "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
+                                "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(
+                                    expose_to_groups
+                                ),
+                            }
+                        )
                         entry["environment"] = oauth2_envs
-                        entry["volumes"] = [f"{self.oauth2_proxy_path}:/usr/local/bin/oauth2-proxy:ro"]
+                        entry["volumes"] = [
+                            f"{self.oauth2_proxy_path}:/usr/local/bin/oauth2-proxy:ro"
+                        ]
 
                         # Store oauth2 config in labels for post-deployment execution
                         entry["labels"]["gitops.oauth2.enabled"] = "true"
-                        entry["labels"]["gitops.oauth2.upstream"] = f"http://127.0.0.1:{port}"
+                        entry["labels"]["gitops.oauth2.upstream"] = (
+                            f"http://127.0.0.1:{port}"
+                        )
                         entry["labels"]["gitops.intended_exposed"] = "true"
-                        add_workspace_route_to_caddy(deployment_id, self.oauth2_proxy_port)
+                        add_workspace_route_to_caddy(
+                            deployment_id, self.oauth2_proxy_port
+                        )
 
                     else:
                         result = add_workspace_route_to_caddy(deployment_id, port)
