@@ -1077,7 +1077,7 @@ class AutomationService:
                     expose_to_value = pipeline_conf.get("deployment", "expose_to")
                     expose_to_groups = [
                         group.strip()
-                        for group in expose_to_value.split()
+                        for group in expose_to_value.split(",")
                         if group.strip()
                     ]
 
