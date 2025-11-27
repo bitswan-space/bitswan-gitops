@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from app.services.image_service import ImageService
 from app.dependencies import get_image_service
 
@@ -20,6 +20,15 @@ async def get_image_logs(
     image_service: ImageService = Depends(get_image_service),
 ):
     return image_service.get_image_logs(image_tag, lines)
+
+
+@router.get("/builds/{checksum}/stream")
+async def stream_image_build_logs(
+    checksum: str,
+    image_service: ImageService = Depends(get_image_service),
+):
+    log_generator = image_service.stream_build_logs(checksum)
+    return StreamingResponse(log_generator, media_type="text/plain")
 
 
 @router.post("/{image_tag}")
