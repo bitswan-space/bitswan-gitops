@@ -270,10 +270,10 @@ class AutomationService:
 
         for item in os.listdir(self.gitops_dir):
             item_path = os.path.join(self.gitops_dir, item)
-            # Check if it's a directory and looks like a checksum (hex string, typically 64 chars for SHA256)
+            # Check if it's a directory and looks like a checksum (hex string, typically 40 chars for SHA1)
             if (
                 os.path.isdir(item_path)
-                and len(item) == 64
+                and (len(item) == 40 or len(item) == 64)
                 and all(c in "0123456789abcdef" for c in item.lower())
             ):
                 assets.append(
