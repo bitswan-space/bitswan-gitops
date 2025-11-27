@@ -1,11 +1,13 @@
+import asyncio
+import json
 from datetime import datetime
 import os
 from tempfile import NamedTemporaryFile
 import zipfile
 import shutil
-from typing import Optional
+from typing import Optional, AsyncGenerator, Dict
 
-from app.utils import calculate_checksum, calculate_git_tree_hash, save_image
+from app.utils import calculate_git_tree_hash, save_image
 
 import docker
 from fastapi import UploadFile, HTTPException
@@ -14,9 +16,113 @@ from fastapi import UploadFile, HTTPException
 class ImageService:
     def __init__(self):
         self.client = docker.from_env()
-        self.log_dir = "/var/log/internal-image-build"
-        # Ensure log directory exists
-        os.makedirs(self.log_dir, exist_ok=True)
+        self.bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
+        self.gitops_dir = os.path.join(self.bs_home, "gitops")
+        self.images_base_dir = os.path.join(self.gitops_dir, "images")
+        os.makedirs(self.images_base_dir, exist_ok=True)
+
+    def _get_image_dir(self, checksum: str) -> str:
+        return os.path.join(self.images_base_dir, checksum)
+
+    def _ensure_image_dir(self, checksum: str) -> str:
+        image_dir = self._get_image_dir(checksum)
+        os.makedirs(image_dir, exist_ok=True)
+        return image_dir
+
+    def _get_source_dir(self, checksum: str) -> str:
+        """
+        Location for build context so metadata/logs stay at the checksum root.
+        """
+        return os.path.join(self._ensure_image_dir(checksum), "src")
+
+    def _metadata_path(self, checksum: str) -> str:
+        return os.path.join(self._ensure_image_dir(checksum), "build_metadata.json")
+
+    def _write_metadata(self, checksum: str, tag_root: str):
+        metadata = {
+            "checksum": checksum,
+            "tag_root": tag_root,
+            "updated_at": datetime.utcnow().isoformat(),
+            "last_status": "pending",
+        }
+        with open(self._metadata_path(checksum), "w") as f:
+            json.dump(metadata, f)
+
+    def _read_metadata(self, checksum: str) -> Optional[dict]:
+        metadata_path = self._metadata_path(checksum)
+        if not os.path.exists(metadata_path):
+            return None
+        try:
+            with open(metadata_path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _finalize_metadata(
+        self, checksum: str, status: str, tag_root: Optional[str] = None
+    ):
+        metadata = self._read_metadata(checksum) or {}
+        if tag_root:
+            metadata["tag_root"] = tag_root
+        metadata.update(
+            {
+                "checksum": checksum,
+                "updated_at": datetime.utcnow().isoformat(),
+                "last_status": status,
+            }
+        )
+        with open(self._metadata_path(checksum), "w") as f:
+            json.dump(metadata, f)
+
+    def _log_paths(self, checksum: str):
+        image_dir = self._ensure_image_dir(checksum)
+        building = os.path.join(image_dir, f"{checksum}.building.log")
+        success = os.path.join(image_dir, f"{checksum}.build.log")
+        failed = os.path.join(image_dir, f"{checksum}.failedbuild.log")
+        return building, success, failed
+
+    def _get_build_status(self, checksum: str) -> str:
+        building, success, failed = self._log_paths(checksum)
+        if os.path.exists(building):
+            return "building"
+        if os.path.exists(failed):
+            return "failed"
+        if os.path.exists(success):
+            return "ready"
+        return "ready"
+
+    def _extract_checksum_from_tag(self, tag: str) -> Optional[str]:
+        if ":sha" not in tag:
+            return None
+        return tag.split(":sha", 1)[1]
+
+    def _load_metadata_entries(self) -> Dict[str, dict]:
+        entries: Dict[str, dict] = {}
+        if not os.path.exists(self.images_base_dir):
+            return entries
+        for checksum in os.listdir(self.images_base_dir):
+            entry_dir = os.path.join(self.images_base_dir, checksum)
+            if not os.path.isdir(entry_dir):
+                continue
+            metadata = self._read_metadata(checksum)
+            if metadata:
+                entries[checksum] = metadata
+        return entries
+
+    def _prepare_build_context(self, source_dir: str, checksum: str) -> str:
+        """
+        Copy build context into <checksum>/src to keep metadata/logs sibling files clean.
+        """
+        destination_dir = self._get_source_dir(checksum)
+        source_abs = os.path.abspath(source_dir)
+        destination_abs = os.path.abspath(destination_dir)
+
+        if source_abs != destination_abs:
+            if os.path.exists(destination_dir):
+                shutil.rmtree(destination_dir)
+            shutil.copytree(source_dir, destination_dir)
+
+        return destination_dir
 
     def get_images(self):
         """
@@ -26,36 +132,50 @@ class ImageService:
             # Get all images and filter for those with internal/ prefix
             all_images = self.client.images.list()
             internal_images = []
+            metadata_entries = self._load_metadata_entries()
+            seen_tags = set()
 
             for image in all_images:
                 for tag in image.tags:
                     if tag.startswith("internal/"):
+                        checksum = self._extract_checksum_from_tag(tag)
+                        build_status = (
+                            self._get_build_status(checksum) if checksum else "ready"
+                        )
                         internal_images.append(
                             {
                                 "id": image.id,
                                 "tag": tag,
                                 "created": image.attrs.get("Created"),
                                 "size": image.attrs.get("Size"),
-                                "building": False,
+                                "building": build_status == "building",
+                                "build_status": build_status,
+                                "checksum": checksum,
                             }
                         )
+                        seen_tags.add(tag)
 
-            # Check for images currently being built by scanning for .building log files
-            if os.path.exists(self.log_dir):
-                for filename in os.listdir(self.log_dir):
-                    if filename.endswith(".building"):
-                        # Extract image_tag from filename: {image_tag}:sha{checksum}.building
-                        base_name = filename[:-9]  # Remove '.building' suffix
-                        tag = f"internal/{base_name}"
-                        internal_images.append(
-                            {
-                                "id": None,
-                                "tag": tag,
-                                "created": None,
-                                "size": None,
-                                "building": True,
-                            }
-                        )
+            # Add entries for builds that are still running or failed (no docker image yet)
+            for checksum, metadata in metadata_entries.items():
+                tag_root = metadata.get("tag_root")
+                if not tag_root:
+                    continue
+                full_tag = f"{tag_root}:sha{checksum}"
+                if full_tag in seen_tags:
+                    continue
+                status = self._get_build_status(checksum)
+                if status in ("building", "failed"):
+                    internal_images.append(
+                        {
+                            "id": None,
+                            "tag": full_tag,
+                            "created": metadata.get("updated_at"),
+                            "size": None,
+                            "building": status == "building",
+                            "build_status": status,
+                            "checksum": checksum,
+                        }
+                    )
 
             return internal_images
         except docker.errors.DockerException as e:
@@ -68,8 +188,8 @@ class ImageService:
         build_context_path: str,
         full_tag: str,
         tag_root: str,
-        building_log_file_path: str,
-        final_log_file_path: str,
+        checksum: str,
+        image_dir: str,
     ):
         """
         Common build process logic shared between directory and zip file builds.
@@ -82,7 +202,13 @@ class ImageService:
             final_log_file_path: Path to the final log file
         """
 
+        building_log_file_path, success_log_file_path, failed_log_file_path = (
+            self._log_paths(checksum)
+        )
+
         def build_callback():
+            final_log_path = success_log_file_path
+            build_status = "success"
             try:
                 # Build the Docker image and stream logs
                 for line in self.client.api.build(
@@ -99,13 +225,38 @@ class ImageService:
                     f.write(
                         f"Build completed successfully at {datetime.now().isoformat()}\n"
                     )
-                os.rename(building_log_file_path, final_log_file_path)
-
             except Exception as e:
+                build_status = "failed"
+                final_log_path = failed_log_file_path
                 with open(building_log_file_path, "a") as f:
                     f.write(f"Build error: {str(e)}\n")
-                # Build failed, still rename to final log file for error tracking
-                os.rename(building_log_file_path, final_log_file_path)
+            finally:
+                try:
+                    if os.path.exists(building_log_file_path):
+                        os.rename(building_log_file_path, final_log_path)
+                except Exception:
+                    pass
+
+                self._finalize_metadata(checksum, build_status, tag_root)
+
+                try:
+                    asyncio.run(
+                        save_image(
+                            image_dir,
+                            checksum,
+                            tag_root,
+                            copy_context=False,
+                            build_status=build_status,
+                            log_file_path=final_log_path,
+                        )
+                    )
+                    with open(final_log_path, "a") as f:
+                        f.write("Build context committed to git successfully\n")
+                except Exception as git_error:
+                    with open(final_log_path, "a") as f:
+                        f.write(
+                            f"Warning: Failed to commit build context to git: {str(git_error)}\n"
+                        )
 
         # Start the build in a separate thread
         import threading
@@ -168,30 +319,34 @@ class ImageService:
                     detail=f"Build context directory does not exist: {build_context_path}",
                 )
 
-            # Use provided checksum or generate one from directory
+            # Use provided checksum or generate one from directory name
             if not checksum:
                 checksum = os.path.basename(build_context_path)
 
-            full_tag = tag_root + ":sha" + checksum
-            # Use .building suffix during build
-            building_log_file_path = os.path.join(
-                self.log_dir, image_tag + ":sha" + checksum + ".building"
-            )
-            # Final log file path without .building suffix
-            final_log_file_path = os.path.join(
-                self.log_dir, image_tag + ":sha" + checksum
-            )
+            image_dir = self._prepare_build_context(build_context_path, checksum)
+            full_tag = f"{tag_root}:sha{checksum}"
 
+            self._write_metadata(checksum, tag_root)
+            (
+                building_log_file_path,
+                success_log_file_path,
+                failed_log_file_path,
+            ) = self._log_paths(checksum)
+            for old_log in (success_log_file_path, failed_log_file_path):
+                if os.path.exists(old_log):
+                    os.remove(old_log)
+            if os.path.exists(building_log_file_path):
+                os.remove(building_log_file_path)
             with open(building_log_file_path, "w") as log_file:
                 log_file.write(f"Build started at {datetime.now().isoformat()}\n")
 
             # Start the build process using shared logic
             self._start_build_process(
-                build_context_path=build_context_path,
+                build_context_path=image_dir,
                 full_tag=full_tag,
                 tag_root=tag_root,
-                building_log_file_path=building_log_file_path,
-                final_log_file_path=final_log_file_path,
+                checksum=checksum,
+                image_dir=image_dir,
             )
 
             return {
@@ -225,17 +380,19 @@ class ImageService:
                             status_code=400,
                             detail=f"Checksum verification failed. Expected {checksum}, got {calculated_hash}",
                         )
-
-                    full_tag = tag_root + ":sha" + checksum
-                    # Use .building suffix during build
-                    building_log_file_path = os.path.join(
-                        self.log_dir, image_tag + ":sha" + checksum + ".building"
-                    )
-                    # Final log file path without .building suffix
-                    final_log_file_path = os.path.join(
-                        self.log_dir, image_tag + ":sha" + checksum
-                    )
-
+                    image_dir = self._prepare_build_context(temp_dir_path, checksum)
+                    full_tag = f"{tag_root}:sha{checksum}"
+                    self._write_metadata(checksum, tag_root)
+                    (
+                        building_log_file_path,
+                        success_log_file_path,
+                        failed_log_file_path,
+                    ) = self._log_paths(checksum)
+                    for old_log in (success_log_file_path, failed_log_file_path):
+                        if os.path.exists(old_log):
+                            os.remove(old_log)
+                    if os.path.exists(building_log_file_path):
+                        os.remove(building_log_file_path)
                     with open(building_log_file_path, "w") as log_file:
                         log_file.write(
                             f"Build started at {datetime.now().isoformat()}\n"
@@ -243,23 +400,12 @@ class ImageService:
 
                     # Start the build process using shared logic
                     self._start_build_process(
-                        build_context_path=temp_dir_path,
+                        build_context_path=image_dir,
                         full_tag=full_tag,
                         tag_root=tag_root,
-                        building_log_file_path=building_log_file_path,
-                        final_log_file_path=final_log_file_path,
+                        checksum=checksum,
+                        image_dir=image_dir,
                     )
-
-                    # Handle git operations for zip file uploads
-                    try:
-                        await save_image(temp_dir_path, checksum, image_tag)
-                        with open(final_log_file_path, "a") as f:
-                            f.write("Build context committed to git successfully\n")
-                    except Exception as git_error:
-                        with open(final_log_file_path, "a") as f:
-                            f.write(
-                                f"Warning: Failed to commit to git: {str(git_error)}\n"
-                            )
                 finally:
                     # Clean up the temporary directory
                     shutil.rmtree(temp_dir_path, ignore_errors=True)
@@ -280,18 +426,11 @@ class ImageService:
             # Try to remove the image
             self.client.images.remove(full_tag, force=True)
 
-            # Remove all log files associated with this image_tag
-            if os.path.exists(self.log_dir):
-                for filename in os.listdir(self.log_dir):
-                    if filename.startswith(image_tag + ":"):
-                        log_file_path = os.path.join(self.log_dir, filename)
-                        if os.path.exists(log_file_path):
-                            os.remove(log_file_path)
-
-            # Also try to remove the legacy log file format for backward compatibility
-            legacy_log_file_path = os.path.join(self.log_dir, image_tag)
-            if os.path.exists(legacy_log_file_path):
-                os.remove(legacy_log_file_path)
+            checksum = self._extract_checksum_from_tag(full_tag)
+            if checksum:
+                building_log_file_path, _, _ = self._log_paths(checksum)
+                if os.path.exists(building_log_file_path):
+                    os.remove(building_log_file_path)
 
             return {
                 "status": "success",
@@ -306,13 +445,29 @@ class ImageService:
         """
         Returns the last lines number of lines from:
 
-        /var/log/internal-image-build/{image_tag}
+        gitops/images/<checksum>/<checksum>*.log
         """
-        log_file_path = os.path.join(self.log_dir, image_tag)
-        if not os.path.exists(log_file_path):
-            log_file_path += ".building"
-        if not os.path.exists(log_file_path):
-            print(log_file_path)
+        checksum = self._extract_checksum_from_tag(f"internal/{image_tag}")
+        if not checksum:
+            raise HTTPException(
+                status_code=404, detail=f"No logs found for image {image_tag}"
+            )
+
+        building_log_file_path, success_log_file_path, failed_log_file_path = (
+            self._log_paths(checksum)
+        )
+
+        log_file_path = None
+        for candidate in (
+            building_log_file_path,
+            success_log_file_path,
+            failed_log_file_path,
+        ):
+            if os.path.exists(candidate):
+                log_file_path = candidate
+                break
+
+        if not log_file_path:
             raise HTTPException(
                 status_code=404, detail=f"No logs found for image {image_tag}"
             )
@@ -325,3 +480,52 @@ class ImageService:
                 return {"image_tag": image_tag, "logs": last_lines}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error reading logs: {str(e)}")
+
+    async def stream_build_logs(self, checksum: str) -> AsyncGenerator[str, None]:
+        building_log_file_path, success_log_file_path, failed_log_file_path = (
+            self._log_paths(checksum)
+        )
+
+        current_path = None
+        current_file = None
+        position = 0
+
+        async def ensure_log_file() -> str:
+            while True:
+                if os.path.exists(building_log_file_path):
+                    return building_log_file_path
+                if os.path.exists(success_log_file_path):
+                    return success_log_file_path
+                if os.path.exists(failed_log_file_path):
+                    return failed_log_file_path
+                await asyncio.sleep(0.5)
+
+        try:
+            while True:
+                next_path = await ensure_log_file()
+
+                if next_path != current_path:
+                    if current_file:
+                        current_file.close()
+                    current_file = open(next_path, "r")
+                    position = 0
+                    current_path = next_path
+
+                current_file.seek(position)
+                chunk = current_file.read()
+                position = current_file.tell()
+
+                if chunk:
+                    yield chunk
+                    continue
+
+                # If we're following the building log, wait for more data
+                if current_path == building_log_file_path:
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # Final log reached and fully read
+                break
+        finally:
+            if current_file:
+                current_file.close()

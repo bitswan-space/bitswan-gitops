@@ -10,7 +10,6 @@ from typing import Callable
 from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
-    calculate_checksum,
     calculate_git_tree_hash,
     calculate_uptime,
     docker_compose_up,
@@ -137,7 +136,10 @@ class AutomationService:
         return list(pres.values())
 
     async def _upload_and_commit_asset(
-        self, file: UploadFile, commit_message: str | Callable[[str], str], checksum: str
+        self,
+        file: UploadFile,
+        commit_message: str | Callable[[str], str],
+        checksum: str,
     ) -> dict:
         """
         Shared logic for uploading an asset (zip file), unpacking it,
@@ -199,7 +201,11 @@ class AutomationService:
                 os.unlink(temp_file.name)
 
     async def create_automation(
-        self, deployment_id: str, file: UploadFile, relative_path: str = None, checksum: str = None
+        self,
+        deployment_id: str,
+        file: UploadFile,
+        relative_path: str = None,
+        checksum: str = None,
     ):
         if not checksum:
             raise HTTPException(status_code=400, detail="Checksum is required")
@@ -245,7 +251,7 @@ class AutomationService:
         """
         Upload an asset (zip file), unpack it, and return the checksum.
         Similar to create_automation but without deployment_id.
-        
+
         checksum: Pre-calculated git tree hash that will be verified.
         """
         try:
@@ -783,15 +789,19 @@ class AutomationService:
             if not tag_checksum:
                 continue
 
-            images_dir = os.path.join(self.gitops_dir, "images", tag_checksum)
-            if not os.path.exists(images_dir):
+            images_root_dir = os.path.join(self.gitops_dir, "images", tag_checksum)
+            source_dir = os.path.join(images_root_dir, "src")
+            if not os.path.exists(source_dir):
+                source_dir = images_root_dir
+
+            if not os.path.exists(source_dir):
                 continue
 
             image_service = ImageService()
 
             result = await image_service.create_image(
                 image_tag=deployment_id,
-                build_context_path=images_dir,
+                build_context_path=source_dir,
                 checksum=tag_checksum,
             )
             image_tags.append(result["tag"])
