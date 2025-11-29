@@ -4,11 +4,12 @@ from io import StringIO
 from datetime import datetime, timezone
 import hashlib
 import os
-from typing import Any
+from typing import Any, Optional
 import shlex
 import subprocess
 import shutil
 import tempfile
+import stat
 
 from filelock import FileLock
 import humanize
@@ -217,6 +218,92 @@ def calculate_checksum(file_path):
     return sha256_hash.hexdigest()
 
 
+def _calculate_git_blob_hash(file_path: str) -> str:
+    """
+    Calculate git blob hash for a file (SHA1 of "blob <size>\\0<content>").
+    """
+    with open(file_path, "rb") as f:
+        content = f.read()
+
+    size = len(content)
+    header = f"blob {size}\0".encode("utf-8")
+    blob = header + content
+    return hashlib.sha1(blob).hexdigest()
+
+
+def _calculate_git_tree_hash_recursive(dir_path: str) -> str:
+    """
+    Calculate git tree hash for a directory recursively.
+    Implements git's tree object format directly without spawning git processes.
+    Tree format: "tree <size>\\0<entries>" where each entry is "<mode> <name>\\0<20-byte-sha1>"
+    """
+    entries = []
+
+    # Get all entries and sort them (directories first, then alphabetical)
+    items = []
+    for item in os.listdir(dir_path):
+        if item == ".git":
+            continue
+        item_path = os.path.join(dir_path, item)
+        is_dir = os.path.isdir(item_path)
+        items.append((item, is_dir))
+
+    # Sort: directories first, then alphabetical
+    items.sort(key=lambda x: (not x[1], x[0]))
+
+    for name, is_dir in items:
+        item_path = os.path.join(dir_path, name)
+
+        if is_dir:
+            # Recursively calculate tree hash for subdirectory
+            tree_hash = _calculate_git_tree_hash_recursive(item_path)
+            entries.append(
+                {
+                    "mode": "040000",  # Directory mode
+                    "name": name,
+                    "hash": tree_hash,
+                }
+            )
+        else:
+            # Calculate blob hash for file
+            # Check if file is executable
+            file_stat = os.stat(item_path)
+            mode = "100755" if (file_stat.st_mode & stat.S_IEXEC) else "100644"
+
+            blob_hash = _calculate_git_blob_hash(item_path)
+            entries.append({"mode": mode, "name": name, "hash": blob_hash})
+
+    # Build tree object: "tree <size>\\0<entries>"
+    entry_bytes = bytearray()
+    for entry in entries:
+        # Each entry: "<mode> <name>\\0<20-byte-sha1>"
+        hash_bytes = bytes.fromhex(entry["hash"])
+        entry_str = f"{entry['mode']} {entry['name']}\0"
+        entry_bytes.extend(entry_str.encode("utf-8"))
+        entry_bytes.extend(hash_bytes)
+
+    tree_content = bytes(entry_bytes)
+    tree_size = len(tree_content)
+    tree_header = f"tree {tree_size}\0".encode("utf-8")
+    tree_object = tree_header + tree_content
+
+    # Calculate SHA1 hash of tree object
+    return hashlib.sha1(tree_object).hexdigest()
+
+
+async def calculate_git_tree_hash(dir_path: str) -> str:
+    """
+    Calculate git tree hash for a directory using git's tree object format.
+    This implementation directly calculates the hash without spawning git processes,
+    making it much more efficient.
+    """
+    # Run the recursive calculation in a thread pool to keep it async
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, _calculate_git_tree_hash_recursive, dir_path
+    )
+
+
 async def update_git(
     bitswan_home: str, bitswan_home_host: str, deployment_id: str, action: str
 ):
@@ -304,7 +391,14 @@ async def docker_compose_up(
     }
 
 
-async def save_image(build_context_path: str, build_context_hash: str, image_tag: str):
+async def save_image(
+    build_context_path: str,
+    build_context_hash: str,
+    image_tag: str,
+    copy_context: bool = True,
+    build_status: Optional[str] = None,
+    log_file_path: Optional[str] = None,
+):
     """
     Save and commit the build context (extracted zip contents) to git.
     Uses the build_context_hash as the directory name for deduplication.
@@ -315,6 +409,7 @@ async def save_image(build_context_path: str, build_context_hash: str, image_tag
 
     images_base_dir = os.path.join(bitswan_dir, "images")
     image_dir = os.path.join(images_base_dir, build_context_hash)
+    source_dir = os.path.join(image_dir, "src")
 
     if not os.path.exists(images_base_dir):
         os.makedirs(images_base_dir, exist_ok=True)
@@ -324,16 +419,21 @@ async def save_image(build_context_path: str, build_context_hash: str, image_tag
     os.makedirs(image_dir, exist_ok=True)
     subprocess.run(["chown", "-R", "1000:1000", image_dir], check=False)
 
-    # Copy the build context to the gitops directory
-    for item in os.listdir(build_context_path):
-        src = os.path.join(build_context_path, item)
-        dst = os.path.join(image_dir, item)
-        if os.path.isdir(src):
-            if os.path.exists(dst):
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
+    # Copy the build context to the gitops directory if requested
+    if copy_context:
+        source_abs = os.path.abspath(build_context_path)
+        destination_abs = os.path.abspath(source_dir)
+        if source_abs != destination_abs:
+            if os.path.exists(source_dir):
+                shutil.rmtree(source_dir)
+            shutil.copytree(build_context_path, source_dir)
+
+    log_relative_path = None
+    if log_file_path and os.path.exists(log_file_path):
+        try:
+            log_relative_path = os.path.relpath(log_file_path, bitswan_dir)
+        except ValueError:
+            log_relative_path = None
 
     lock_file = os.path.join(bitswan_dir, "bitswan_git.lock")
     lock = FileLock(lock_file, timeout=30)
@@ -354,9 +454,21 @@ async def save_image(build_context_path: str, build_context_hash: str, image_tag
         if not add_result:
             raise Exception("Error adding files to git")
 
+        if log_relative_path:
+            log_add_result = await call_git_command(
+                "git",
+                "add",
+                log_relative_path,
+                cwd=bitswan_dir,
+            )
+            if not log_add_result:
+                raise Exception("Error adding log file to git")
+
         commit_message = f"Add build context {build_context_hash}"
         if image_tag:
             commit_message += f" for image {image_tag}"
+        if build_status:
+            commit_message += f" ({build_status})"
         await call_git_command(
             "git",
             "commit",

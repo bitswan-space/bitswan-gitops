@@ -134,6 +134,7 @@ class DockerAPIClient:
         working_dir: Optional[str] = None,
         env_file: Optional[List[str]] = None,
         network_aliases: Optional[List[str]] = None,
+        env: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create a container."""
         config = {
@@ -160,9 +161,16 @@ class DockerAPIClient:
         if volumes:
             config["HostConfig"]["Binds"] = volumes
 
+        # Initialize env_vars list
+        env_vars = []
+
+        # Add additional environment variables first (defaults)
+        if env:
+            env_vars.extend(env)
+            print(f"DEBUG: Added {len(env)} additional env vars to container config")
+
+        # Read env files and merge into environment variables (secrets override defaults)
         if env_file:
-            # Read env files and merge into environment variables
-            env_vars = []
             print(f"DEBUG: Reading {len(env_file)} env file(s)")
             for env_file_path in env_file:
                 print(f"DEBUG: Reading env file: {env_file_path}")
@@ -179,15 +187,12 @@ class DockerAPIClient:
                         )
                 else:
                     print(f"WARNING: Env file does not exist: {env_file_path}")
-            if env_vars:
-                if "Env" not in config:
-                    config["Env"] = []
-                config["Env"].extend(env_vars)
-                print(
-                    f"DEBUG: Added {len(env_vars)} total env vars to container config"
-                )
-            else:
-                print("WARNING: No env vars found in env files")
+
+        if env_vars:
+            config["Env"] = env_vars
+            print(
+                f"DEBUG: Added {len(env_vars)} total env vars to container config"
+            )
 
         params = {"name": name}
         return await self._request(
@@ -493,6 +498,10 @@ class JupyterService:
             if token:
                 labels["bitswan.token"] = token
 
+            # Set PYTHONPATH to include bitswan_lib
+            # If PYTHONPATH is set in secrets, it will override this value
+            env_vars = ["PYTHONPATH=/workspace/bitswan_lib"]
+
             container_data = await self.docker_client.create_container(
                 image=pre_image,
                 command=[
@@ -515,6 +524,7 @@ class JupyterService:
                 volumes=volumes,
                 working_dir=working_dir,
                 env_file=secret_env_files,
+                env=env_vars,
                 network_aliases=[jupyter_server_host],
             )
 

@@ -10,7 +10,7 @@ from typing import Callable
 from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
-    calculate_checksum,
+    calculate_git_tree_hash,
     calculate_uptime,
     docker_compose_up,
     generate_workspace_url,
@@ -136,20 +136,23 @@ class AutomationService:
         return list(pres.values())
 
     async def _upload_and_commit_asset(
-        self, file: UploadFile, commit_message: str | Callable[[str], str]
+        self,
+        file: UploadFile,
+        commit_message: str | Callable[[str], str],
+        checksum: str,
     ) -> dict:
         """
         Shared logic for uploading an asset (zip file), unpacking it,
         and committing it to git. Returns dict with checksum and output_directory.
 
         commit_message can be a string or a callable that takes checksum and returns a string.
+        checksum: Pre-calculated git tree hash that will be verified.
         """
         with NamedTemporaryFile(delete=False) as temp_file:
             content = await file.read()
             temp_file.write(content)
 
             temp_file.close()
-            checksum = calculate_checksum(temp_file.name)
             output_dir = f"{checksum}"
 
             try:
@@ -158,6 +161,14 @@ class AutomationService:
                 os.makedirs(output_dir, exist_ok=True)
                 with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
                     zip_ref.extractall(output_dir)
+
+                # Verify the checksum using git tree hash algorithm
+                calculated_hash = await calculate_git_tree_hash(output_dir)
+                if calculated_hash != checksum:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Checksum verification failed. Expected {checksum}, got {calculated_hash}",
+                    )
 
                 # Generate commit message if it's a callable
                 if callable(commit_message):
@@ -190,10 +201,16 @@ class AutomationService:
                 os.unlink(temp_file.name)
 
     async def create_automation(
-        self, deployment_id: str, file: UploadFile, relative_path: str = None
+        self,
+        deployment_id: str,
+        file: UploadFile,
+        relative_path: str = None,
+        checksum: str = None,
     ):
+        if not checksum:
+            raise HTTPException(status_code=400, detail="Checksum is required")
         result = await self._upload_and_commit_asset(
-            file, f"Add {deployment_id} to bitswan.yaml"
+            file, f"Add {deployment_id} to bitswan.yaml", checksum=checksum
         )
         checksum = result["checksum"]
         output_dir = result["output_directory"]
@@ -230,14 +247,16 @@ class AutomationService:
         except Exception as e:
             return {"error": f"Error processing file: {str(e)}"}
 
-    async def upload_asset(self, file: UploadFile):
+    async def upload_asset(self, file: UploadFile, checksum: str):
         """
         Upload an asset (zip file), unpack it, and return the checksum.
         Similar to create_automation but without deployment_id.
+
+        checksum: Pre-calculated git tree hash that will be verified.
         """
         try:
             result = await self._upload_and_commit_asset(
-                file, lambda checksum: f"Add asset {checksum}"
+                file, lambda checksum: f"Add asset {checksum}", checksum=checksum
             )
             return {
                 "message": "Asset uploaded successfully",
@@ -257,10 +276,10 @@ class AutomationService:
 
         for item in os.listdir(self.gitops_dir):
             item_path = os.path.join(self.gitops_dir, item)
-            # Check if it's a directory and looks like a checksum (hex string, typically 64 chars for SHA256)
+            # Check if it's a directory and looks like a checksum (hex string, typically 40 chars for SHA1)
             if (
                 os.path.isdir(item_path)
-                and len(item) == 64
+                and (len(item) == 40 or len(item) == 64)
                 and all(c in "0123456789abcdef" for c in item.lower())
             ):
                 assets.append(
@@ -770,15 +789,19 @@ class AutomationService:
             if not tag_checksum:
                 continue
 
-            images_dir = os.path.join(self.gitops_dir, "images", tag_checksum)
-            if not os.path.exists(images_dir):
+            images_root_dir = os.path.join(self.gitops_dir, "images", tag_checksum)
+            source_dir = os.path.join(images_root_dir, "src")
+            if not os.path.exists(source_dir):
+                source_dir = images_root_dir
+
+            if not os.path.exists(source_dir):
                 continue
 
             image_service = ImageService()
 
             result = await image_service.create_image(
                 image_tag=deployment_id,
-                build_context_path=images_dir,
+                build_context_path=source_dir,
                 checksum=tag_checksum,
             )
             image_tags.append(result["tag"])

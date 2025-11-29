@@ -101,11 +101,12 @@ async def create_automation(
     deployment_id: str,
     file: UploadFile = File(...),
     relative_path: str = Form(None),
+    checksum: str = Form(...),
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     if file.filename.endswith(".zip"):
         result = await automation_service.create_automation(
-            deployment_id, file, relative_path
+            deployment_id, file, relative_path, checksum=checksum
         )
         return JSONResponse(content=result)
     else:
@@ -123,10 +124,11 @@ async def delete_automation(
 @router.post("/assets/upload")
 async def upload_asset(
     file: UploadFile = File(...),
+    checksum: str = Form(...),
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     if file.filename.endswith(".zip"):
-        result = await automation_service.upload_asset(file)
+        result = await automation_service.upload_asset(file, checksum=checksum)
         return JSONResponse(content=result)
     else:
         raise HTTPException(status_code=400, detail="File must be a ZIP archive")
