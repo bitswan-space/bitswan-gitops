@@ -190,9 +190,7 @@ class DockerAPIClient:
 
         if env_vars:
             config["Env"] = env_vars
-            print(
-                f"DEBUG: Added {len(env_vars)} total env vars to container config"
-            )
+            print(f"DEBUG: Added {len(env_vars)} total env vars to container config")
 
         params = {"name": name}
         return await self._request(
