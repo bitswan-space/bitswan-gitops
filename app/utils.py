@@ -9,7 +9,6 @@ import shlex
 import subprocess
 import shutil
 import tempfile
-import stat
 
 from filelock import FileLock
 import humanize
@@ -248,27 +247,22 @@ def _calculate_git_tree_hash_recursive(dir_path: str) -> str:
         is_dir = os.path.isdir(item_path)
         items.append((item, is_dir))
 
-    # Sort: directories first, then alphabetical
-    items.sort(key=lambda x: (not x[1], x[0]))
+    def _git_sort_key(name: str, is_dir: bool) -> bytes:
+        key = f"{name}/" if is_dir else name
+        return key.encode("utf-8")
+
+    # Git-style ordering
+    items.sort(key=lambda x: _git_sort_key(x[0], x[1]))
 
     for name, is_dir in items:
         item_path = os.path.join(dir_path, name)
 
         if is_dir:
-            # Recursively calculate tree hash for subdirectory
             tree_hash = _calculate_git_tree_hash_recursive(item_path)
-            entries.append(
-                {
-                    "mode": "040000",  # Directory mode
-                    "name": name,
-                    "hash": tree_hash,
-                }
-            )
+            entries.append({"mode": "040000", "name": name, "hash": tree_hash})
         else:
-            # Calculate blob hash for file
-            # Check if file is executable
             file_stat = os.stat(item_path)
-            mode = "100755" if (file_stat.st_mode & stat.S_IEXEC) else "100644"
+            mode = "100755" if (file_stat.st_mode & 0o111) else "100644"
 
             blob_hash = _calculate_git_blob_hash(item_path)
             entries.append({"mode": mode, "name": name, "hash": blob_hash})
@@ -283,12 +277,9 @@ def _calculate_git_tree_hash_recursive(dir_path: str) -> str:
         entry_bytes.extend(hash_bytes)
 
     tree_content = bytes(entry_bytes)
-    tree_size = len(tree_content)
-    tree_header = f"tree {tree_size}\0".encode("utf-8")
-    tree_object = tree_header + tree_content
-
-    # Calculate SHA1 hash of tree object
-    return hashlib.sha1(tree_object).hexdigest()
+    tree_header = f"tree {len(tree_content)}\0".encode("utf-8")
+    result_hash = hashlib.sha1(tree_header + tree_content).hexdigest()
+    return result_hash
 
 
 async def calculate_git_tree_hash(dir_path: str) -> str:
