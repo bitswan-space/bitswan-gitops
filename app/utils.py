@@ -590,7 +590,9 @@ async def copy_worktree(branch_name: str = None):
                 if not await call_git_command(
                     "git", "push", "-u", "origin", "HEAD", cwd=repo
                 ):
-                    raise HTTPException(status_code=500, detail="Push failed")
+                    print(
+                        f"Warning: Push failed for branch {branch_name}, continuing anyway"
+                    )
 
         finally:
             try:
