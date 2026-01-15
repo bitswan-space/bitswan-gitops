@@ -486,46 +486,36 @@ class ImageService:
             self._log_paths(checksum)
         )
 
-        current_path = None
-        current_file = None
         position = 0
 
-        async def ensure_log_file() -> str:
-            while True:
-                if os.path.exists(building_log_file_path):
-                    return building_log_file_path
-                if os.path.exists(success_log_file_path):
-                    return success_log_file_path
-                if os.path.exists(failed_log_file_path):
-                    return failed_log_file_path
-                await asyncio.sleep(0.5)
-
-        try:
-            while True:
-                next_path = await ensure_log_file()
-
-                if next_path != current_path:
-                    if current_file:
-                        current_file.close()
-                    current_file = open(next_path, "r")
-                    position = 0
-                    current_path = next_path
-
-                current_file.seek(position)
-                chunk = current_file.read()
-                position = current_file.tell()
+        # Wait for building log to appear, then follow it with position tracking
+        while True:
+            if os.path.exists(building_log_file_path):
+                with open(building_log_file_path, "r") as current_file:
+                    current_file.seek(position)
+                    chunk = current_file.read()
+                    new_position = current_file.tell()
 
                 if chunk:
                     yield chunk
-                    continue
-
-                # If we're following the building log, wait for more data
-                if current_path == building_log_file_path:
+                    position = new_position
+                else:
+                    # No new data, wait for more
                     await asyncio.sleep(0.5)
-                    continue
-
-                # Final log reached and fully read
+            elif os.path.exists(success_log_file_path):
+                # Building log no longer exists, read success log in one go
+                with open(success_log_file_path, "r") as log_file:
+                    content = log_file.read()
+                    if content:
+                        yield content
                 break
-        finally:
-            if current_file:
-                current_file.close()
+            elif os.path.exists(failed_log_file_path):
+                # Building log no longer exists, read failed log in one go
+                with open(failed_log_file_path, "r") as log_file:
+                    content = log_file.read()
+                    if content:
+                        yield content
+                break
+            else:
+                # No log exists yet, wait for one to appear
+                await asyncio.sleep(0.5)
