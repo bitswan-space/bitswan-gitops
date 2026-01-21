@@ -19,6 +19,22 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# MQTT topics this service must always be subscribed to.
+# Centralized so `on_connect` can re-subscribe after reconnects.
+PROCESS_SUBSCRIPTION_TOPICS: tuple[str, ...] = (
+    "/processes/c/+/attachments/c/+/gitops-req",
+    "/processes/c/+/attachments/c/+/set",
+    "/processes/c/+/gitops-req",
+    "/processes/c/+/set",
+    "/processes/c/+/create",
+)
+
+
+def subscribe_process_topics(client: mqtt_client.Client) -> None:
+    """(Re)subscribe to all process-related topics."""
+    for topic in PROCESS_SUBSCRIPTION_TOPICS:
+        client.subscribe(topic)
+
 
 class ProcessService:
     def __init__(self):
@@ -449,13 +465,6 @@ async def setup_mqtt_subscriptions(client: mqtt_client.Client):
                 original_on_message(client, userdata, msg)
 
     client.on_message = on_message
-
-    # Subscribe to all process-related topics
-    client.subscribe("/processes/c/+/attachments/c/+/gitops-req")
-    client.subscribe("/processes/c/+/attachments/c/+/set")
-    client.subscribe("/processes/c/+/gitops-req")
-    client.subscribe("/processes/c/+/set")
-    client.subscribe("/processes/c/+/create")
 
 
 async def handle_attachment_request(

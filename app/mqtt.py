@@ -1,6 +1,8 @@
 from paho.mqtt import client as mqtt_client
 import os
 
+from .mqtt_processes import subscribe_process_topics
+
 
 class MQTTResource:
     def __init__(self):
@@ -28,7 +30,13 @@ class MQTTResource:
                 else:
                     print(f"Failed to connect, return code {rc}")
 
-            self.client.on_connect = on_connect
+            # Re-subscribe on every (re)connect, since the broker-side session may be gone.
+            # This also covers cases where the client_id changes across restarts.
+            def on_connect_resubscribe(client, userdata, flags, rc, properties=None):
+                on_connect(client, userdata, flags, rc)
+                subscribe_process_topics(client)
+
+            self.client.on_connect = on_connect_resubscribe
             username, password = (
                 os.environ.get("MQTT_USERNAME"),
                 os.environ.get("MQTT_PASSWORD"),
