@@ -45,7 +45,9 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
             expose_to = [g.strip() for g in expose_to.split(",") if g.strip()]
 
         return AutomationConfig(
-            image=deployment.get("image", "bitswan/pipeline-runtime-environment:latest"),
+            image=deployment.get(
+                "image", "bitswan/pipeline-runtime-environment:latest"
+            ),
             expose=deployment.get("expose", False),
             expose_to=expose_to,
             port=deployment.get("port", 8080),
@@ -87,7 +89,9 @@ def read_automation_config(source_dir: str) -> AutomationConfig:
 
         return AutomationConfig(
             image=pipeline_conf.get(
-                "deployment", "pre", fallback="bitswan/pipeline-runtime-environment:latest"
+                "deployment",
+                "pre",
+                fallback="bitswan/pipeline-runtime-environment:latest",
             ),
             expose=pipeline_conf.getboolean("deployment", "expose", fallback=False),
             expose_to=expose_to,

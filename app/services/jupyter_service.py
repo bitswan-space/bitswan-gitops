@@ -10,7 +10,12 @@ import aiohttp
 from aiohttp import ClientConnectorError
 from fastapi import HTTPException
 
-from app.utils import add_route_to_caddy, read_bitswan_yaml, parse_pipeline_conf, parse_automation_toml
+from app.utils import (
+    add_route_to_caddy,
+    read_bitswan_yaml,
+    parse_pipeline_conf,
+    parse_automation_toml,
+)
 
 
 class ContainerInfo:
@@ -724,7 +729,7 @@ class JupyterService:
         if not pre_image:
             raise HTTPException(
                 status_code=400,
-                detail="Config file required: automation.toml with 'image' or pipelines.conf with 'pre'"
+                detail="Config file required: automation.toml with 'image' or pipelines.conf with 'pre'",
             )
 
         # Parse pipelines.conf for secrets (still needed for secret groups)
