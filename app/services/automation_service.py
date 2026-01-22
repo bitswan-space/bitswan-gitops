@@ -1088,9 +1088,7 @@ class AutomationService:
                     self.add_keycloak_redirect_uri(redirect_uri)
 
                     oauth2_envs = {
-                        k: v
-                        for k, v in os.environ.items()
-                        if k.startswith("OAUTH2")
+                        k: v for k, v in os.environ.items() if k.startswith("OAUTH2")
                     }
                     oauth2_envs.update(
                         {
@@ -1102,9 +1100,7 @@ class AutomationService:
                         {
                             "OAUTH2_PROXY_UPSTREAM": f"http://127.0.0.1:{port}",
                             "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
-                            "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(
-                                expose_to_groups
-                            ),
+                            "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(expose_to_groups),
                         }
                     )
                     entry["environment"] = oauth2_envs
@@ -1118,9 +1114,7 @@ class AutomationService:
                         f"http://127.0.0.1:{port}"
                     )
                     entry["labels"]["gitops.intended_exposed"] = "true"
-                    add_workspace_route_to_caddy(
-                        deployment_id, self.oauth2_proxy_port
-                    )
+                    add_workspace_route_to_caddy(deployment_id, self.oauth2_proxy_port)
 
                 else:
                     result = add_workspace_route_to_caddy(deployment_id, port)
