@@ -10,7 +10,7 @@ import aiohttp
 from aiohttp import ClientConnectorError
 from fastapi import HTTPException
 
-from app.utils import add_route_to_caddy, read_bitswan_yaml, parse_pipeline_conf
+from app.utils import add_route_to_caddy, read_bitswan_yaml, parse_pipeline_conf, parse_automation_toml
 
 
 class ContainerInfo:
@@ -702,24 +702,34 @@ class JupyterService:
         deployment_id: str,
         relative_path: str = "",
         pipelines_conf_content: str = "",
+        automation_toml_content: str = "",
     ) -> Dict[str, Any]:
         """Start a Jupyter kernel for a deployment_id."""
-        # Parse pipelines.conf to get pre image
-        pipeline_conf = (
-            parse_pipeline_conf(pipelines_conf_content)
-            if pipelines_conf_content
-            else None
-        )
-        if not pipeline_conf:
-            raise HTTPException(
-                status_code=400, detail="pipelines.conf content is required"
-            )
+        # Parse config to get pre image - try automation.toml first, then pipelines.conf
+        pre_image = None
+        pipeline_conf = None
 
-        pre_image = pipeline_conf.get("deployment", "pre", fallback=None)
+        # Try automation.toml first (highest priority)
+        if automation_toml_content:
+            automation_config = parse_automation_toml(automation_toml_content)
+            if automation_config:
+                pre_image = automation_config.image
+
+        # Fall back to pipelines.conf
+        if not pre_image and pipelines_conf_content:
+            pipeline_conf = parse_pipeline_conf(pipelines_conf_content)
+            if pipeline_conf:
+                pre_image = pipeline_conf.get("deployment", "pre", fallback=None)
+
         if not pre_image:
             raise HTTPException(
-                status_code=400, detail="pre image not found in pipelines.conf"
+                status_code=400,
+                detail="Config file required: automation.toml with 'image' or pipelines.conf with 'pre'"
             )
+
+        # Parse pipelines.conf for secrets (still needed for secret groups)
+        if not pipeline_conf and pipelines_conf_content:
+            pipeline_conf = parse_pipeline_conf(pipelines_conf_content)
 
         container_name = f"{self.workspace_name}__{deployment_id}-jupyter-kernel"
 

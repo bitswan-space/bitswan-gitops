@@ -16,6 +16,7 @@ from app.utils import (
     generate_workspace_url,
     read_bitswan_yaml,
     read_pipeline_conf,
+    read_automation_config,
     remove_route_from_caddy,
     update_git,
     call_git_command,
@@ -974,6 +975,7 @@ class AutomationService:
                 )
             else:
                 pipeline_conf = read_pipeline_conf(source_dir)
+                automation_config = read_automation_config(source_dir)
 
             if self.workspace_id and self.aoc_url and self.aoc_token:
                 # generate jwt token for automation
@@ -1060,92 +1062,77 @@ class AutomationService:
 
             deployment_dir = os.path.join(self.gitops_dir_host, source)
 
-            if pipeline_conf:
-                entry["image"] = (
-                    pipeline_conf.get("deployment", "pre", fallback=entry.get("image"))
-                    or entry["image"]
-                )
-                expose = pipeline_conf.getboolean(
-                    "deployment", "expose", fallback=False
-                )
-                port = pipeline_conf.get(
-                    "deployment", "port", fallback=conf.get("port", 8080)
+            # Use unified automation config for image, expose, and port
+            entry["image"] = automation_config.image
+            expose = automation_config.expose
+            port = automation_config.port
+            expose_to_groups = automation_config.expose_to or []
+
+            # Error if both expose and expose_to_groups are set
+            if expose and expose_to_groups:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot specify both 'expose' and 'expose_to'. Use 'expose_to' alone to enable exposure with OAuth2.",
                 )
 
-                expose_to_groups = []
-                if pipeline_conf.has_option("deployment", "expose_to"):
-                    expose_to_value = pipeline_conf.get("deployment", "expose_to")
-                    expose_to_groups = [
-                        group.strip()
-                        for group in expose_to_value.split(",")
-                        if group.strip()
-                    ]
+            # If expose_to_groups is set, automatically enable exposure
+            if expose_to_groups:
+                expose = True
 
-                # Error if both expose and expose_to_groups are set
-                if expose and expose_to_groups:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot specify both 'expose' and 'expose_to' in pipelines.conf. Use 'expose_to' alone to enable exposure with OAuth2.",
+            if expose and port:
+                if expose_to_groups:
+                    endpoint = f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
+                    redirect_uri = f"{endpoint}/oauth2/callback"
+
+                    # Register the redirect URI with Keycloak
+                    self.add_keycloak_redirect_uri(redirect_uri)
+
+                    oauth2_envs = {
+                        k: v
+                        for k, v in os.environ.items()
+                        if k.startswith("OAUTH2")
+                    }
+                    oauth2_envs.update(
+                        {
+                            "OAUTH_ENABLED": "true",
+                        }
                     )
 
-                # If expose_to_groups is set, automatically enable exposure
-                if expose_to_groups:
-                    expose = True
-
-                if expose and port:
-                    if expose_to_groups:
-                        endpoint = f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
-                        redirect_uri = f"{endpoint}/oauth2/callback"
-
-                        # Register the redirect URI with Keycloak
-                        self.add_keycloak_redirect_uri(redirect_uri)
-
-                        oauth2_envs = {
-                            k: v
-                            for k, v in os.environ.items()
-                            if k.startswith("OAUTH2")
+                    oauth2_envs.update(
+                        {
+                            "OAUTH2_PROXY_UPSTREAM": f"http://127.0.0.1:{port}",
+                            "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
+                            "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(
+                                expose_to_groups
+                            ),
                         }
-                        oauth2_envs.update(
-                            {
-                                "OAUTH_ENABLED": "true",
-                            }
-                        )
+                    )
+                    entry["environment"] = oauth2_envs
+                    entry["volumes"] = [
+                        f"{self.oauth2_proxy_path}:/usr/local/bin/oauth2-proxy:ro"
+                    ]
 
-                        oauth2_envs.update(
-                            {
-                                "OAUTH2_PROXY_UPSTREAM": f"http://127.0.0.1:{port}",
-                                "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
-                                "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(
-                                    expose_to_groups
-                                ),
-                            }
-                        )
-                        entry["environment"] = oauth2_envs
-                        entry["volumes"] = [
-                            f"{self.oauth2_proxy_path}:/usr/local/bin/oauth2-proxy:ro"
-                        ]
+                    # Store oauth2 config in labels for post-deployment execution
+                    entry["labels"]["gitops.oauth2.enabled"] = "true"
+                    entry["labels"]["gitops.oauth2.upstream"] = (
+                        f"http://127.0.0.1:{port}"
+                    )
+                    entry["labels"]["gitops.intended_exposed"] = "true"
+                    add_workspace_route_to_caddy(
+                        deployment_id, self.oauth2_proxy_port
+                    )
 
-                        # Store oauth2 config in labels for post-deployment execution
-                        entry["labels"]["gitops.oauth2.enabled"] = "true"
-                        entry["labels"]["gitops.oauth2.upstream"] = (
-                            f"http://127.0.0.1:{port}"
+                else:
+                    result = add_workspace_route_to_caddy(deployment_id, port)
+                    entry["labels"]["gitops.intended_exposed"] = "true"
+                    if not result:
+                        raise HTTPException(
+                            status_code=500, detail="Error adding route to Caddy"
                         )
-                        entry["labels"]["gitops.intended_exposed"] = "true"
-                        add_workspace_route_to_caddy(
-                            deployment_id, self.oauth2_proxy_port
-                        )
-
-                    else:
-                        result = add_workspace_route_to_caddy(deployment_id, port)
-                        entry["labels"]["gitops.intended_exposed"] = "true"
-                        if not result:
-                            raise HTTPException(
-                                status_code=500, detail="Error adding route to Caddy"
-                            )
 
             if "volumes" not in entry:
                 entry["volumes"] = []
-            entry["volumes"].append(f"{deployment_dir}:/opt/pipelines")
+            entry["volumes"].append(f"{deployment_dir}:{automation_config.mount_path}")
 
             if conf.get("enabled", True):
                 dc["services"][deployment_id] = entry

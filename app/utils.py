@@ -1,5 +1,6 @@
 import asyncio
 from configparser import ConfigParser
+from dataclasses import dataclass
 from io import StringIO
 from datetime import datetime, timezone
 import hashlib
@@ -12,9 +13,91 @@ import tempfile
 
 from filelock import FileLock
 import humanize
+import toml
 import yaml
 import requests
 from fastapi import HTTPException
+
+
+@dataclass
+class AutomationConfig:
+    """Unified automation configuration from either automation.toml or pipelines.conf."""
+
+    image: str = "bitswan/pipeline-runtime-environment:latest"
+    expose: bool = False
+    expose_to: list[str] | None = None
+    port: int = 8080
+    config_format: str = "ini"  # "toml" or "ini"
+    mount_path: str = "/opt/pipelines"  # "/app/" for TOML, "/opt/pipelines" for INI
+
+
+def parse_automation_toml(content: str) -> AutomationConfig | None:
+    """Parse automation.toml content from a string and return AutomationConfig."""
+    if not content or not content.strip():
+        return None
+    try:
+        data = toml.loads(content)
+        deployment = data.get("deployment", {})
+
+        # Parse expose_to as a list
+        expose_to = deployment.get("expose_to")
+        if isinstance(expose_to, str):
+            expose_to = [g.strip() for g in expose_to.split(",") if g.strip()]
+
+        return AutomationConfig(
+            image=deployment.get("image", "bitswan/pipeline-runtime-environment:latest"),
+            expose=deployment.get("expose", False),
+            expose_to=expose_to,
+            port=deployment.get("port", 8080),
+            config_format="toml",
+            mount_path="/app/",
+        )
+    except Exception:
+        return None
+
+
+def read_automation_toml(source_dir: str) -> AutomationConfig | None:
+    """Read automation.toml from a directory."""
+    toml_path = os.path.join(source_dir, "automation.toml")
+    if os.path.exists(toml_path):
+        with open(toml_path, "r") as f:
+            content = f.read()
+        return parse_automation_toml(content)
+    return None
+
+
+def read_automation_config(source_dir: str) -> AutomationConfig:
+    """
+    Read automation configuration with priority: automation.toml > pipelines.conf.
+    Returns AutomationConfig with deployment settings.
+    """
+    # Try automation.toml first (highest priority)
+    toml_config = read_automation_toml(source_dir)
+    if toml_config:
+        return toml_config
+
+    # Fall back to pipelines.conf
+    pipeline_conf = read_pipeline_conf(source_dir)
+    if pipeline_conf:
+        # Parse expose_to as a list
+        expose_to = None
+        if pipeline_conf.has_option("deployment", "expose_to"):
+            expose_to_value = pipeline_conf.get("deployment", "expose_to")
+            expose_to = [g.strip() for g in expose_to_value.split(",") if g.strip()]
+
+        return AutomationConfig(
+            image=pipeline_conf.get(
+                "deployment", "pre", fallback="bitswan/pipeline-runtime-environment:latest"
+            ),
+            expose=pipeline_conf.getboolean("deployment", "expose", fallback=False),
+            expose_to=expose_to,
+            port=int(pipeline_conf.get("deployment", "port", fallback="8080")),
+            config_format="ini",
+            mount_path="/opt/pipelines",
+        )
+
+    # Return default config if no config file found
+    return AutomationConfig()
 
 
 async def wait_coroutine(*args, **kwargs) -> int:
