@@ -48,13 +48,9 @@ class AutomationService:
         self.gitops_dir = os.path.join(self.bs_home, "gitops")
         self.gitops_dir_host = os.path.join(self.bs_home_host, "gitops")
         self.secrets_dir = os.path.join(self.bs_home, "secrets")
-        # Workspace repo directory for live-dev mode (source code mounting)
-        self.workspace_repo_dir = os.environ.get(
-            "BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo"
-        )
-        self.workspace_repo_dir_host = os.environ.get(
-            "BITSWAN_WORKSPACE_REPO_DIR_HOST", "/workspace-repo"
-        )
+        # Workspace directory for live-dev mode (source code mounting)
+        # Uses same path structure as jupyter_service for consistency
+        self.workspace_dir_host = os.path.join(self.bs_home_host, "workspace")
         # Cache for automation history: key is (deployment_id, page, page_size), value is (commit_hash, response)
         self._history_cache: dict[tuple[str, int, int], tuple[str, dict]] = {}
 
@@ -1162,13 +1158,14 @@ class AutomationService:
             if "volumes" not in entry:
                 entry["volumes"] = []
 
-            # For live-dev stage, mount source from workspace repo (for live editing)
-            # Otherwise, mount from gitops deployment directory
+            # For live-dev stage, mount source from workspace (for live editing)
+            # Otherwise, mount from gitops deployment directory (checksum dir)
             relative_path = conf.get("relative_path")
             if stage == "live-dev" and relative_path:
                 # Mount the original source code for live development
+                # Uses same workspace path as jupyter_service
                 source_mount_path = os.path.join(
-                    self.workspace_repo_dir_host, relative_path
+                    self.workspace_dir_host, relative_path
                 )
                 entry["volumes"].append(
                     f"{source_mount_path}:{automation_config.mount_path}"
