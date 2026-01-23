@@ -37,10 +37,10 @@ async def deploy_automation(
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     # Validate stage if provided
-    if stage is not None and stage not in ["dev", "staging", "production"]:
+    if stage is not None and stage not in ["dev", "staging", "production", "live-dev"]:
         raise HTTPException(
             status_code=400,
-            detail="Stage must be one of: dev, staging, production",
+            detail="Stage must be one of: dev, staging, production, live-dev",
         )
     return await automation_service.deploy_automation(
         deployment_id, checksum=checksum, stage=stage, relative_path=relative_path

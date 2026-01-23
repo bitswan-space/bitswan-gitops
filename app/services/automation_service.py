@@ -48,6 +48,13 @@ class AutomationService:
         self.gitops_dir = os.path.join(self.bs_home, "gitops")
         self.gitops_dir_host = os.path.join(self.bs_home_host, "gitops")
         self.secrets_dir = os.path.join(self.bs_home, "secrets")
+        # Workspace repo directory for live-dev mode (source code mounting)
+        self.workspace_repo_dir = os.environ.get(
+            "BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo"
+        )
+        self.workspace_repo_dir_host = os.environ.get(
+            "BITSWAN_WORKSPACE_REPO_DIR_HOST", "/workspace-repo"
+        )
         # Cache for automation history: key is (deployment_id, page, page_size), value is (commit_hash, response)
         self._history_cache: dict[tuple[str, int, int], tuple[str, dict]] = {}
 
@@ -1022,7 +1029,8 @@ class AutomationService:
             # Get secret groups based on config format
             if automation_config.config_format == "toml":
                 # For TOML format, use stage-specific secrets only (no fallback)
-                if stage == "dev" and automation_config.dev_groups:
+                # live-dev uses dev secrets
+                if stage in ("dev", "live-dev") and automation_config.dev_groups:
                     secret_groups = automation_config.dev_groups
                 elif stage == "staging" and automation_config.staging_groups:
                     secret_groups = automation_config.staging_groups
@@ -1153,7 +1161,22 @@ class AutomationService:
 
             if "volumes" not in entry:
                 entry["volumes"] = []
-            entry["volumes"].append(f"{deployment_dir}:{automation_config.mount_path}")
+
+            # For live-dev stage, mount source from workspace repo (for live editing)
+            # Otherwise, mount from gitops deployment directory
+            relative_path = conf.get("relative_path")
+            if stage == "live-dev" and relative_path:
+                # Mount the original source code for live development
+                source_mount_path = os.path.join(
+                    self.workspace_repo_dir_host, relative_path
+                )
+                entry["volumes"].append(
+                    f"{source_mount_path}:{automation_config.mount_path}"
+                )
+            else:
+                entry["volumes"].append(
+                    f"{deployment_dir}:{automation_config.mount_path}"
+                )
 
             if conf.get("enabled", True):
                 dc["services"][deployment_id] = entry
