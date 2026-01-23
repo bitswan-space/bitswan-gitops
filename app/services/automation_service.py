@@ -1096,8 +1096,12 @@ class AutomationService:
                 expose = True
 
             if expose and port:
+                # Set the automation URL env var for exposed automations
+                automation_url = f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
+                entry["environment"]["BITSWAN_AUTOMATION_URL"] = automation_url
+
                 if expose_to_groups:
-                    endpoint = f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
+                    endpoint = automation_url
                     redirect_uri = f"{endpoint}/oauth2/callback"
 
                     # Register the redirect URI with Keycloak
@@ -1117,6 +1121,7 @@ class AutomationService:
                             "OAUTH2_PROXY_UPSTREAM": f"http://127.0.0.1:{port}",
                             "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
                             "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(expose_to_groups),
+                            "BITSWAN_AUTOMATION_URL": automation_url,
                         }
                     )
                     entry["environment"] = oauth2_envs
