@@ -1006,10 +1006,15 @@ class AutomationService:
             if stage == "":
                 stage = "production"
 
-            # Set BITSWAN_AUTOMATION_STAGE environment variable
+            # Set BITSWAN environment variables
             if "environment" not in entry:
                 entry["environment"] = {}
             entry["environment"]["BITSWAN_AUTOMATION_STAGE"] = stage
+            entry["environment"]["BITSWAN_DEPLOYMENT_ID"] = deployment_id
+            if self.workspace_name:
+                entry["environment"]["BITSWAN_WORKSPACE_NAME"] = self.workspace_name
+            if self.gitops_domain:
+                entry["environment"]["BITSWAN_GITOPS_DOMAIN"] = self.gitops_domain
 
             network_mode = None
             secret_groups = []
