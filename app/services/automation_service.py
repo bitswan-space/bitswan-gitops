@@ -1013,7 +1013,18 @@ class AutomationService:
 
             network_mode = None
             secret_groups = []
-            if pipeline_conf:
+
+            # Get secret groups based on config format
+            if automation_config.config_format == "toml":
+                # For TOML format, use stage-specific secrets only (no fallback)
+                if stage == "dev" and automation_config.dev_groups:
+                    secret_groups = automation_config.dev_groups
+                elif stage == "staging" and automation_config.staging_groups:
+                    secret_groups = automation_config.staging_groups
+                elif stage == "production" and automation_config.production_groups:
+                    secret_groups = automation_config.production_groups
+            elif pipeline_conf:
+                # For INI format (pipelines.conf), use existing logic with fallback
                 network_mode = pipeline_conf.get(
                     "docker.compose", "network_mode", fallback=conf.get("network_mode")
                 )
