@@ -1096,9 +1096,15 @@ class AutomationService:
                 expose = True
 
             if expose and port:
-                # Set the automation URL env var for exposed automations
-                automation_url = f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
+                # Set URL env vars for exposed automations
+                # These allow constructing URLs to any automation: {prefix}{deploymentId}{suffix}
+                url_prefix = f"https://{self.workspace_name}-"
+                url_suffix = f".{self.gitops_domain}"
+                automation_url = f"{url_prefix}{deployment_id}{url_suffix}"
+
                 entry["environment"]["BITSWAN_AUTOMATION_URL"] = automation_url
+                entry["environment"]["BITSWAN_URL_PREFIX"] = url_prefix
+                entry["environment"]["BITSWAN_URL_SUFFIX"] = url_suffix
 
                 if expose_to_groups:
                     endpoint = automation_url
