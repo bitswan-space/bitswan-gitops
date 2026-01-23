@@ -1164,9 +1164,7 @@ class AutomationService:
             if stage == "live-dev" and relative_path:
                 # Mount the original source code for live development
                 # Uses same workspace path as jupyter_service
-                source_mount_path = os.path.join(
-                    self.workspace_dir_host, relative_path
-                )
+                source_mount_path = os.path.join(self.workspace_dir_host, relative_path)
                 entry["volumes"].append(
                     f"{source_mount_path}:{automation_config.mount_path}"
                 )
