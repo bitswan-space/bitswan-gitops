@@ -29,6 +29,21 @@ class AutomationConfig:
     port: int = 8080
     config_format: str = "ini"  # "toml" or "ini"
     mount_path: str = "/opt/pipelines"  # "/app/" for TOML, "/opt/pipelines" for INI
+    # Stage-specific secret groups (only for automation.toml - no general fallback)
+    dev_groups: list[str] | None = None
+    staging_groups: list[str] | None = None
+    production_groups: list[str] | None = None
+
+
+def _parse_string_or_list(value) -> list[str] | None:
+    """Parse a value that can be either a string or list into a list."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [str(g).strip() for g in value if str(g).strip()]
+    if isinstance(value, str):
+        return [g.strip() for g in value.split() if g.strip()]
+    return None
 
 
 def parse_automation_toml(content: str) -> AutomationConfig | None:
@@ -38,6 +53,7 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
     try:
         data = toml.loads(content)
         deployment = data.get("deployment", {})
+        secrets = data.get("secrets", {})
 
         # Parse expose_to as a list
         expose_to = deployment.get("expose_to")
@@ -53,6 +69,9 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
             port=deployment.get("port", 8080),
             config_format="toml",
             mount_path="/app/",
+            dev_groups=_parse_string_or_list(secrets.get("dev")),
+            staging_groups=_parse_string_or_list(secrets.get("staging")),
+            production_groups=_parse_string_or_list(secrets.get("production")),
         )
     except Exception:
         return None
