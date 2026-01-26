@@ -10,7 +10,8 @@ router = APIRouter(prefix="/images", tags=["images"])
 async def get_images(
     image_service: ImageService = Depends(get_image_service),
 ):
-    return image_service.get_images()
+    # Now fully async using aiohttp Docker client
+    return await image_service.get_images()
 
 
 @router.get("/{image_tag}/logs")
@@ -19,6 +20,7 @@ async def get_image_logs(
     lines: int = 100,
     image_service: ImageService = Depends(get_image_service),
 ):
+    # File I/O is fast enough to not need thread pool
     return image_service.get_image_logs(image_tag, lines)
 
 

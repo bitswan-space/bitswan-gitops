@@ -2,7 +2,6 @@ import os
 import json
 from tempfile import NamedTemporaryFile
 import zipfile
-import docker
 import yaml
 import requests
 from datetime import datetime
@@ -23,10 +22,11 @@ from app.utils import (
     call_git_command,
     call_git_command_with_output,
     copy_worktree,
+    GitLockContext,
 )
+from app.async_docker import get_async_docker_client, DockerError
 from app.services.image_service import ImageService
 from fastapi import UploadFile, HTTPException
-import docker.errors
 
 
 class AutomationService:
@@ -45,7 +45,6 @@ class AutomationService:
         self.workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME")
         self.oauth2_proxy_path = os.environ.get("OAUTH2_PROXY_PATH")
         self.oauth2_proxy_port = 9999
-        self.docker_client = docker.from_env()
         self.gitops_dir = os.path.join(self.bs_home, "gitops")
         self.gitops_dir_host = os.path.join(self.bs_home_host, "gitops")
         self.secrets_dir = os.path.join(self.bs_home, "secrets")
@@ -56,9 +55,11 @@ class AutomationService:
         # Cache for automation history: key is (deployment_id, page, page_size), value is (commit_hash, response)
         self._history_cache: dict[tuple[str, int, int], tuple[str, dict]] = {}
 
-    def get_container(self, deployment_id):
-        return self.docker_client.containers.list(
-            all=True,  # Include stopped containers
+    async def get_container(self, deployment_id) -> list[dict]:
+        """Get containers for a specific deployment using async Docker client."""
+        docker_client = get_async_docker_client()
+        containers = await docker_client.list_containers(
+            all=True,
             filters={
                 "label": [
                     f"gitops.deployment_id={deployment_id}",
@@ -66,10 +67,13 @@ class AutomationService:
                 ]
             },
         )
+        return containers
 
-    def get_containers(self):
-        return self.docker_client.containers.list(
-            all=True,  # Include stopped containers
+    async def get_containers(self) -> list[dict]:
+        """Get all gitops containers using async Docker client."""
+        docker_client = get_async_docker_client()
+        containers = await docker_client.list_containers(
+            all=True,
             filters={
                 "label": [
                     "gitops.deployment_id",
@@ -77,8 +81,10 @@ class AutomationService:
                 ]
             },
         )
+        return containers
 
-    def get_automations(self):
+    async def get_automations(self):
+        """Get all automations with their container status using async Docker client."""
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         if not bs_yaml:
@@ -106,18 +112,18 @@ class AutomationService:
             for deployment_id in bs_yaml["deployments"]
         }
 
-        info = self.docker_client.info()
-        containers: list[docker.models.containers.Container] = self.get_containers()
+        docker_client = get_async_docker_client()
+        info = await docker_client.info()
+        containers = await self.get_containers()
 
         gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", None)
 
         # updated pres with active containers
         for container in containers:
-            deployment_id = container.labels["gitops.deployment_id"]
-            if deployment_id in pres:
-                label = container.attrs["Config"]["Labels"].get(
-                    "gitops.intended_exposed", "false"
-                )
+            labels = container.get("Labels", {})
+            deployment_id = labels.get("gitops.deployment_id")
+            if deployment_id and deployment_id in pres:
+                label = labels.get("gitops.intended_exposed", "false")
 
                 url = generate_workspace_url(
                     self.workspace_name, deployment_id, gitops_domain, True
@@ -126,15 +132,27 @@ class AutomationService:
                 if label != "true":
                     url = None
 
+                # Parse created timestamp
+                created_str = container.get("Created")
+                created_at = None
+                if created_str:
+                    try:
+                        # Docker API returns Unix timestamp
+                        created_at = datetime.utcfromtimestamp(created_str)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Get container state
+                state = container.get("State", "unknown")
+                status = container.get("Status", "")
+
                 pres[deployment_id] = DeployedAutomation(
-                    container_id=container.id,
-                    endpoint_name=info["Name"],
-                    created_at=datetime.strptime(
-                        container.attrs["Created"][:26] + "Z", "%Y-%m-%dT%H:%M:%S.%fZ"
-                    ),
+                    container_id=container.get("Id"),
+                    endpoint_name=info.get("Name"),
+                    created_at=created_at,
                     name=deployment_id,
-                    state=container.status,
-                    status=calculate_uptime(container.attrs["State"]["StartedAt"]),
+                    state=state,
+                    status=status,
                     deployment_id=deployment_id,
                     active=pres[deployment_id].active,
                     automation_url=url,
@@ -157,6 +175,8 @@ class AutomationService:
 
         commit_message can be a string or a callable that takes checksum and returns a string.
         checksum: Pre-calculated git tree hash that will be verified.
+
+        Uses async git lock to prevent race conditions with concurrent uploads.
         """
         with NamedTemporaryFile(delete=False) as temp_file:
             content = await file.read()
@@ -186,20 +206,22 @@ class AutomationService:
                 else:
                     final_commit_message = commit_message
 
-                # add this file to git
-                await call_git_command("git", "add", f"{checksum}", cwd=self.gitops_dir)
+                # Use async lock for git operations to prevent race conditions
+                async with GitLockContext(timeout=10.0):
+                    # add this file to git
+                    await call_git_command("git", "add", f"{checksum}", cwd=self.gitops_dir)
 
-                # commit the changes
-                await call_git_command(
-                    "git",
-                    "commit",
-                    "-m",
-                    final_commit_message,
-                    cwd=self.gitops_dir,
-                )
+                    # commit the changes
+                    await call_git_command(
+                        "git",
+                        "commit",
+                        "-m",
+                        final_commit_message,
+                        cwd=self.gitops_dir,
+                    )
 
-                # push the changes
-                await call_git_command("git", "push", cwd=self.gitops_dir)
+                    # push the changes
+                    await call_git_command("git", "push", cwd=self.gitops_dir)
 
                 return {
                     "checksum": checksum,
@@ -455,21 +477,27 @@ class AutomationService:
 
         return response
 
-    def start_oauth2_proxy_in_container(self, deployment_id: str):
+    async def start_oauth2_proxy_in_container(self, deployment_id: str):
         """Start oauth2-proxy in a running container after deployment"""
-        containers = self.get_container(deployment_id)
+        containers = await self.get_container(deployment_id)
+
+        if not containers:
+            return False
 
         container = containers[0]
-        labels = container.labels
+        container_id = container.get("Id")
+        labels = container.get("Labels", {})
+        container_name = container.get("Names", [deployment_id])[0].lstrip("/")
 
         # Check if oauth2 is enabled via labels
         if labels.get("gitops.oauth2.enabled") != "true":
             return False
 
         # Ensure container is running
-        if container.status != "running":
+        state = container.get("State", "")
+        if state != "running":
             print(
-                f"Warning: Container {container.name} is not running (status: {container.status}), cannot start oauth2-proxy"
+                f"Warning: Container {container_name} is not running (status: {state}), cannot start oauth2-proxy"
             )
             return False
 
@@ -481,48 +509,38 @@ class AutomationService:
             return False
 
         try:
+            docker_client = get_async_docker_client()
+
             # Check if oauth2-proxy is already running to avoid duplicates
-            check_result = container.exec_run(
-                "pgrep -f oauth2-proxy || true",
-                stdout=True,
-                stderr=True,
+            exec_id = await docker_client.exec_create(
+                container_id, ["sh", "-c", "pgrep -f oauth2-proxy || true"]
             )
-            if check_result.exit_code == 0 and check_result.output.strip():
-                print(f"oauth2-proxy already running in container {container.name}")
+            output = await docker_client.exec_start(exec_id)
+            exec_info = await docker_client.exec_inspect(exec_id)
+
+            if exec_info.get("ExitCode") == 0 and output.strip():
+                print(f"oauth2-proxy already running in container {container_name}")
                 return True
 
-            # Start oauth2-proxy in the background using sh -c to properly handle backgrounding
+            # Start oauth2-proxy in the background
             print(
-                f"Starting oauth2-proxy with upstream: {upstream_url} in container {container.name}"
+                f"Starting oauth2-proxy with upstream: {upstream_url} in container {container_name}"
             )
-            # Use sh -c with proper backgrounding that returns immediately
-            cmd = f"sh -c 'oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &'"
-            exec_result = container.exec_run(
-                cmd,
-                stdout=True,
-                stderr=True,
-                detach=False,
-            )
+            cmd = ["sh", "-c", f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &"]
+            exec_id = await docker_client.exec_create(container_id, cmd)
+            await docker_client.exec_start(exec_id)
+            exec_info = await docker_client.exec_inspect(exec_id)
 
-            if exec_result.exit_code == 0:
-                print(
-                    f"Successfully started oauth2-proxy in container {container.name}"
-                )
+            if exec_info.get("ExitCode", 0) == 0:
+                print(f"Successfully started oauth2-proxy in container {container_name}")
                 return True
             else:
-                error_msg = (
-                    exec_result.output.decode("utf-8")
-                    if exec_result.output
-                    else "Unknown error"
-                )
-                print(
-                    f"Failed to start oauth2-proxy in container {container.name}: {error_msg}"
-                )
+                print(f"Failed to start oauth2-proxy in container {container_name}")
                 return False
 
         except Exception as e:
             print(
-                f"Exception while starting oauth2-proxy in container {container.name}: {str(e)}"
+                f"Exception while starting oauth2-proxy in container {container_name}: {str(e)}"
             )
             return False
 
@@ -537,22 +555,25 @@ class AutomationService:
         else:
             message = f"Deployment {deployment_id} deleted successfully"
 
-        containers = self.get_container(deployment_id)
+        containers = await self.get_container(deployment_id)
         if containers:
             await self.remove_automation(deployment_id)
         return {"status": "success", "message": message}
 
     async def get_tag(self, deployed_image: str):
+        """Get the sha tag for a deployed image using async Docker client."""
         expected_prefix = f"{deployed_image}:sha"
         try:
-            image_obj = self.docker_client.images.get(deployed_image)
-        except docker.errors.ImageNotFound:
+            docker_client = get_async_docker_client()
+            image = await docker_client.get_image(deployed_image)
+            tags = image.get("RepoTags", []) or []
+            for tag in tags:
+                if tag.startswith(expected_prefix):
+                    deployed_image_checksum_tag = tag[len(expected_prefix):]
+                    return deployed_image_checksum_tag
             return None
-        for tag in image_obj.tags:
-            if tag.startswith(expected_prefix):
-                deployed_image_checksum_tag = tag[len(expected_prefix) :]
-                return deployed_image_checksum_tag
-        return None
+        except DockerError:
+            return None
 
     async def deploy_automation(
         self,
@@ -649,7 +670,7 @@ class AutomationService:
                     detail=f"Error deploying services: \ndocker-compose:\n {dc_yaml}\n\nstdout:\n {result['stdout']}\nstderr:\n{result['stderr']}\n",
                 )
 
-        self.start_oauth2_proxy_in_container(deployment_id)
+        await self.start_oauth2_proxy_in_container(deployment_id)
 
         if image_tag:
             bs_yaml = read_bitswan_yaml(self.gitops_dir)
@@ -705,7 +726,7 @@ class AutomationService:
                 )
 
         for deployment_id in deployments.keys():
-            self.start_oauth2_proxy_in_container(deployment_id)
+            await self.start_oauth2_proxy_in_container(deployment_id)
 
         return {
             "message": "Deployed services successfully",
@@ -713,8 +734,9 @@ class AutomationService:
             "result": deployment_result,
         }
 
-    def start_automation(self, deployment_id: str):
-        containers = self.get_container(deployment_id)
+    async def start_automation(self, deployment_id: str):
+        """Start a container using async Docker client."""
+        containers = await self.get_container(deployment_id)
 
         if not containers:
             raise HTTPException(
@@ -722,11 +744,11 @@ class AutomationService:
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        # Restart the container
-        container = containers[0]
-        container.start()
+        container_id = containers[0].get("Id")
+        docker_client = get_async_docker_client()
+        await docker_client.start_container(container_id)
 
-        self.start_oauth2_proxy_in_container(deployment_id)
+        await self.start_oauth2_proxy_in_container(deployment_id)
 
         return {
             "status": "success",
@@ -787,7 +809,8 @@ class AutomationService:
         return active_deployments
 
     async def stop_automation(self, deployment_id: str):
-        containers = self.get_container(deployment_id)
+        """Stop a container using async Docker client."""
+        containers = await self.get_container(deployment_id)
 
         if not containers:
             raise HTTPException(
@@ -795,8 +818,9 @@ class AutomationService:
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container = containers[0]
-        container.stop()
+        container_id = containers[0].get("Id")
+        docker_client = get_async_docker_client()
+        await docker_client.stop_container(container_id)
 
         await self.mark_as_inactive(deployment_id)
 
@@ -805,8 +829,9 @@ class AutomationService:
             "message": f"Container for deployment {deployment_id} stopped successfully",
         }
 
-    def restart_automation(self, deployment_id: str):
-        containers = self.get_container(deployment_id)
+    async def restart_automation(self, deployment_id: str):
+        """Restart a container using async Docker client."""
+        containers = await self.get_container(deployment_id)
 
         if not containers:
             raise HTTPException(
@@ -814,11 +839,11 @@ class AutomationService:
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        # Restart the container
-        container = containers[0]
-        container.restart()
+        container_id = containers[0].get("Id")
+        docker_client = get_async_docker_client()
+        await docker_client.restart_container(container_id)
 
-        self.start_oauth2_proxy_in_container(deployment_id)
+        await self.start_oauth2_proxy_in_container(deployment_id)
 
         return {
             "status": "success",
@@ -845,15 +870,16 @@ class AutomationService:
             self.gitops_dir, self.gitops_dir_host, deployment_id, "deactivate"
         )
 
-        self.remove_automation(deployment_id)
+        await self.remove_automation(deployment_id)
 
         return {
             "status": "success",
             "message": f"Deployment {deployment_id} deactivated successfully",
         }
 
-    def get_automation_logs(self, deployment_id: str, lines: int = 100):
-        containers = self.get_container(deployment_id)
+    async def get_automation_logs(self, deployment_id: str, lines: int = 100):
+        """Get container logs using async Docker client."""
+        containers = await self.get_container(deployment_id)
 
         if not containers:
             raise HTTPException(
@@ -861,14 +887,15 @@ class AutomationService:
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container = containers[0]
-        logs = container.logs(tail=lines)
-        logs = logs.decode("utf-8")
+        container_id = containers[0].get("Id")
+        docker_client = get_async_docker_client()
+        logs = await docker_client.get_container_logs(container_id, tail=lines)
 
         return {"status": "success", "logs": logs.split("\n")}
 
     async def remove_automation(self, deployment_id: str):
-        containers = self.get_container(deployment_id)
+        """Remove a container using async Docker client."""
+        containers = await self.get_container(deployment_id)
 
         if not containers:
             raise HTTPException(
@@ -876,9 +903,10 @@ class AutomationService:
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container = containers[0]
-        container.stop()
-        container.remove()
+        container_id = containers[0].get("Id")
+        docker_client = get_async_docker_client()
+        await docker_client.stop_container(container_id)
+        await docker_client.remove_container(container_id)
 
         return {
             "status": "success",

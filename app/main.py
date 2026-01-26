@@ -1,5 +1,6 @@
 import logging
-from fastapi import Depends, FastAPI
+import time
+from fastapi import Depends, FastAPI, Request
 from fastapi.openapi.utils import get_openapi
 
 from app.lifespan import lifespan
@@ -18,9 +19,29 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+logger = logging.getLogger(__name__)
+
 debug = os.environ.get("DEBUG", "false").lower() == "true"
 
+# Threshold in milliseconds for slow endpoint warning
+SLOW_ENDPOINT_THRESHOLD_MS = 150
+
 app = FastAPI(lifespan=lifespan, debug=debug)
+
+
+@app.middleware("http")
+async def log_slow_requests(request: Request, call_next):
+    """Middleware to log warnings for slow endpoints (>150ms)."""
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+    if elapsed_ms > SLOW_ENDPOINT_THRESHOLD_MS:
+        logger.warning(
+            f"Slow endpoint: {request.method} {request.url.path} took {elapsed_ms:.1f}ms"
+        )
+
+    return response
 
 # Apply auth to protected routes only
 app.include_router(automations_router, dependencies=[Depends(verify_token)])
