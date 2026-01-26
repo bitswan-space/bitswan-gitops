@@ -50,6 +50,7 @@ class AutomationService:
         self.secrets_dir = os.path.join(self.bs_home, "secrets")
         # Workspace directory for live-dev mode (source code mounting)
         # Uses same path structure as jupyter_service for consistency
+        self.workspace_dir = os.path.join(self.bs_home, "workspace")
         self.workspace_dir_host = os.path.join(self.bs_home_host, "workspace")
         # Cache for automation history: key is (deployment_id, page, page_size), value is (commit_hash, response)
         self._history_cache: dict[tuple[str, int, int], tuple[str, dict]] = {}
