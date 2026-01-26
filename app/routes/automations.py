@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query, Request, Header
 from fastapi.responses import JSONResponse
 from app.services.automation_service import AutomationService
 from app.dependencies import get_automation_service
+import tempfile
+import os
 
 router = APIRouter(prefix="/automations", tags=["automations"])
 
@@ -155,6 +157,34 @@ async def upload_asset(
         return JSONResponse(content=result)
     else:
         raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+
+
+@router.post("/assets/upload-stream")
+async def upload_asset_stream(
+    request: Request,
+    checksum: str = Header(..., alias="X-Checksum"),
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    """
+    Streaming upload endpoint for large zip files.
+    Receives raw zip data in the request body with checksum in X-Checksum header.
+    This endpoint supports chunked transfer encoding.
+    """
+    # Create a temporary file to store the streamed data
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as temp_file:
+        temp_path = temp_file.name
+        # Stream the request body to the temp file
+        async for chunk in request.stream():
+            temp_file.write(chunk)
+
+    try:
+        # Create a file-like object for the service
+        result = await automation_service.upload_asset_from_path(temp_path, checksum=checksum)
+        return JSONResponse(content=result)
+    finally:
+        # Clean up temp file
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 
 @router.get("/assets")

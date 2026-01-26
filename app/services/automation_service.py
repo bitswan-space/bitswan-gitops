@@ -298,6 +298,45 @@ class AutomationService:
         except Exception as e:
             return {"error": f"Error processing file: {str(e)}"}
 
+    async def upload_asset_from_path(self, file_path: str, checksum: str):
+        """
+        Upload an asset from a file path (for streaming uploads).
+        Similar to upload_asset but takes a file path instead of UploadFile.
+
+        checksum: Pre-calculated git tree hash that will be verified.
+        """
+        output_dir = os.path.join(self.gitops_dir, checksum)
+        os.makedirs(output_dir, exist_ok=True)
+
+        with zipfile.ZipFile(file_path, "r") as zip_ref:
+            zip_ref.extractall(output_dir)
+
+        # Verify the checksum using git tree hash algorithm
+        calculated_hash = await calculate_git_tree_hash(output_dir)
+        if calculated_hash != checksum:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Checksum verification failed. Expected {checksum}, got {calculated_hash}",
+            )
+
+        # Use async lock for git operations to prevent race conditions
+        async with GitLockContext(timeout=10.0):
+            await call_git_command("git", "add", f"{checksum}", cwd=self.gitops_dir)
+            await call_git_command(
+                "git",
+                "commit",
+                "-m",
+                f"Add asset {checksum}",
+                cwd=self.gitops_dir,
+            )
+            await call_git_command("git", "push", cwd=self.gitops_dir)
+
+        return {
+            "message": "Asset uploaded successfully",
+            "output_directory": output_dir,
+            "checksum": checksum,
+        }
+
     def list_assets(self):
         """
         List all assets (checksum directories) in the gitops directory.
