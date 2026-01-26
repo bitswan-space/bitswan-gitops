@@ -559,8 +559,14 @@ class AutomationService:
         checksum: str | None = None,
         stage: str | None = None,
         relative_path: str | None = None,
+        # Automation config values (for live-dev, sent by extension)
+        image: str | None = None,
+        expose: bool | None = None,
+        port: int | None = None,
+        mount_path: str | None = None,
     ):
         print(f"[deploy_automation] deployment_id={deployment_id}, checksum={checksum}, stage={stage}, relative_path={relative_path}")
+        print(f"[deploy_automation] config: image={image}, expose={expose}, port={port}, mount_path={mount_path}")
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
@@ -575,7 +581,8 @@ class AutomationService:
             )
 
         # Update bitswan.yaml with new parameters if provided
-        if checksum is not None or stage is not None or relative_path is not None:
+        has_updates = any(v is not None for v in [checksum, stage, relative_path, image, expose, port, mount_path])
+        if has_updates:
             if deployment_id not in bs_yaml.get("deployments", {}):
                 bs_yaml.setdefault("deployments", {})[deployment_id] = {}
 
@@ -590,6 +597,16 @@ class AutomationService:
 
             if relative_path is not None:
                 deployment_config["relative_path"] = relative_path
+
+            # Store automation config values (for live-dev deployments)
+            if image is not None:
+                deployment_config["image"] = image
+            if expose is not None:
+                deployment_config["expose"] = expose
+            if port is not None:
+                deployment_config["port"] = port
+            if mount_path is not None:
+                deployment_config["mount_path"] = mount_path
 
             # Set active to True by default when deploying (unless explicitly set to False)
             if "active" not in deployment_config:
@@ -988,17 +1005,28 @@ class AutomationService:
             relative_path = conf.get("relative_path")
 
             if stage == "live-dev" and relative_path:
-                # Read config from workspace source directory
-                workspace_source_dir = os.path.join(self.workspace_dir, relative_path)
-                print(f"[live-dev] {deployment_id}: Looking for automation config in: {workspace_source_dir}")
-                if not os.path.exists(workspace_source_dir):
-                    # Skip stale live-dev deployments where source no longer exists
-                    print(f"[live-dev] {deployment_id}: Skipping - directory does not exist: {workspace_source_dir}")
+                # For live-dev, use config values stored in bitswan.yaml (sent by extension)
+                # This avoids needing filesystem access to the workspace
+                stored_image = conf.get("image")
+                stored_expose = conf.get("expose", False)
+                stored_port = conf.get("port", 8080)
+                stored_mount_path = conf.get("mount_path", "/app/")
+
+                print(f"[live-dev] {deployment_id}: Using stored config: image={stored_image}, expose={stored_expose}, port={stored_port}, mount_path={stored_mount_path}")
+
+                if not stored_image:
+                    print(f"[live-dev] {deployment_id}: Skipping - no image configured (deploy with extension to set config)")
                     continue
-                print(f"[live-dev] {deployment_id}: Directory exists, reading config...")
-                pipeline_conf = read_pipeline_conf(workspace_source_dir)
-                automation_config = read_automation_config(workspace_source_dir)
-                print(f"[live-dev] {deployment_id}: Config loaded: image={automation_config.image}, expose={automation_config.expose}")
+
+                # Create a minimal AutomationConfig from stored values
+                automation_config = AutomationConfig(
+                    image=stored_image,
+                    expose=stored_expose,
+                    port=stored_port,
+                    config_format="toml",
+                    mount_path=stored_mount_path,
+                )
+                pipeline_conf = None
             elif not os.path.exists(source_dir):
                 raise HTTPException(
                     status_code=500,

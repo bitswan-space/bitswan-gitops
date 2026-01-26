@@ -34,6 +34,11 @@ async def deploy_automation(
     checksum: str | None = Form(None),
     stage: str | None = Form(None),
     relative_path: str | None = Form(None),
+    # Automation config values (sent by extension for live-dev)
+    image: str | None = Form(None),
+    expose: str | None = Form(None),  # "true" or "false" as string from form
+    port: str | None = Form(None),  # port as string from form
+    mount_path: str | None = Form(None),
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     # Validate stage if provided
@@ -42,8 +47,19 @@ async def deploy_automation(
             status_code=400,
             detail="Stage must be one of: dev, staging, production, live-dev",
         )
+    # Convert form values to proper types
+    expose_bool = expose.lower() == "true" if expose else None
+    port_int = int(port) if port else None
+
     return await automation_service.deploy_automation(
-        deployment_id, checksum=checksum, stage=stage, relative_path=relative_path
+        deployment_id,
+        checksum=checksum,
+        stage=stage,
+        relative_path=relative_path,
+        image=image,
+        expose=expose_bool,
+        port=port_int,
+        mount_path=mount_path,
     )
 
 
