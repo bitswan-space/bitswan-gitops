@@ -388,7 +388,7 @@ def _calculate_git_blob_hash(file_path: str) -> str:
     return hashlib.sha1(blob).hexdigest()
 
 
-def _calculate_git_tree_hash_recursive(dir_path: str) -> str:
+def _calculate_git_tree_hash_recursive(dir_path: str, relative_path: str = "", logger=None) -> str:
     """
     Calculate git tree hash for a directory recursively.
     Implements git's tree object format directly without spawning git processes.
@@ -414,16 +414,19 @@ def _calculate_git_tree_hash_recursive(dir_path: str) -> str:
 
     for name, is_dir in items:
         item_path = os.path.join(dir_path, name)
+        entry_relative_path = f"{relative_path}/{name}" if relative_path else name
 
         if is_dir:
-            tree_hash = _calculate_git_tree_hash_recursive(item_path)
+            tree_hash = _calculate_git_tree_hash_recursive(item_path, entry_relative_path, logger)
             entries.append({"mode": "040000", "name": name, "hash": tree_hash})
+            if logger:
+                logger.info(f"CHECKSUM DIR:  {entry_relative_path}/ -> {tree_hash}")
         else:
-            file_stat = os.stat(item_path)
-            mode = "100755" if (file_stat.st_mode & 0o111) else "100644"
-
+            # Always use 100644 mode - zip extraction doesn't preserve executable bits reliably
             blob_hash = _calculate_git_blob_hash(item_path)
-            entries.append({"mode": mode, "name": name, "hash": blob_hash})
+            entries.append({"mode": "100644", "name": name, "hash": blob_hash})
+            if logger:
+                logger.info(f"CHECKSUM FILE: {entry_relative_path} -> 100644 {blob_hash}")
 
     # Build tree object: "tree <size>\\0<entries>"
     entry_bytes = bytearray()
@@ -446,11 +449,18 @@ async def calculate_git_tree_hash(dir_path: str) -> str:
     This implementation directly calculates the hash without spawning git processes,
     making it much more efficient.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"=== SERVER CHECKSUM CALCULATION START for {dir_path} ===")
+
     # Run the recursive calculation in a thread pool to keep it async
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, _calculate_git_tree_hash_recursive, dir_path
+    result = await loop.run_in_executor(
+        None, lambda: _calculate_git_tree_hash_recursive(dir_path, "", logger)
     )
+
+    logger.info(f"=== SERVER CHECKSUM CALCULATION END: {result} ===")
+    return result
 
 
 async def update_git(
