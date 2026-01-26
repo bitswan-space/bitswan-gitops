@@ -566,8 +566,6 @@ class AutomationService:
         port: int | None = None,
         mount_path: str | None = None,
     ):
-        print(f"[deploy_automation] deployment_id={deployment_id}, checksum={checksum}, stage={stage}, relative_path={relative_path}")
-        print(f"[deploy_automation] config: image={image}, expose={expose}, port={port}, mount_path={mount_path}")
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
@@ -624,14 +622,6 @@ class AutomationService:
             # Re-read to get updated config
             bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
-        print(f"[deploy_automation] Final bs_yaml deployments: {bs_yaml.get('deployments', {})}")
-        print(f"[deploy_automation] workspace_dir={self.workspace_dir}, exists={os.path.exists(self.workspace_dir)}")
-        if os.path.exists(self.workspace_dir):
-            try:
-                contents = os.listdir(self.workspace_dir)
-                print(f"[deploy_automation] workspace_dir contents: {contents[:20]}")  # First 20 items
-            except Exception as e:
-                print(f"[deploy_automation] Error listing workspace_dir: {e}")
         dc_yaml = self.generate_docker_compose(bs_yaml)
         deployments = bs_yaml.get("deployments", {})
 
@@ -1013,10 +1003,8 @@ class AutomationService:
                 stored_port = conf.get("port", 8080)
                 stored_mount_path = conf.get("mount_path", "/app/")
 
-                print(f"[live-dev] {deployment_id}: Using stored config: image={stored_image}, expose={stored_expose}, port={stored_port}, mount_path={stored_mount_path}")
-
                 if not stored_image:
-                    print(f"[live-dev] {deployment_id}: Skipping - no image configured (deploy with extension to set config)")
+                    # Skip live-dev deployments without stored config
                     continue
 
                 # Create a minimal AutomationConfig from stored values
