@@ -983,18 +983,15 @@ class AutomationService:
             if stage == "live-dev" and relative_path:
                 # Read config from workspace source directory
                 workspace_source_dir = os.path.join(self.workspace_dir, relative_path)
-                print(f"[live-dev] Looking for automation config in: {workspace_source_dir}")
-                print(f"[live-dev] workspace_dir={self.workspace_dir}, relative_path={relative_path}")
+                print(f"[live-dev] {deployment_id}: Looking for automation config in: {workspace_source_dir}")
                 if not os.path.exists(workspace_source_dir):
-                    print(f"[live-dev] ERROR: Directory does not exist: {workspace_source_dir}")
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Workspace source directory {workspace_source_dir} does not exist",
-                    )
-                print(f"[live-dev] Directory exists, reading config...")
+                    # Skip stale live-dev deployments where source no longer exists
+                    print(f"[live-dev] {deployment_id}: Skipping - directory does not exist: {workspace_source_dir}")
+                    continue
+                print(f"[live-dev] {deployment_id}: Directory exists, reading config...")
                 pipeline_conf = read_pipeline_conf(workspace_source_dir)
                 automation_config = read_automation_config(workspace_source_dir)
-                print(f"[live-dev] Config loaded: image={automation_config.image}, expose={automation_config.expose}")
+                print(f"[live-dev] {deployment_id}: Config loaded: image={automation_config.image}, expose={automation_config.expose}")
             elif not os.path.exists(source_dir):
                 raise HTTPException(
                     status_code=500,
