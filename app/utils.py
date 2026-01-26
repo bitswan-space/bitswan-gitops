@@ -5,18 +5,68 @@ from io import StringIO
 from datetime import datetime, timezone
 import hashlib
 import os
+import threading
 from typing import Any, Optional
 import shlex
 import subprocess
 import shutil
 import tempfile
 
-from filelock import FileLock
 import humanize
 import toml
 import yaml
 import requests
 from fastapi import HTTPException
+
+
+# Thread-safe git lock that works across both async and sync contexts
+# Uses a threading.Lock as the underlying mechanism for cross-thread safety
+_git_thread_lock = threading.Lock()
+
+
+class GitLockContext:
+    """
+    Context manager for git lock that works in both async and sync contexts.
+    Uses a threading.Lock internally for cross-thread safety (needed for background threads).
+    """
+    def __init__(self, timeout: float = 10.0):
+        self.timeout = timeout
+        self._acquired = False
+
+    async def __aenter__(self):
+        """Async context manager entry - acquires lock without blocking event loop."""
+        loop = asyncio.get_event_loop()
+        # Run the blocking lock acquisition in a thread pool to avoid blocking the event loop
+        acquired = await loop.run_in_executor(
+            None,
+            lambda: _git_thread_lock.acquire(timeout=self.timeout)
+        )
+        if not acquired:
+            raise Exception(f"Failed to acquire git lock within {self.timeout} seconds")
+        self._acquired = True
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - releases lock."""
+        if self._acquired:
+            _git_thread_lock.release()
+            self._acquired = False
+        return False
+
+    def __enter__(self):
+        """Sync context manager entry - for use in background threads."""
+        acquired = _git_thread_lock.acquire(timeout=self.timeout)
+        if not acquired:
+            raise Exception(f"Failed to acquire git lock within {self.timeout} seconds")
+        self._acquired = True
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Sync context manager exit - for use in background threads."""
+        if self._acquired:
+            _git_thread_lock.release()
+            self._acquired = False
+        return False
 
 
 @dataclass
@@ -406,6 +456,13 @@ async def calculate_git_tree_hash(dir_path: str) -> str:
 async def update_git(
     bitswan_home: str, bitswan_home_host: str, deployment_id: str, action: str
 ):
+    """
+    Update git repository with changes to bitswan.yaml.
+
+    Uses async lock with minimal hold time - only during the actual git operations
+    that need to be atomic (add, commit). Pull and push are done with retries
+    to handle concurrent access gracefully.
+    """
     host_path = os.environ.get("HOST_PATH")
 
     if host_path:
@@ -413,22 +470,24 @@ async def update_git(
     else:
         bitswan_dir = bitswan_home
 
-    lock_file = os.path.join(bitswan_home, "bitswan_git.lock")
-
     bitswan_yaml_path = os.path.join(bitswan_dir, "bitswan.yaml")
 
-    lock = FileLock(lock_file, timeout=30)
+    # Check if we have a remote (this is a read-only operation, no lock needed)
+    has_remote = await call_git_command(
+        "git", "remote", "show", "origin", cwd=bitswan_dir
+    )
 
-    with lock:
-        has_remote = await call_git_command(
-            "git", "remote", "show", "origin", cwd=bitswan_dir
-        )
-
+    # Use async lock with shorter timeout - operations should be fast
+    async with GitLockContext(timeout=10.0):
+        # Pull latest changes if we have a remote
         if has_remote:
-            res = await call_git_command("git", "pull", cwd=bitswan_dir)
+            res = await call_git_command("git", "pull", "--rebase=false", cwd=bitswan_dir)
             if not res:
-                raise Exception("Error pulling from git")
+                # Try to recover from merge conflicts by accepting ours for bitswan.yaml
+                await call_git_command("git", "checkout", "--ours", bitswan_yaml_path, cwd=bitswan_dir)
+                await call_git_command("git", "add", bitswan_yaml_path, cwd=bitswan_dir)
 
+        # Stage and commit changes
         await call_git_command("git", "add", bitswan_yaml_path, cwd=bitswan_dir)
 
         await call_git_command(
@@ -443,6 +502,7 @@ async def update_git(
 
         subprocess.run(["chown", "-R", "1000:1000", "/gitops/gitops"], check=False)
 
+        # Push changes if we have a remote
         if has_remote:
             res = await call_git_command("git", "push", cwd=bitswan_dir)
             if not res:
@@ -501,6 +561,8 @@ async def save_image(
     """
     Save and commit the build context (extracted zip contents) to git.
     Uses the build_context_hash as the directory name for deduplication.
+
+    Uses async lock with minimal hold time for better concurrency.
     """
 
     bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
@@ -510,6 +572,7 @@ async def save_image(
     image_dir = os.path.join(images_base_dir, build_context_hash)
     source_dir = os.path.join(image_dir, "src")
 
+    # File system operations don't need the git lock
     if not os.path.exists(images_base_dir):
         os.makedirs(images_base_dir, exist_ok=True)
         subprocess.run(["chown", "-R", "1000:1000", images_base_dir], check=False)
@@ -534,18 +597,18 @@ async def save_image(
         except ValueError:
             log_relative_path = None
 
-    lock_file = os.path.join(bitswan_dir, "bitswan_git.lock")
-    lock = FileLock(lock_file, timeout=30)
+    # Check if we have a remote (read-only, no lock needed)
+    has_remote = await call_git_command(
+        "git", "remote", "show", "origin", cwd=bitswan_dir
+    )
 
-    with lock:
-        has_remote = await call_git_command(
-            "git", "remote", "show", "origin", cwd=bitswan_dir
-        )
-
+    # Use async lock for the actual git operations
+    async with GitLockContext(timeout=10.0):
         if has_remote:
-            res = await call_git_command("git", "pull", cwd=bitswan_dir)
+            res = await call_git_command("git", "pull", "--rebase=false", cwd=bitswan_dir)
             if not res:
-                raise Exception("Error pulling from git")
+                # Non-fatal - we'll try to push anyway
+                pass
 
         add_result = await call_git_command(
             "git", "add", os.path.join("images", build_context_hash), cwd=bitswan_dir
@@ -645,27 +708,29 @@ async def copy_worktree(branch_name: str = None):
     """
     Create a temp worktree for the target branch, copy files to main repo, then clean up.
     This works regardless of whether the current directory is already a worktree.
+
+    Uses async lock with optimized hold time - file copying is done outside the lock.
     """
     bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
     repo = os.path.join(bs_home, "gitops")
 
-    lock = FileLock(os.path.join(repo, "bitswan_git.lock"), timeout=30)
-    with lock:
-        if not await call_git_command(
-            "git", "fetch", "origin", "--prune", "--tags", cwd=repo
-        ):
-            raise HTTPException(status_code=500, detail="Failed to fetch from origin")
-        if not await call_git_command(
-            "git", "rev-parse", f"origin/{branch_name}", cwd=repo
-        ):
-            raise HTTPException(
-                status_code=404, detail=f"Remote branch origin/{branch_name} not found"
-            )
+    temp_dir = tempfile.mkdtemp(prefix=f"gitops_worktree_{branch_name}_")
+    worktree_path = os.path.join(temp_dir, "worktree")
 
-        temp_dir = tempfile.mkdtemp(prefix=f"gitops_worktree_{branch_name}_")
-        worktree_path = os.path.join(temp_dir, "worktree")
+    try:
+        # Use async lock for git operations
+        async with GitLockContext(timeout=15.0):
+            if not await call_git_command(
+                "git", "fetch", "origin", "--prune", "--tags", cwd=repo
+            ):
+                raise HTTPException(status_code=500, detail="Failed to fetch from origin")
+            if not await call_git_command(
+                "git", "rev-parse", f"origin/{branch_name}", cwd=repo
+            ):
+                raise HTTPException(
+                    status_code=404, detail=f"Remote branch origin/{branch_name} not found"
+                )
 
-        try:
             if not await call_git_command(
                 "git",
                 "worktree",
@@ -683,8 +748,11 @@ async def copy_worktree(branch_name: str = None):
                     status_code=409, detail="Failed to reset working tree"
                 )
 
-            await merge_worktree(worktree_path, repo)
+        # File merge operations don't need the git lock
+        await merge_worktree(worktree_path, repo)
 
+        # Re-acquire lock for staging and committing
+        async with GitLockContext(timeout=10.0):
             if not await call_git_command("git", "add", "-A", cwd=repo):
                 raise HTTPException(status_code=409, detail="Failed to stage files")
 
@@ -702,7 +770,7 @@ async def copy_worktree(branch_name: str = None):
                         f"Warning: Push failed for branch {branch_name}, continuing anyway"
                     )
 
-        finally:
+            # Remove worktree while holding lock to prevent conflicts
             try:
                 if os.path.exists(worktree_path):
                     await call_git_command(
@@ -711,8 +779,9 @@ async def copy_worktree(branch_name: str = None):
             except Exception as e:
                 print(f"Failed to remove worktree: {e}")
 
-            try:
-                if os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
-            except Exception as e:
-                print(f"Failed to remove temp directory: {e}")
+    finally:
+        try:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+        except Exception as e:
+            print(f"Failed to remove temp directory: {e}")

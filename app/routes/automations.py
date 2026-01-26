@@ -10,7 +10,8 @@ router = APIRouter(prefix="/automations", tags=["automations"])
 async def get_automations(
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    return automation_service.get_automations()
+    # Now fully async using aiohttp Docker client
+    return await automation_service.get_automations()
 
 
 @router.post("/deploy")
@@ -71,7 +72,8 @@ async def start_automation(
     deployment_id: str,
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    return automation_service.start_automation(deployment_id)
+    # Now fully async using aiohttp Docker client
+    return await automation_service.start_automation(deployment_id)
 
 
 @router.post("/{deployment_id}/stop")
@@ -87,7 +89,8 @@ async def restart_automation(
     deployment_id: str,
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    return automation_service.restart_automation(deployment_id)
+    # Now fully async using aiohttp Docker client
+    return await automation_service.restart_automation(deployment_id)
 
 
 @router.post("/{deployment_id}/activate")
@@ -112,7 +115,8 @@ async def get_automation_logs(
     lines: int = 100,
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    return automation_service.get_automation_logs(deployment_id, lines)
+    # Now fully async using aiohttp Docker client
+    return await automation_service.get_automation_logs(deployment_id, lines)
 
 
 @router.post("/{deployment_id}")

@@ -8,18 +8,27 @@ import shutil
 from typing import Optional, AsyncGenerator, Dict
 
 from app.utils import calculate_git_tree_hash, save_image
+from app.async_docker import get_async_docker_client, DockerError
 
-import docker
+import docker  # Keep for sync build process in background thread
 from fastapi import UploadFile, HTTPException
 
 
 class ImageService:
     def __init__(self):
-        self.client = docker.from_env()
+        # Sync client for background build thread only
+        self._sync_client = None
         self.bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
         self.gitops_dir = os.path.join(self.bs_home, "gitops")
         self.images_base_dir = os.path.join(self.gitops_dir, "images")
         os.makedirs(self.images_base_dir, exist_ok=True)
+
+    @property
+    def client(self):
+        """Lazy-load sync Docker client (only used in background build thread)."""
+        if self._sync_client is None:
+            self._sync_client = docker.from_env()
+        return self._sync_client
 
     def _get_image_dir(self, checksum: str) -> str:
         return os.path.join(self.images_base_dir, checksum)
@@ -124,19 +133,22 @@ class ImageService:
 
         return destination_dir
 
-    def get_images(self):
+    async def get_images(self):
         """
         Gets all available tagged docker images. Returns them as a list.
+        Uses async Docker client for non-blocking operation.
         """
         try:
+            docker_client = get_async_docker_client()
             # Get all images and filter for those with internal/ prefix
-            all_images = self.client.images.list()
+            all_images = await docker_client.list_images()
             internal_images = []
             metadata_entries = self._load_metadata_entries()
             seen_tags = set()
 
             for image in all_images:
-                for tag in image.tags:
+                tags = image.get("RepoTags") or []
+                for tag in tags:
                     if tag.startswith("internal/"):
                         checksum = self._extract_checksum_from_tag(tag)
                         build_status = (
@@ -144,10 +156,10 @@ class ImageService:
                         )
                         internal_images.append(
                             {
-                                "id": image.id,
+                                "id": image.get("Id"),
                                 "tag": tag,
-                                "created": image.attrs.get("Created"),
-                                "size": image.attrs.get("Size"),
+                                "created": image.get("Created"),
+                                "size": image.get("Size"),
                                 "building": build_status == "building",
                                 "build_status": build_status,
                                 "checksum": checksum,
@@ -178,7 +190,7 @@ class ImageService:
                     )
 
             return internal_images
-        except docker.errors.DockerException as e:
+        except DockerError as e:
             raise HTTPException(status_code=500, detail=f"Docker error: {str(e)}")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
@@ -419,12 +431,13 @@ class ImageService:
     async def delete_image(self, image_tag: str):
         """
         Deletes a docker image with the tag "internal/{image_tag}"
+        Uses async Docker client for non-blocking operation.
         """
         full_tag = f"internal/{image_tag}"
 
         try:
-            # Try to remove the image
-            self.client.images.remove(full_tag, force=True)
+            docker_client = get_async_docker_client()
+            await docker_client.remove_image(full_tag, force=True)
 
             checksum = self._extract_checksum_from_tag(full_tag)
             if checksum:
@@ -436,9 +449,9 @@ class ImageService:
                 "status": "success",
                 "message": f"Image {image_tag} deleted successfully",
             }
-        except docker.errors.ImageNotFound:
-            raise HTTPException(status_code=404, detail=f"Image {full_tag} not found")
-        except docker.errors.APIError as e:
+        except DockerError as e:
+            if e.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"Image {full_tag} not found")
             raise HTTPException(status_code=500, detail=f"Docker API error: {str(e)}")
 
     def get_image_logs(self, image_tag: str, lines: int = 100):
