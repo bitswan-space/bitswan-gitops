@@ -10,6 +10,7 @@ from typing import Callable
 from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
+    AutomationConfig,
     calculate_git_tree_hash,
     calculate_uptime,
     docker_compose_up,
