@@ -607,6 +607,13 @@ class AutomationService:
             bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         print(f"[deploy_automation] Final bs_yaml deployments: {bs_yaml.get('deployments', {})}")
+        print(f"[deploy_automation] workspace_dir={self.workspace_dir}, exists={os.path.exists(self.workspace_dir)}")
+        if os.path.exists(self.workspace_dir):
+            try:
+                contents = os.listdir(self.workspace_dir)
+                print(f"[deploy_automation] workspace_dir contents: {contents[:20]}")  # First 20 items
+            except Exception as e:
+                print(f"[deploy_automation] Error listing workspace_dir: {e}")
         dc_yaml = self.generate_docker_compose(bs_yaml)
         deployments = bs_yaml.get("deployments", {})
 
