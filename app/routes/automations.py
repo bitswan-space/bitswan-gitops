@@ -39,6 +39,7 @@ async def deploy_automation(
     expose: str | None = Form(None),  # "true" or "false" as string from form
     port: str | None = Form(None),  # port as string from form
     mount_path: str | None = Form(None),
+    secret_groups: str | None = Form(None),  # comma-separated list of secret groups
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     # Validate stage if provided
@@ -50,6 +51,7 @@ async def deploy_automation(
     # Convert form values to proper types
     expose_bool = expose.lower() == "true" if expose else None
     port_int = int(port) if port else None
+    secret_groups_list = [g.strip() for g in secret_groups.split(",") if g.strip()] if secret_groups else None
 
     return await automation_service.deploy_automation(
         deployment_id,
@@ -60,6 +62,7 @@ async def deploy_automation(
         expose=expose_bool,
         port=port_int,
         mount_path=mount_path,
+        secret_groups=secret_groups_list,
     )
 
 
