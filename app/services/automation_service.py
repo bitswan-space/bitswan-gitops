@@ -565,6 +565,7 @@ class AutomationService:
         expose: bool | None = None,
         port: int | None = None,
         mount_path: str | None = None,
+        secret_groups: list[str] | None = None,
     ):
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
@@ -580,7 +581,7 @@ class AutomationService:
             )
 
         # Update bitswan.yaml with new parameters if provided
-        has_updates = any(v is not None for v in [checksum, stage, relative_path, image, expose, port, mount_path])
+        has_updates = any(v is not None for v in [checksum, stage, relative_path, image, expose, port, mount_path, secret_groups])
         if has_updates:
             if deployment_id not in bs_yaml.get("deployments", {}):
                 bs_yaml.setdefault("deployments", {})[deployment_id] = {}
@@ -606,6 +607,8 @@ class AutomationService:
                 deployment_config["port"] = port
             if mount_path is not None:
                 deployment_config["mount_path"] = mount_path
+            if secret_groups is not None:
+                deployment_config["secret_groups"] = secret_groups
 
             # Set active to True by default when deploying (unless explicitly set to False)
             if "active" not in deployment_config:
@@ -1002,6 +1005,7 @@ class AutomationService:
                 stored_expose = conf.get("expose", False)
                 stored_port = conf.get("port", 8080)
                 stored_mount_path = conf.get("mount_path", "/app/")
+                stored_secret_groups = conf.get("secret_groups")
 
                 if not stored_image:
                     # Skip live-dev deployments without stored config
@@ -1014,6 +1018,7 @@ class AutomationService:
                     port=stored_port,
                     config_format="toml",
                     mount_path=stored_mount_path,
+                    live_dev_groups=stored_secret_groups,
                 )
                 pipeline_conf = None
             elif not os.path.exists(source_dir):
@@ -1065,8 +1070,10 @@ class AutomationService:
             # Get secret groups based on config format
             if automation_config.config_format == "toml":
                 # For TOML format, use stage-specific secrets only (no fallback)
-                # live-dev uses dev secrets
-                if stage in ("dev", "live-dev") and automation_config.dev_groups:
+                if stage == "live-dev":
+                    # live-dev uses its own secrets, or falls back to dev secrets
+                    secret_groups = automation_config.live_dev_groups or automation_config.dev_groups or []
+                elif stage == "dev" and automation_config.dev_groups:
                     secret_groups = automation_config.dev_groups
                 elif stage == "staging" and automation_config.staging_groups:
                     secret_groups = automation_config.staging_groups

@@ -30,6 +30,7 @@ class AutomationConfig:
     config_format: str = "ini"  # "toml" or "ini"
     mount_path: str = "/opt/pipelines"  # "/app/" for TOML, "/opt/pipelines" for INI
     # Stage-specific secret groups (only for automation.toml - no general fallback)
+    live_dev_groups: list[str] | None = None
     dev_groups: list[str] | None = None
     staging_groups: list[str] | None = None
     production_groups: list[str] | None = None
@@ -69,6 +70,7 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
             port=deployment.get("port", 8080),
             config_format="toml",
             mount_path="/app/",
+            live_dev_groups=_parse_string_or_list(secrets.get("live-dev")),
             dev_groups=_parse_string_or_list(secrets.get("dev")),
             staging_groups=_parse_string_or_list(secrets.get("staging")),
             production_groups=_parse_string_or_list(secrets.get("production")),
