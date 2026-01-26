@@ -402,7 +402,16 @@ def _calculate_git_tree_hash_recursive(dir_path: str, relative_path: str = "", l
         if item == ".git":
             continue
         item_path = os.path.join(dir_path, item)
+        # Skip symlinks - they should not be included in deployments
+        if os.path.islink(item_path):
+            if logger:
+                entry_relative_path = f"{relative_path}/{item}" if relative_path else item
+                logger.info(f"Skipping symlink: {entry_relative_path}")
+            continue
         is_dir = os.path.isdir(item_path)
+        # Skip anything that's not a regular file or directory
+        if not is_dir and not os.path.isfile(item_path):
+            continue
         items.append((item, is_dir))
 
     def _git_sort_key(name: str, is_dir: bool) -> bytes:
