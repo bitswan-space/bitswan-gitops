@@ -24,17 +24,14 @@ class MQTTResource:
                 # internal communication between bitswan services
                 self.client.tls_set(cert_reqs=mqtt_client.ssl.CERT_NONE)
 
-            def on_connect(client, userdata, flags, rc):
-                if rc == 0:
-                    print("Connected to MQTT Broker!")
-                else:
-                    print(f"Failed to connect, return code {rc}")
-
             # Re-subscribe on every (re)connect, since the broker-side session may be gone.
             # This also covers cases where the client_id changes across restarts.
             def on_connect_resubscribe(client, userdata, flags, rc, properties=None):
-                on_connect(client, userdata, flags, rc)
-                subscribe_process_topics(client)
+                if rc == 0:
+                    print("Connected to MQTT Broker!")
+                    subscribe_process_topics(client)
+                else:
+                    print(f"Failed to connect, return code {rc}")
 
             self.client.on_connect = on_connect_resubscribe
             username, password = (
