@@ -41,10 +41,6 @@ async def deploy_automation(
     mount_path: str | None = Form(None),
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    # Debug logging
-    print(f"[route] deploy_automation called: deployment_id={deployment_id}, stage={stage}")
-    print(f"[route] config received: image={image}, expose={expose}, port={port}, mount_path={mount_path}")
-
     # Validate stage if provided
     if stage is not None and stage not in ["dev", "staging", "production", "live-dev"]:
         raise HTTPException(
