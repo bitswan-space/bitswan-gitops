@@ -560,6 +560,7 @@ class AutomationService:
         stage: str | None = None,
         relative_path: str | None = None,
     ):
+        print(f"[deploy_automation] deployment_id={deployment_id}, checksum={checksum}, stage={stage}, relative_path={relative_path}")
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
@@ -605,6 +606,7 @@ class AutomationService:
             # Re-read to get updated config
             bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
+        print(f"[deploy_automation] Final bs_yaml deployments: {bs_yaml.get('deployments', {})}")
         dc_yaml = self.generate_docker_compose(bs_yaml)
         deployments = bs_yaml.get("deployments", {})
 
