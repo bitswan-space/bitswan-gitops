@@ -971,7 +971,23 @@ class AutomationService:
             source = conf.get("source") or conf.get("checksum") or deployment_id
             source_dir = os.path.join(self.gitops_dir, source)
 
-            if not os.path.exists(source_dir):
+            # For live-dev with relative_path, use workspace directory for config
+            stage = conf.get("stage", "production")
+            if stage == "":
+                stage = "production"
+            relative_path = conf.get("relative_path")
+
+            if stage == "live-dev" and relative_path:
+                # Read config from workspace source directory
+                workspace_source_dir = os.path.join(self.workspace_dir, relative_path)
+                if not os.path.exists(workspace_source_dir):
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Workspace source directory {workspace_source_dir} does not exist",
+                    )
+                pipeline_conf = read_pipeline_conf(workspace_source_dir)
+                automation_config = read_automation_config(workspace_source_dir)
+            elif not os.path.exists(source_dir):
                 raise HTTPException(
                     status_code=500,
                     detail=f"Deployment directory {source_dir} does not exist",
@@ -1004,12 +1020,7 @@ class AutomationService:
             }
             entry["image"] = "bitswan/pipeline-runtime-environment:latest"
 
-            # Determine the stage (empty string means production)
-            stage = conf.get("stage", "production")
-            if stage == "":
-                stage = "production"
-
-            # Set BITSWAN environment variables
+            # Set BITSWAN environment variables (stage already determined above)
             if "environment" not in entry:
                 entry["environment"] = {}
             entry["environment"]["BITSWAN_AUTOMATION_STAGE"] = stage
@@ -1160,7 +1171,6 @@ class AutomationService:
 
             # For live-dev stage, mount source from workspace (for live editing)
             # Otherwise, mount from gitops deployment directory (checksum dir)
-            relative_path = conf.get("relative_path")
             if stage == "live-dev" and relative_path:
                 # Mount the original source code for live development
                 # Uses same workspace path as jupyter_service
