@@ -45,6 +45,7 @@ class AutomationService:
         self.workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME")
         self.oauth2_proxy_path = os.environ.get("OAUTH2_PROXY_PATH")
         self.oauth2_proxy_port = 9999
+        self.certs_dir_host = os.environ.get("BITSWAN_CERTS_DIR")
         self.gitops_dir = os.path.join(self.bs_home, "gitops")
         self.gitops_dir_host = os.path.join(self.bs_home_host, "gitops")
         self.secrets_dir = os.path.join(self.bs_home, "secrets")
@@ -583,6 +584,66 @@ class AutomationService:
             )
             return False
 
+    async def install_certificates_in_container(self, deployment_id: str):
+        """Install CA certificates in a running container after deployment"""
+        containers = await self.get_container(deployment_id)
+
+        if not containers:
+            return False
+
+        container = containers[0]
+        container_id = container.get("Id")
+        labels = container.get("Labels", {})
+        container_name = container.get("Names", [deployment_id])[0].lstrip("/")
+
+        # Check if certificate installation is enabled via labels
+        if labels.get("gitops.certs.enabled") != "true":
+            return False
+
+        # Ensure container is running
+        state = container.get("State", "")
+        if state != "running":
+            print(
+                f"Warning: Container {container_name} is not running (status: {state}), cannot install certificates"
+            )
+            return False
+
+        try:
+            docker_client = get_async_docker_client()
+
+            # Install certificates: copy from custom dir, rename .pem to .crt, and update
+            cert_install_script = """
+if [ -d /usr/local/share/ca-certificates/custom ]; then
+    cp /usr/local/share/ca-certificates/custom/*.crt /usr/local/share/ca-certificates/ 2>/dev/null || true
+    cp /usr/local/share/ca-certificates/custom/*.pem /usr/local/share/ca-certificates/ 2>/dev/null || true
+    for f in /usr/local/share/ca-certificates/*.pem; do
+        [ -f "$f" ] && mv "$f" "${f%.pem}.crt"
+    done
+    update-ca-certificates 2>&1 | grep -v "WARNING" || true
+    echo "CA certificates installed successfully"
+else
+    echo "No custom CA certificates directory found"
+fi
+"""
+            print(f"Installing CA certificates in container {container_name}")
+            cmd = ["sh", "-c", cert_install_script]
+            exec_id = await docker_client.exec_create(container_id, cmd)
+            output = await docker_client.exec_start(exec_id)
+            exec_info = await docker_client.exec_inspect(exec_id)
+
+            if exec_info.get("ExitCode", 0) == 0:
+                print(f"Successfully installed certificates in container {container_name}: {output.strip()}")
+                return True
+            else:
+                print(f"Failed to install certificates in container {container_name}: {output.strip()}")
+                return False
+
+        except Exception as e:
+            print(
+                f"Exception while installing certificates in container {container_name}: {str(e)}"
+            )
+            return False
+
     async def delete_automation(self, deployment_id: str):
         await self.remove_automation_from_bitswan(deployment_id)
 
@@ -626,6 +687,9 @@ class AutomationService:
         port: int | None = None,
         mount_path: str | None = None,
         secret_groups: list[str] | None = None,
+        automation_id: str | None = None,
+        auth: bool | None = None,
+        allowed_domains: list[str] | None = None,
     ):
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
@@ -641,7 +705,7 @@ class AutomationService:
             )
 
         # Update bitswan.yaml with new parameters if provided
-        has_updates = any(v is not None for v in [checksum, stage, relative_path, image, expose, port, mount_path, secret_groups])
+        has_updates = any(v is not None for v in [checksum, stage, relative_path, image, expose, port, mount_path, secret_groups, automation_id, auth, allowed_domains])
         if has_updates:
             if deployment_id not in bs_yaml.get("deployments", {}):
                 bs_yaml.setdefault("deployments", {})[deployment_id] = {}
@@ -669,6 +733,12 @@ class AutomationService:
                 deployment_config["mount_path"] = mount_path
             if secret_groups is not None:
                 deployment_config["secret_groups"] = secret_groups
+            if automation_id is not None:
+                deployment_config["id"] = automation_id
+            if auth is not None:
+                deployment_config["auth"] = auth
+            if allowed_domains is not None:
+                deployment_config["allowed_domains"] = allowed_domains
 
             # Set active to True by default when deploying (unless explicitly set to False)
             if "active" not in deployment_config:
@@ -709,6 +779,7 @@ class AutomationService:
                     detail=f"Error deploying services: \ndocker-compose:\n {dc_yaml}\n\nstdout:\n {result['stdout']}\nstderr:\n{result['stderr']}\n",
                 )
 
+        await self.install_certificates_in_container(deployment_id)
         await self.start_oauth2_proxy_in_container(deployment_id)
 
         if image_tag:
@@ -765,6 +836,7 @@ class AutomationService:
                 )
 
         for deployment_id in deployments.keys():
+            await self.install_certificates_in_container(deployment_id)
             await self.start_oauth2_proxy_in_container(deployment_id)
 
         return {
@@ -787,6 +859,7 @@ class AutomationService:
         docker_client = get_async_docker_client()
         await docker_client.start_container(container_id)
 
+        await self.install_certificates_in_container(deployment_id)
         await self.start_oauth2_proxy_in_container(deployment_id)
 
         return {
@@ -882,6 +955,7 @@ class AutomationService:
         docker_client = get_async_docker_client()
         await docker_client.restart_container(container_id)
 
+        await self.install_certificates_in_container(deployment_id)
         await self.start_oauth2_proxy_in_container(deployment_id)
 
         return {
@@ -1045,6 +1119,66 @@ class AutomationService:
             print(f"Warning: Exception while adding redirect URI to Keycloak: {str(e)}")
             return None
 
+    def get_or_create_public_client(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        web_origins: list[str] | None = None,
+    ):
+        """
+        Get or create a public Keycloak client for frontend apps.
+
+        Args:
+            client_id: The client ID for the public client
+            redirect_uri: The redirect URI for this deployment
+            web_origins: List of allowed CORS origins for the client
+
+        Returns:
+            dict with client_id, issuer_url, etc. or None if failed
+        """
+        if not self.workspace_id:
+            print(
+                f"Warning: Workspace {self.workspace_name} is missing an ID, skipping public client creation"
+            )
+            return None
+        if not self.aoc_url or not self.aoc_token:
+            print(
+                "Warning: AOC URL or token not configured, skipping public client creation"
+            )
+            return None
+
+        url = f"{self.aoc_url}/api/automation_server/workspaces/{self.workspace_id}/keycloak/public-client/"
+
+        headers = {
+            "Authorization": f"Bearer {self.aoc_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+        }
+
+        if web_origins:
+            payload["web_origins"] = web_origins
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                result = response.json()
+                print(f"Successfully got/created public client: {client_id}")
+                return result
+            else:
+                error_detail = (
+                    f"Keycloak API error: {response.status_code} - {response.text}"
+                )
+                print(
+                    f"Warning: Failed to get/create public client: {error_detail}"
+                )
+                return None
+        except Exception as e:
+            print(f"Warning: Exception while getting/creating public client: {str(e)}")
+            return None
+
     def generate_docker_compose(self, bs_yaml: dict):
         dc = {
             "version": "3",
@@ -1073,6 +1207,9 @@ class AutomationService:
                 stored_port = conf.get("port", 8080)
                 stored_mount_path = conf.get("mount_path", "/app/")
                 stored_secret_groups = conf.get("secret_groups")
+                stored_id = conf.get("id")
+                stored_auth = conf.get("auth", False)
+                stored_allowed_domains = conf.get("allowed_domains")
 
                 if not stored_image:
                     # Skip live-dev deployments without stored config
@@ -1080,12 +1217,15 @@ class AutomationService:
 
                 # Create a minimal AutomationConfig from stored values
                 automation_config = AutomationConfig(
+                    id=stored_id,
+                    auth=stored_auth,
                     image=stored_image,
                     expose=stored_expose,
                     port=stored_port,
                     config_format="toml",
                     mount_path=stored_mount_path,
                     live_dev_groups=stored_secret_groups,
+                    allowed_domains=stored_allowed_domains,
                 )
                 pipeline_conf = None
             elif not os.path.exists(source_dir):
@@ -1269,8 +1409,55 @@ class AutomationService:
                             status_code=500, detail="Error adding route to Caddy"
                         )
 
+            # Always pass Keycloak URL for JWT verification
+            # KEYCLOAK_URL format: https://keycloak.example.com/realms/realm-name
+            keycloak_url = os.environ.get("KEYCLOAK_URL", "")
+            if keycloak_url:
+                entry["environment"]["KEYCLOAK_URL"] = keycloak_url.rsplit("/realms/", 1)[0] if "/realms/" in keycloak_url else keycloak_url
+                entry["environment"]["KEYCLOAK_REALM"] = keycloak_url.rsplit("/realms/", 1)[-1] if "/realms/" in keycloak_url else ""
+                entry["environment"]["KEYCLOAK_ISSUER_URL"] = keycloak_url
+
+            # Handle Keycloak public client for frontend apps
+            # Uses auth + id approach: when auth=true, id is used as Keycloak client_id
+            if automation_config.auth and automation_config.id:
+                # Build the redirect URI for this deployment
+                automation_url = f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
+                redirect_uri = f"{automation_url}/*"
+
+                # Build web_origins for CORS: automation URL + any allowed_domains from config
+                web_origins = [automation_url]
+                if automation_config.allowed_domains:
+                    web_origins.extend(automation_config.allowed_domains)
+
+                # Get or create the public client via AOC
+                client_result = self.get_or_create_public_client(
+                    client_id=automation_config.id,
+                    redirect_uri=redirect_uri,
+                    web_origins=web_origins,
+                )
+
+                if client_result:
+                    # Inject Keycloak client ID and override URL if available from client result
+                    entry["environment"]["KEYCLOAK_CLIENT_ID"] = client_result.get("client_id", automation_config.id)
+                    if client_result.get("issuer_url"):
+                        issuer_url = client_result.get("issuer_url")
+                        entry["environment"]["KEYCLOAK_URL"] = issuer_url.rsplit("/realms/", 1)[0] if "/realms/" in issuer_url else issuer_url
+                        entry["environment"]["KEYCLOAK_REALM"] = issuer_url.rsplit("/realms/", 1)[-1] if "/realms/" in issuer_url else ""
+                        entry["environment"]["KEYCLOAK_ISSUER_URL"] = issuer_url
+                    print(f"Injected Keycloak config for client {automation_config.id} into deployment {deployment_id}")
+                else:
+                    print(f"Warning: Failed to get/create public client {automation_config.id} for deployment {deployment_id}")
+
             if "volumes" not in entry:
                 entry["volumes"] = []
+
+            # Mount CA certificates if configured
+            if self.certs_dir_host:
+                entry["volumes"].append(
+                    f"{self.certs_dir_host}:/usr/local/share/ca-certificates/custom:ro"
+                )
+                entry["environment"]["UPDATE_CA_CERTIFICATES"] = "true"
+                entry["labels"]["gitops.certs.enabled"] = "true"
 
             # For live-dev stage, mount source from workspace (for live editing)
             # Otherwise, mount from gitops deployment directory (checksum dir)

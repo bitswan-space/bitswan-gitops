@@ -73,6 +73,8 @@ class GitLockContext:
 class AutomationConfig:
     """Unified automation configuration from either automation.toml or pipelines.conf."""
 
+    id: str | None = None  # Unique automation ID (used as Keycloak client_id when auth=True)
+    auth: bool = False  # Enable Keycloak authentication
     image: str = "bitswan/pipeline-runtime-environment:latest"
     expose: bool = False
     expose_to: list[str] | None = None
@@ -84,6 +86,8 @@ class AutomationConfig:
     dev_groups: list[str] | None = None
     staging_groups: list[str] | None = None
     production_groups: list[str] | None = None
+    # CORS allowed domains for Keycloak client (optional)
+    allowed_domains: list[str] | None = None
 
 
 def _parse_string_or_list(value) -> list[str] | None:
@@ -111,7 +115,16 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
         if isinstance(expose_to, str):
             expose_to = [g.strip() for g in expose_to.split(",") if g.strip()]
 
+        # Parse allowed_domains as a list (for CORS in Keycloak client)
+        allowed_domains = deployment.get("allowed_domains")
+        if isinstance(allowed_domains, list):
+            allowed_domains = [str(d).strip() for d in allowed_domains if str(d).strip()]
+        else:
+            allowed_domains = None
+
         return AutomationConfig(
+            id=deployment.get("id"),
+            auth=deployment.get("auth", False),
             image=deployment.get(
                 "image", "bitswan/pipeline-runtime-environment:latest"
             ),
@@ -124,6 +137,7 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
             dev_groups=_parse_string_or_list(secrets.get("dev")),
             staging_groups=_parse_string_or_list(secrets.get("staging")),
             production_groups=_parse_string_or_list(secrets.get("production")),
+            allowed_domains=allowed_domains,
         )
     except Exception:
         return None
@@ -158,7 +172,15 @@ def read_automation_config(source_dir: str) -> AutomationConfig:
             expose_to_value = pipeline_conf.get("deployment", "expose_to")
             expose_to = [g.strip() for g in expose_to_value.split(",") if g.strip()]
 
+        # Parse id and auth for Keycloak
+        automation_id = None
+        if pipeline_conf.has_option("deployment", "id"):
+            automation_id = pipeline_conf.get("deployment", "id")
+        auth = pipeline_conf.getboolean("deployment", "auth", fallback=False)
+
         return AutomationConfig(
+            id=automation_id,
+            auth=auth,
             image=pipeline_conf.get(
                 "deployment",
                 "pre",
