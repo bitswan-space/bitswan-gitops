@@ -1,4 +1,14 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query, Request, Header
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    Query,
+    Request,
+    Header,
+)
 from fastapi.responses import JSONResponse
 from app.services.automation_service import AutomationService
 from app.dependencies import get_automation_service
@@ -45,7 +55,9 @@ async def deploy_automation(
     secret_groups: str | None = Form(None),  # comma-separated list of secret groups
     automation_id: str | None = Form(None),  # Unique automation ID for Keycloak
     auth: str | None = Form(None),  # "true" or "false" - enable Keycloak auth
-    allowed_domains: str | None = Form(None),  # comma-separated list of CORS allowed domains
+    allowed_domains: str | None = Form(
+        None
+    ),  # comma-separated list of CORS allowed domains
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     # Validate stage if provided
@@ -57,9 +69,17 @@ async def deploy_automation(
     # Convert form values to proper types
     expose_bool = expose.lower() == "true" if expose else None
     port_int = int(port) if port else None
-    secret_groups_list = [g.strip() for g in secret_groups.split(",") if g.strip()] if secret_groups else None
+    secret_groups_list = (
+        [g.strip() for g in secret_groups.split(",") if g.strip()]
+        if secret_groups
+        else None
+    )
     auth_bool = auth.lower() == "true" if auth else None
-    allowed_domains_list = [d.strip() for d in allowed_domains.split(",") if d.strip()] if allowed_domains else None
+    allowed_domains_list = (
+        [d.strip() for d in allowed_domains.split(",") if d.strip()]
+        if allowed_domains
+        else None
+    )
 
     return await automation_service.deploy_automation(
         deployment_id,
@@ -187,7 +207,9 @@ async def upload_asset_stream(
 
     try:
         # Create a file-like object for the service
-        result = await automation_service.upload_asset_from_path(temp_path, checksum=checksum)
+        result = await automation_service.upload_asset_from_path(
+            temp_path, checksum=checksum
+        )
         return JSONResponse(content=result)
     finally:
         # Clean up temp file

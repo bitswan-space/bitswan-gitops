@@ -210,7 +210,9 @@ class AutomationService:
                 # Use async lock for git operations to prevent race conditions
                 async with GitLockContext(timeout=10.0):
                     # add this file to git
-                    await call_git_command("git", "add", f"{checksum}", cwd=self.gitops_dir)
+                    await call_git_command(
+                        "git", "add", f"{checksum}", cwd=self.gitops_dir
+                    )
 
                     # commit the changes
                     await call_git_command(
@@ -566,13 +568,19 @@ class AutomationService:
             print(
                 f"Starting oauth2-proxy with upstream: {upstream_url} in container {container_name}"
             )
-            cmd = ["sh", "-c", f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &"]
+            cmd = [
+                "sh",
+                "-c",
+                f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &",
+            ]
             exec_id = await docker_client.exec_create(container_id, cmd)
             await docker_client.exec_start(exec_id)
             exec_info = await docker_client.exec_inspect(exec_id)
 
             if exec_info.get("ExitCode", 0) == 0:
-                print(f"Successfully started oauth2-proxy in container {container_name}")
+                print(
+                    f"Successfully started oauth2-proxy in container {container_name}"
+                )
                 return True
             else:
                 print(f"Failed to start oauth2-proxy in container {container_name}")
@@ -632,10 +640,14 @@ fi
             exec_info = await docker_client.exec_inspect(exec_id)
 
             if exec_info.get("ExitCode", 0) == 0:
-                print(f"Successfully installed certificates in container {container_name}: {output.strip()}")
+                print(
+                    f"Successfully installed certificates in container {container_name}: {output.strip()}"
+                )
                 return True
             else:
-                print(f"Failed to install certificates in container {container_name}: {output.strip()}")
+                print(
+                    f"Failed to install certificates in container {container_name}: {output.strip()}"
+                )
                 return False
 
         except Exception as e:
@@ -669,7 +681,7 @@ fi
             tags = image.get("RepoTags", []) or []
             for tag in tags:
                 if tag.startswith(expected_prefix):
-                    deployed_image_checksum_tag = tag[len(expected_prefix):]
+                    deployed_image_checksum_tag = tag[len(expected_prefix) :]
                     return deployed_image_checksum_tag
             return None
         except DockerError:
@@ -705,7 +717,22 @@ fi
             )
 
         # Update bitswan.yaml with new parameters if provided
-        has_updates = any(v is not None for v in [checksum, stage, relative_path, image, expose, port, mount_path, secret_groups, automation_id, auth, allowed_domains])
+        has_updates = any(
+            v is not None
+            for v in [
+                checksum,
+                stage,
+                relative_path,
+                image,
+                expose,
+                port,
+                mount_path,
+                secret_groups,
+                automation_id,
+                auth,
+                allowed_domains,
+            ]
+        )
         if has_updates:
             if deployment_id not in bs_yaml.get("deployments", {}):
                 bs_yaml.setdefault("deployments", {})[deployment_id] = {}
@@ -1171,9 +1198,7 @@ fi
                 error_detail = (
                     f"Keycloak API error: {response.status_code} - {response.text}"
                 )
-                print(
-                    f"Warning: Failed to get/create public client: {error_detail}"
-                )
+                print(f"Warning: Failed to get/create public client: {error_detail}")
                 return None
         except Exception as e:
             print(f"Warning: Exception while getting/creating public client: {str(e)}")
@@ -1279,7 +1304,11 @@ fi
                 # For TOML format, use stage-specific secrets only (no fallback)
                 if stage == "live-dev":
                     # live-dev uses its own secrets, or falls back to dev secrets
-                    secret_groups = automation_config.live_dev_groups or automation_config.dev_groups or []
+                    secret_groups = (
+                        automation_config.live_dev_groups
+                        or automation_config.dev_groups
+                        or []
+                    )
                 elif stage == "dev" and automation_config.dev_groups:
                     secret_groups = automation_config.dev_groups
                 elif stage == "staging" and automation_config.staging_groups:
@@ -1413,8 +1442,16 @@ fi
             # KEYCLOAK_URL format: https://keycloak.example.com/realms/realm-name
             keycloak_url = os.environ.get("KEYCLOAK_URL", "")
             if keycloak_url:
-                entry["environment"]["KEYCLOAK_URL"] = keycloak_url.rsplit("/realms/", 1)[0] if "/realms/" in keycloak_url else keycloak_url
-                entry["environment"]["KEYCLOAK_REALM"] = keycloak_url.rsplit("/realms/", 1)[-1] if "/realms/" in keycloak_url else ""
+                entry["environment"]["KEYCLOAK_URL"] = (
+                    keycloak_url.rsplit("/realms/", 1)[0]
+                    if "/realms/" in keycloak_url
+                    else keycloak_url
+                )
+                entry["environment"]["KEYCLOAK_REALM"] = (
+                    keycloak_url.rsplit("/realms/", 1)[-1]
+                    if "/realms/" in keycloak_url
+                    else ""
+                )
                 entry["environment"]["KEYCLOAK_ISSUER_URL"] = keycloak_url
 
             # Handle Keycloak public client for frontend apps
@@ -1438,15 +1475,29 @@ fi
 
                 if client_result:
                     # Inject Keycloak client ID and override URL if available from client result
-                    entry["environment"]["KEYCLOAK_CLIENT_ID"] = client_result.get("client_id", automation_config.id)
+                    entry["environment"]["KEYCLOAK_CLIENT_ID"] = client_result.get(
+                        "client_id", automation_config.id
+                    )
                     if client_result.get("issuer_url"):
                         issuer_url = client_result.get("issuer_url")
-                        entry["environment"]["KEYCLOAK_URL"] = issuer_url.rsplit("/realms/", 1)[0] if "/realms/" in issuer_url else issuer_url
-                        entry["environment"]["KEYCLOAK_REALM"] = issuer_url.rsplit("/realms/", 1)[-1] if "/realms/" in issuer_url else ""
+                        entry["environment"]["KEYCLOAK_URL"] = (
+                            issuer_url.rsplit("/realms/", 1)[0]
+                            if "/realms/" in issuer_url
+                            else issuer_url
+                        )
+                        entry["environment"]["KEYCLOAK_REALM"] = (
+                            issuer_url.rsplit("/realms/", 1)[-1]
+                            if "/realms/" in issuer_url
+                            else ""
+                        )
                         entry["environment"]["KEYCLOAK_ISSUER_URL"] = issuer_url
-                    print(f"Injected Keycloak config for client {automation_config.id} into deployment {deployment_id}")
+                    print(
+                        f"Injected Keycloak config for client {automation_config.id} into deployment {deployment_id}"
+                    )
                 else:
-                    print(f"Warning: Failed to get/create public client {automation_config.id} for deployment {deployment_id}")
+                    print(
+                        f"Warning: Failed to get/create public client {automation_config.id} for deployment {deployment_id}"
+                    )
 
             if "volumes" not in entry:
                 entry["volumes"] = []

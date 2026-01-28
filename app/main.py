@@ -43,6 +43,7 @@ async def log_slow_requests(request: Request, call_next):
 
     return response
 
+
 # Apply auth to protected routes only
 app.include_router(automations_router, dependencies=[Depends(verify_token)])
 app.include_router(images_router, dependencies=[Depends(verify_token)])
