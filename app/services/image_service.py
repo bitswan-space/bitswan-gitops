@@ -451,7 +451,9 @@ class ImageService:
             }
         except DockerError as e:
             if e.status_code == 404:
-                raise HTTPException(status_code=404, detail=f"Image {full_tag} not found")
+                raise HTTPException(
+                    status_code=404, detail=f"Image {full_tag} not found"
+                )
             raise HTTPException(status_code=500, detail=f"Docker API error: {str(e)}")
 
     def get_image_logs(self, image_tag: str, lines: int = 100):

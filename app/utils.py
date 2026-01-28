@@ -29,6 +29,7 @@ class GitLockContext:
     Context manager for git lock that works in both async and sync contexts.
     Uses a threading.Lock internally for cross-thread safety (needed for background threads).
     """
+
     def __init__(self, timeout: float = 10.0):
         self.timeout = timeout
         self._acquired = False
@@ -38,8 +39,7 @@ class GitLockContext:
         loop = asyncio.get_event_loop()
         # Run the blocking lock acquisition in a thread pool to avoid blocking the event loop
         acquired = await loop.run_in_executor(
-            None,
-            lambda: _git_thread_lock.acquire(timeout=self.timeout)
+            None, lambda: _git_thread_lock.acquire(timeout=self.timeout)
         )
         if not acquired:
             raise Exception(f"Failed to acquire git lock within {self.timeout} seconds")
@@ -73,7 +73,9 @@ class GitLockContext:
 class AutomationConfig:
     """Unified automation configuration from either automation.toml or pipelines.conf."""
 
-    id: str | None = None  # Unique automation ID (used as Keycloak client_id when auth=True)
+    id: str | None = (
+        None  # Unique automation ID (used as Keycloak client_id when auth=True)
+    )
     auth: bool = False  # Enable Keycloak authentication
     image: str = "bitswan/pipeline-runtime-environment:latest"
     expose: bool = False
@@ -118,7 +120,9 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
         # Parse allowed_domains as a list (for CORS in Keycloak client)
         allowed_domains = deployment.get("allowed_domains")
         if isinstance(allowed_domains, list):
-            allowed_domains = [str(d).strip() for d in allowed_domains if str(d).strip()]
+            allowed_domains = [
+                str(d).strip() for d in allowed_domains if str(d).strip()
+            ]
         else:
             allowed_domains = None
 
@@ -410,7 +414,9 @@ def _calculate_git_blob_hash(file_path: str) -> str:
     return hashlib.sha1(blob).hexdigest()
 
 
-def _calculate_git_tree_hash_recursive(dir_path: str, relative_path: str = "", logger=None) -> str:
+def _calculate_git_tree_hash_recursive(
+    dir_path: str, relative_path: str = "", logger=None
+) -> str:
     """
     Calculate git tree hash for a directory recursively.
     Implements git's tree object format directly without spawning git processes.
@@ -427,7 +433,9 @@ def _calculate_git_tree_hash_recursive(dir_path: str, relative_path: str = "", l
         # Skip symlinks - they should not be included in deployments
         if os.path.islink(item_path):
             if logger:
-                entry_relative_path = f"{relative_path}/{item}" if relative_path else item
+                entry_relative_path = (
+                    f"{relative_path}/{item}" if relative_path else item
+                )
                 logger.info(f"Skipping symlink: {entry_relative_path}")
             continue
         is_dir = os.path.isdir(item_path)
@@ -448,7 +456,9 @@ def _calculate_git_tree_hash_recursive(dir_path: str, relative_path: str = "", l
         entry_relative_path = f"{relative_path}/{name}" if relative_path else name
 
         if is_dir:
-            tree_hash = _calculate_git_tree_hash_recursive(item_path, entry_relative_path, logger)
+            tree_hash = _calculate_git_tree_hash_recursive(
+                item_path, entry_relative_path, logger
+            )
             entries.append({"mode": "040000", "name": name, "hash": tree_hash})
             if logger:
                 logger.info(f"CHECKSUM DIR:  {entry_relative_path}/ -> {tree_hash}")
@@ -457,7 +467,9 @@ def _calculate_git_tree_hash_recursive(dir_path: str, relative_path: str = "", l
             blob_hash = _calculate_git_blob_hash(item_path)
             entries.append({"mode": "100644", "name": name, "hash": blob_hash})
             if logger:
-                logger.info(f"CHECKSUM FILE: {entry_relative_path} -> 100644 {blob_hash}")
+                logger.info(
+                    f"CHECKSUM FILE: {entry_relative_path} -> 100644 {blob_hash}"
+                )
 
     # Build tree object: "tree <size>\\0<entries>"
     entry_bytes = bytearray()
@@ -481,6 +493,7 @@ async def calculate_git_tree_hash(dir_path: str) -> str:
     making it much more efficient.
     """
     import logging
+
     logger = logging.getLogger(__name__)
     logger.info(f"=== SERVER CHECKSUM CALCULATION START for {dir_path} ===")
 
@@ -522,10 +535,14 @@ async def update_git(
     async with GitLockContext(timeout=10.0):
         # Pull latest changes if we have a remote
         if has_remote:
-            res = await call_git_command("git", "pull", "--rebase=false", cwd=bitswan_dir)
+            res = await call_git_command(
+                "git", "pull", "--rebase=false", cwd=bitswan_dir
+            )
             if not res:
                 # Try to recover from merge conflicts by accepting ours for bitswan.yaml
-                await call_git_command("git", "checkout", "--ours", bitswan_yaml_path, cwd=bitswan_dir)
+                await call_git_command(
+                    "git", "checkout", "--ours", bitswan_yaml_path, cwd=bitswan_dir
+                )
                 await call_git_command("git", "add", bitswan_yaml_path, cwd=bitswan_dir)
 
         # Stage and commit changes
@@ -646,7 +663,9 @@ async def save_image(
     # Use async lock for the actual git operations
     async with GitLockContext(timeout=10.0):
         if has_remote:
-            res = await call_git_command("git", "pull", "--rebase=false", cwd=bitswan_dir)
+            res = await call_git_command(
+                "git", "pull", "--rebase=false", cwd=bitswan_dir
+            )
             if not res:
                 # Non-fatal - we'll try to push anyway
                 pass
@@ -764,12 +783,15 @@ async def copy_worktree(branch_name: str = None):
             if not await call_git_command(
                 "git", "fetch", "origin", "--prune", "--tags", cwd=repo
             ):
-                raise HTTPException(status_code=500, detail="Failed to fetch from origin")
+                raise HTTPException(
+                    status_code=500, detail="Failed to fetch from origin"
+                )
             if not await call_git_command(
                 "git", "rev-parse", f"origin/{branch_name}", cwd=repo
             ):
                 raise HTTPException(
-                    status_code=404, detail=f"Remote branch origin/{branch_name} not found"
+                    status_code=404,
+                    detail=f"Remote branch origin/{branch_name} not found",
                 )
 
             if not await call_git_command(

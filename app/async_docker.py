@@ -57,25 +57,39 @@ class AsyncDockerClient:
                 data = await response.text()
             return status, data
 
-    async def _get(self, endpoint: str, params: Optional[dict] = None, timeout: float = 30.0) -> Any:
+    async def _get(
+        self, endpoint: str, params: Optional[dict] = None, timeout: float = 30.0
+    ) -> Any:
         """GET request to Docker API."""
-        status, data = await self._request("GET", endpoint, params=params, timeout=timeout)
+        status, data = await self._request(
+            "GET", endpoint, params=params, timeout=timeout
+        )
         if status >= 400:
             raise DockerError(status, data)
         return data
 
     async def _post(
-        self, endpoint: str, params: Optional[dict] = None, json_data: Optional[dict] = None, timeout: float = 30.0
+        self,
+        endpoint: str,
+        params: Optional[dict] = None,
+        json_data: Optional[dict] = None,
+        timeout: float = 30.0,
     ) -> Any:
         """POST request to Docker API."""
-        status, data = await self._request("POST", endpoint, params=params, json_data=json_data, timeout=timeout)
+        status, data = await self._request(
+            "POST", endpoint, params=params, json_data=json_data, timeout=timeout
+        )
         if status >= 400:
             raise DockerError(status, data)
         return data
 
-    async def _delete(self, endpoint: str, params: Optional[dict] = None, timeout: float = 30.0) -> Any:
+    async def _delete(
+        self, endpoint: str, params: Optional[dict] = None, timeout: float = 30.0
+    ) -> Any:
         """DELETE request to Docker API."""
-        status, data = await self._request("DELETE", endpoint, params=params, timeout=timeout)
+        status, data = await self._request(
+            "DELETE", endpoint, params=params, timeout=timeout
+        )
         if status >= 400:
             raise DockerError(status, data)
         return data
@@ -86,7 +100,9 @@ class AsyncDockerClient:
         """Get Docker system info."""
         return await self._get("/info")
 
-    async def list_images(self, all: bool = False, filters: Optional[dict] = None) -> list[dict]:
+    async def list_images(
+        self, all: bool = False, filters: Optional[dict] = None
+    ) -> list[dict]:
         """List Docker images."""
         params = {"all": "true" if all else "false"}
         if filters:
@@ -134,7 +150,11 @@ class AsyncDockerClient:
         await self._delete(f"/containers/{quote(container_id, safe='')}", params=params)
 
     async def get_container_logs(
-        self, container_id: str, tail: int = 100, stdout: bool = True, stderr: bool = True
+        self,
+        container_id: str,
+        tail: int = 100,
+        stdout: bool = True,
+        stderr: bool = True,
     ) -> str:
         """Get container logs."""
         params = {
@@ -163,7 +183,9 @@ class AsyncDockerClient:
         params = {}
         if force:
             params["force"] = "true"
-        return await self._delete(f"/images/{quote(image_name, safe='')}", params=params)
+        return await self._delete(
+            f"/images/{quote(image_name, safe='')}", params=params
+        )
 
     async def tag_image(self, image_name: str, repo: str, tag: str) -> None:
         """Tag an image."""
@@ -171,7 +193,11 @@ class AsyncDockerClient:
         await self._post(f"/images/{quote(image_name, safe='')}/tag", params=params)
 
     async def exec_create(
-        self, container_id: str, cmd: list[str], stdout: bool = True, stderr: bool = True
+        self,
+        container_id: str,
+        cmd: list[str],
+        stdout: bool = True,
+        stderr: bool = True,
     ) -> str:
         """Create an exec instance."""
         data = await self._post(
@@ -189,9 +215,7 @@ class AsyncDockerClient:
         session = await self._get_session()
         url = f"http://localhost/exec/{exec_id}/start"
 
-        async with session.post(
-            url, json={"Detach": False, "Tty": False}
-        ) as response:
+        async with session.post(url, json={"Detach": False, "Tty": False}) as response:
             if response.status >= 400:
                 data = await response.text()
                 raise DockerError(response.status, data)
@@ -218,11 +242,13 @@ class DockerError(Exception):
 
 class ImageNotFound(DockerError):
     """Image not found error."""
+
     pass
 
 
 class ContainerNotFound(DockerError):
     """Container not found error."""
+
     pass
 
 
