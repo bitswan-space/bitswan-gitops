@@ -20,8 +20,11 @@ def get_image_service():
     return ImageService()
 
 
+_automation_service = AutomationService()
+
+
 def get_automation_service():
-    return AutomationService()
+    return _automation_service
 
 
 def get_jupyter_service():
