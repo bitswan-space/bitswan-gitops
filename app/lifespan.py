@@ -10,6 +10,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 
+from .dependencies import get_automation_service
 from .mqtt import mqtt_resource
 from .mqtt_publish_automations import publish_automations
 from .mqtt_processes import (
@@ -99,6 +100,9 @@ async def lifespan(app: FastAPI):
             print(f"Workspace directory does not exist: {workspace_dir}")
 
         scheduler.start()
+
+    # Warm the history cache in the background so first requests are fast
+    asyncio.create_task(get_automation_service().warm_history_cache())
 
     try:
         yield

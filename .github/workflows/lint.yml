@@ -1,4 +1,4 @@
-name: Python 3.10 Lint & Test
+name: Lint & Test
 
 on: [push, pull_request]
 
@@ -6,20 +6,21 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    container:
-      image: python:3.10
-
     steps:
-    - uses: actions/checkout@v2
-    - name: Install dependencies
-      run: |
-        pip3 install .[dev]
+    - uses: actions/checkout@v4
 
-    - name: Run tests
-      run: |
-        pytest app
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install dependencies
+      run: pip install .[dev]
 
     - name: Run linter
       run: |
         ruff check app
         ruff format --check
+
+    - name: Run tests
+      run: pytest tests -v

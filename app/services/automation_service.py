@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 import json
 from tempfile import NamedTemporaryFile
@@ -52,8 +54,29 @@ class AutomationService:
         # Uses same path structure as jupyter_service for consistency
         self.workspace_dir = os.path.join(self.bs_home, "workspace")
         self.workspace_dir_host = os.path.join(self.bs_home_host, "workspace")
-        # Cache for automation history: key is (deployment_id, page, page_size), value is (commit_hash, response)
-        self._history_cache: dict[tuple[str, int, int], tuple[str, dict]] = {}
+        # Cache full history per deployment_id: {deployment_id: (commit_hash, [entries])}
+        self._history_cache: dict[str, tuple[str, list]] = {}
+
+    async def warm_history_cache(self):
+        """Pre-warm the history cache for all known deployments."""
+        logger = logging.getLogger(__name__)
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+        if not bs_yaml or "deployments" not in bs_yaml:
+            logger.info("History cache warm-up: no deployments found, skipping")
+            return
+
+        deployment_ids = list(bs_yaml["deployments"].keys())
+        logger.info(
+            f"History cache warm-up: warming {len(deployment_ids)} deployment(s)"
+        )
+        for deployment_id in deployment_ids:
+            try:
+                await self.get_automation_history(deployment_id)
+            except Exception as e:
+                logger.warning(
+                    f"History cache warm-up: failed for {deployment_id}: {e}"
+                )
+        logger.info("History cache warm-up: done")
 
     async def get_container(self, deployment_id) -> list[dict]:
         """Get containers for a specific deployment using async Docker client."""
@@ -389,10 +412,6 @@ class AutomationService:
         Cached responses are invalidated when the commit hash changes.
         """
 
-        # Get git log for bitswan.yaml file
-        # Use git log to get commits that modified bitswan.yaml
-        # Then parse each commit to see if it affected the deployment_id
-
         host_path = os.environ.get("HOST_PATH")
         if host_path:
             bitswan_dir = self.gitops_dir_host
@@ -402,20 +421,13 @@ class AutomationService:
         # Get the latest commit hash
         current_commit_hash = await self._get_latest_commit_hash(bitswan_dir)
 
-        # Check cache
-        cache_key = (deployment_id, page, page_size)
-        if cache_key in self._history_cache:
-            cached_commit_hash, cached_response = self._history_cache[cache_key]
-            # If commit hash matches, return cached response
+        # Check cache - we cache the full history per deployment, not per page
+        if deployment_id in self._history_cache:
+            cached_commit_hash, cached_entries = self._history_cache[deployment_id]
             if cached_commit_hash == current_commit_hash:
-                return cached_response
-            # If commit hash changed, invalidate all caches
+                return self._paginate_history(cached_entries, page, page_size)
             else:
                 self._history_cache.clear()
-
-        # Get git log for bitswan.yaml file
-        # Use git log to get commits that modified bitswan.yaml
-        # Then parse each commit to see if it affected the deployment_id
 
         # Get commits that modified bitswan.yaml
         log_format = '{"commit": "%H", "author": "%an", "date": "%ai", "message": "%s"}'
@@ -444,27 +456,35 @@ class AutomationService:
             except json.JSONDecodeError:
                 continue
 
-        # Now check each commit to see if it actually changed the deployment_id
+        # Fetch bitswan.yaml content for all commits in parallel (capped concurrency)
+        sem = asyncio.Semaphore(20)
+
+        async def fetch_yaml_at_commit(commit_hash: str) -> tuple[str, str | None]:
+            async with sem:
+                stdout, stderr, rc = await call_git_command_with_output(
+                    "git", "show", f"{commit_hash}:bitswan.yaml", cwd=bitswan_dir
+                )
+                if rc != 0:
+                    return commit_hash, None
+                return commit_hash, stdout
+
+        results = await asyncio.gather(
+            *[fetch_yaml_at_commit(c["commit"]) for c in commits]
+        )
+        content_by_hash = dict(results)
+
+        # Process sequentially to track checksum changes
         history_entries = []
         previous_checksum = None
 
         for commit in commits:
             commit_hash = commit["commit"]
-
-            # Get the bitswan.yaml content at this commit
-            stdout, stderr, return_code = await call_git_command_with_output(
-                "git",
-                "show",
-                f"{commit_hash}:bitswan.yaml",
-                cwd=bitswan_dir,
-            )
-
-            if return_code != 0:
-                # File might not exist at this commit, skip
+            content = content_by_hash.get(commit_hash)
+            if content is None:
                 continue
 
             try:
-                commit_yaml = yaml.safe_load(stdout)
+                commit_yaml = yaml.safe_load(content)
                 if not commit_yaml or "deployments" not in commit_yaml:
                     continue
 
@@ -472,14 +492,11 @@ class AutomationService:
                     deployment_id
                 )
 
-                # Only add entry if there's a checksum and it's different from the previous one
                 if deployment_config is None:
-                    # Deployment doesn't exist in this commit, skip
                     continue
 
                 current_checksum = deployment_config.get("checksum")
 
-                # Only add entry if checksum exists and is different from previous checksum
                 if current_checksum and current_checksum != previous_checksum:
                     entry = {
                         "commit": commit_hash,
@@ -498,25 +515,23 @@ class AutomationService:
             except yaml.YAMLError:
                 continue
 
-        # Paginate results
-        total = len(history_entries)
+        # Cache the full history list for this deployment
+        self._history_cache[deployment_id] = (current_commit_hash, history_entries)
+
+        return self._paginate_history(history_entries, page, page_size)
+
+    @staticmethod
+    def _paginate_history(entries: list, page: int, page_size: int) -> dict:
+        total = len(entries)
         start = (page - 1) * page_size
         end = start + page_size
-        paginated_entries = history_entries[start:end]
-
-        response = {
-            "items": paginated_entries,
+        return {
+            "items": entries[start:end],
             "total": total,
             "page": page,
             "page_size": page_size,
             "total_pages": (total + page_size - 1) // page_size,
         }
-
-        # Cache the response with the current commit hash
-        cache_key = (deployment_id, page, page_size)
-        self._history_cache[cache_key] = (current_commit_hash, response)
-
-        return response
 
     async def start_oauth2_proxy_in_container(self, deployment_id: str):
         """Start oauth2-proxy in a running container after deployment"""
