@@ -7,6 +7,7 @@ from app.lifespan import lifespan
 from app.routes.automations import router as automations_router
 from app.routes.images import router as images_router
 from app.routes.jupyter import router as jupyter_router
+from app.routes.services import router as services_router
 from app.routes.docs import router as docs_router
 from app.dependencies import verify_token
 
@@ -48,6 +49,7 @@ async def log_slow_requests(request: Request, call_next):
 app.include_router(automations_router, dependencies=[Depends(verify_token)])
 app.include_router(images_router, dependencies=[Depends(verify_token)])
 app.include_router(jupyter_router, dependencies=[Depends(verify_token)])
+app.include_router(services_router, dependencies=[Depends(verify_token)])
 # Docs router is public - no auth required
 app.include_router(docs_router)
 

@@ -12,6 +12,8 @@ from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
     AutomationConfig,
+    KNOWN_STAGES,
+    ServiceDependency,
     calculate_git_tree_hash,
     docker_compose_up,
     generate_workspace_url,
@@ -28,6 +30,8 @@ from app.utils import (
 from app.async_docker import get_async_docker_client, DockerError
 from app.services.image_service import ImageService
 from fastapi import UploadFile, HTTPException
+
+logger = logging.getLogger(__name__)
 
 
 class AutomationService:
@@ -716,6 +720,7 @@ fi
         automation_id: str | None = None,
         auth: bool | None = None,
         allowed_domains: list[str] | None = None,
+        services: dict | None = None,
     ):
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
@@ -745,6 +750,7 @@ fi
                 automation_id,
                 auth,
                 allowed_domains,
+                services,
             ]
         )
         if has_updates:
@@ -780,6 +786,8 @@ fi
                 deployment_config["auth"] = auth
             if allowed_domains is not None:
                 deployment_config["allowed_domains"] = allowed_domains
+            if services is not None:
+                deployment_config["services"] = services
 
             # Set active to True by default when deploying (unless explicitly set to False)
             if "active" not in deployment_config:
@@ -796,14 +804,23 @@ fi
             # Re-read to get updated config
             bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
-        dc_yaml = self.generate_docker_compose(bs_yaml)
+        # Auto-enable declared services for this deployment
+        deployment_conf = bs_yaml.get("deployments", {}).get(deployment_id, {}) or {}
+        deploy_services = services or deployment_conf.get("services")
+        deploy_stage = stage or deployment_conf.get("stage") or "production"
+        if deploy_services:
+            await self.enable_services(deploy_services, deploy_stage)
+
+        dc_yaml, infra_service_names = self.generate_docker_compose(bs_yaml)
+        self._save_docker_compose(dc_yaml)
         deployments = bs_yaml.get("deployments", {})
 
         dc_config = yaml.safe_load(dc_yaml)
 
-        # deploy the automation
+        # deploy the automation and its infra services
         deployment_result = await docker_compose_up(
-            self.gitops_dir, dc_yaml, deployment_id
+            self.gitops_dir, dc_yaml, deployment_id,
+            extra_services=infra_service_names,
         )
 
         # record deployment in bitswan.yaml
@@ -862,9 +879,20 @@ fi
 
         filtered_bs_yaml = {"deployments": active_deployments}
 
-        dc_yaml = self.generate_docker_compose(filtered_bs_yaml)
+        # Auto-enable services for each active deployment
+        for dep_id, dep_conf in active_deployments.items():
+            dep_conf = dep_conf or {}
+            dep_services = dep_conf.get("services")
+            if dep_services:
+                dep_stage = dep_conf.get("stage") or "production"
+                await self.enable_services(dep_services, dep_stage)
+
+        dc_yaml, _infra_names = self.generate_docker_compose(filtered_bs_yaml)
+        self._save_docker_compose(dc_yaml)
         deployments = active_deployments
 
+        # deploy_automations starts all services (no filter), so infra services
+        # are included automatically via --remove-orphans
         deployment_result = await docker_compose_up(self.gitops_dir, dc_yaml)
 
         for result in deployment_result.values():
@@ -1218,6 +1246,75 @@ fi
             print(f"Warning: Exception while getting/creating public client: {str(e)}")
             return None
 
+    async def enable_services(
+        self, services: dict, stage: str
+    ) -> None:
+        """Auto-enable infrastructure services for a specific deployment.
+
+        Takes the services dict (e.g. {"kafka": {"enabled": true}}) and the
+        deployment stage, and enables any declared services that aren't already
+        running.
+        """
+        from app.services.infra_service import get_service, stage_for_deployment
+
+        mapped_stage = stage_for_deployment(stage)
+
+        for svc_type, svc_conf in services.items():
+            enabled = svc_conf.get("enabled", True) if isinstance(svc_conf, dict) else bool(svc_conf)
+            if not enabled:
+                continue
+
+            try:
+                svc = get_service(svc_type, self.workspace_name, stage=mapped_stage)
+            except ValueError:
+                logger.warning(f"Unknown service type '{svc_type}', skipping auto-enable")
+                continue
+
+            if not svc.is_enabled():
+                logger.info(
+                    f"Auto-enabling {svc.display_name} for workspace '{self.workspace_name}'"
+                )
+                try:
+                    await svc.enable()
+                except Exception as e:
+                    logger.error(f"Failed to auto-enable {svc.display_name}: {e}")
+
+    def _resolve_service_secrets(
+        self, automation_config: AutomationConfig, stage: str
+    ) -> list[str]:
+        """Resolve service dependencies and return list of secret file names to inject.
+
+        Uses the deployment's own stage to determine the service realm
+        (live-dev maps to dev). Returns the corresponding secrets file names
+        (e.g., 'kafka-dev', 'couchdb-production').
+        """
+        if not automation_config.services:
+            return []
+
+        from app.services.infra_service import get_service, stage_for_deployment
+
+        mapped_stage = stage_for_deployment(stage)
+
+        secret_names = []
+        for svc_type, svc_dep in automation_config.services.items():
+            if not svc_dep.enabled:
+                continue
+
+            try:
+                svc = get_service(
+                    svc_type, self.workspace_name, stage=mapped_stage
+                )
+            except ValueError:
+                logger.warning(f"Unknown service type '{svc_type}', skipping")
+                continue
+
+            secret_names.append(svc.secrets_file_name)
+            logger.info(
+                f"Service dependency: {svc.display_name} -> secrets '{svc.secrets_file_name}'"
+            )
+
+        return secret_names
+
     def generate_docker_compose(self, bs_yaml: dict):
         dc = {
             "version": "3",
@@ -1266,6 +1363,14 @@ fi
                     live_dev_groups=stored_secret_groups,
                     allowed_domains=stored_allowed_domains,
                 )
+                # Read services from stored config (sent by extension)
+                stored_services = conf.get("services")
+                if stored_services:
+                    svc_deps = {}
+                    for svc_name, svc_conf in stored_services.items():
+                        enabled = svc_conf.get("enabled", True) if isinstance(svc_conf, dict) else bool(svc_conf)
+                        svc_deps[svc_name] = ServiceDependency(enabled=enabled)
+                    automation_config.services = svc_deps
                 pipeline_conf = None
             elif not os.path.exists(source_dir):
                 raise HTTPException(
@@ -1359,6 +1464,18 @@ fi
                         if not entry.get("env_file"):
                             entry["env_file"] = []
                         entry["env_file"].append(secret_env_file)
+
+            # Inject service dependency secrets (from [services.*] in automation.toml)
+            service_secret_names = self._resolve_service_secrets(
+                automation_config, stage
+            )
+            for svc_secret_name in service_secret_names:
+                svc_secret_path = os.path.join(self.secrets_dir, svc_secret_name)
+                if os.path.exists(svc_secret_path):
+                    if not entry.get("env_file"):
+                        entry["env_file"] = []
+                    if svc_secret_path not in entry["env_file"]:
+                        entry["env_file"].append(svc_secret_path)
 
             if not network_mode:
                 network_mode = conf.get("network_mode")
@@ -1541,8 +1658,90 @@ fi
             if conf.get("enabled", True):
                 dc["services"][deployment_id] = entry
 
+        # Merge infra service entries (Kafka, CouchDB, etc.) for enabled services
+        infra_service_names = self._merge_infra_services(
+            dc, deployments, external_networks
+        )
+
         dc["networks"] = {}
         for network in external_networks:
             dc["networks"][network] = {"external": True}
         dc_yaml = yaml.dump(dc)
-        return dc_yaml
+        return dc_yaml, infra_service_names
+
+    def _save_docker_compose(self, dc_yaml: str) -> None:
+        """Save the generated docker-compose.yaml to the gitops directory for debugging."""
+        dc_path = os.path.join(self.gitops_dir, "docker-compose.yaml")
+        with open(dc_path, "w") as f:
+            f.write(dc_yaml)
+        logger.info(f"Saved docker-compose.yaml to {dc_path}")
+
+    def _merge_infra_services(
+        self, dc: dict, deployments: dict, external_networks: set
+    ) -> list[str]:
+        """Merge enabled infra service compose dicts into the main docker-compose.
+
+        Returns the list of compose service names that were merged.
+        """
+        from app.services.infra_service import get_service, stage_for_deployment
+
+        merged_service_names: list[str] = []
+
+        # Collect unique (service_type, stage) pairs from all deployments
+        seen: set[tuple[str, str]] = set()
+        for dep_conf in deployments.values():
+            dep_conf = dep_conf or {}
+            dep_services = dep_conf.get("services")
+            if not dep_services:
+                continue
+            dep_stage = dep_conf.get("stage") or "production"
+            mapped_stage = stage_for_deployment(dep_stage)
+            for svc_type, svc_conf in dep_services.items():
+                enabled = (
+                    svc_conf.get("enabled", True)
+                    if isinstance(svc_conf, dict)
+                    else bool(svc_conf)
+                )
+                if enabled:
+                    seen.add((svc_type, mapped_stage))
+
+        # For each enabled service, generate and merge its compose dict
+        for svc_type, svc_stage in seen:
+            try:
+                svc = get_service(svc_type, self.workspace_name, stage=svc_stage)
+            except ValueError:
+                logger.warning(
+                    f"Unknown service type '{svc_type}', skipping compose merge"
+                )
+                continue
+
+            if not svc.is_enabled():
+                continue
+
+            # Ensure config files exist (e.g. JAAS for Kafka) in case
+            # they were created at an old path before migration.
+            svc.ensure_config()
+
+            svc_compose = svc._generate_compose_dict()
+
+            # Merge services
+            for svc_name, svc_entry in svc_compose.get("services", {}).items():
+                if svc_name not in dc["services"]:
+                    dc["services"][svc_name] = svc_entry
+                    merged_service_names.append(svc_name)
+
+            # Merge volumes
+            svc_volumes = svc_compose.get("volumes", {})
+            if svc_volumes:
+                if "volumes" not in dc:
+                    dc["volumes"] = {}
+                for vol_name, vol_conf in svc_volumes.items():
+                    if vol_name not in dc["volumes"]:
+                        dc["volumes"][vol_name] = vol_conf
+
+            # Collect networks
+            for net_name, net_conf in svc_compose.get("networks", {}).items():
+                if net_conf and net_conf.get("external"):
+                    external_networks.add(net_name)
+
+        return merged_service_names

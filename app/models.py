@@ -74,3 +74,44 @@ class ProcessMarkdown(BaseModel):
 def encode_pydantic_model(data: BaseModel) -> bytearray:
     json_str = data.model_dump_json(by_alias=True)
     return bytearray(json_str.encode("utf-8"))
+
+
+# =============================================================================
+# Infrastructure Service Models
+# =============================================================================
+
+
+class ServiceEnableRequest(BaseModel):
+    stage: str = ""
+    image: str = ""
+    kafka_image: str = ""
+    ui_image: str = ""
+
+
+class ServiceDisableRequest(BaseModel):
+    stage: str = ""
+
+
+class ServiceActionRequest(BaseModel):
+    """Request for start/stop/update actions."""
+    stage: str = ""
+    image: str | None = None
+
+
+class ServiceStatusResponse(BaseModel):
+    service: str
+    stage: str = ""
+    enabled: bool
+    running: bool
+    connection_info: dict | None = None
+
+
+class ServiceBackupRequest(BaseModel):
+    stage: str = ""
+    backup_path: str
+
+
+class ServiceRestoreRequest(BaseModel):
+    stage: str = ""
+    backup_path: str
+    force: bool = False
