@@ -58,6 +58,7 @@ async def deploy_automation(
     allowed_domains: str | None = Form(
         None
     ),  # comma-separated list of CORS allowed domains
+    services: str | None = Form(None),  # JSON: {"kafka": {"enabled": true}, ...}
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     # Validate stage if provided
@@ -80,6 +81,14 @@ async def deploy_automation(
         if allowed_domains
         else None
     )
+    import json as _json
+
+    services_dict = None
+    if services:
+        try:
+            services_dict = _json.loads(services)
+        except _json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid services JSON")
 
     return await automation_service.deploy_automation(
         deployment_id,
@@ -94,6 +103,7 @@ async def deploy_automation(
         automation_id=automation_id,
         auth=auth_bool,
         allowed_domains=allowed_domains_list,
+        services=services_dict,
     )
 
 
