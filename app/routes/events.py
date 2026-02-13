@@ -23,7 +23,10 @@ async def stream_events():
         try:
             # Send current state immediately on connect
             automations = await get_automation_service().get_automations()
-            data = [a.model_dump(mode="json") if hasattr(a, "model_dump") else a for a in automations]
+            data = [
+                a.model_dump(mode="json") if hasattr(a, "model_dump") else a
+                for a in automations
+            ]
             yield f"event: automations\ndata: {json.dumps(data)}\n\n"
 
             images = await get_image_service().get_images()

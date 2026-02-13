@@ -73,7 +73,10 @@ async def _broadcast_automations_after_delay():
     await asyncio.sleep(0.5)
     try:
         automations = await get_automation_service().get_automations()
-        data = [a.model_dump(mode="json") if hasattr(a, "model_dump") else a for a in automations]
+        data = [
+            a.model_dump(mode="json") if hasattr(a, "model_dump") else a
+            for a in automations
+        ]
         await event_broadcaster.broadcast("automations", data)
     except Exception as e:
         logger.warning("Failed to broadcast automations: %s", e)

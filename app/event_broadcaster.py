@@ -33,7 +33,9 @@ class EventBroadcaster:
                 dead.append(queue)
         for q in dead:
             self._subscribers.discard(q)
-            logger.warning("Dropped slow SSE client (total: %d)", len(self._subscribers))
+            logger.warning(
+                "Dropped slow SSE client (total: %d)", len(self._subscribers)
+            )
 
 
 # Singleton
