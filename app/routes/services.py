@@ -169,9 +169,7 @@ async def restore_couchdb(request: ServiceRestoreRequest):
         from app.services.couchdb_service import CouchDBService
 
         svc = CouchDBService(workspace, stage=request.stage)
-        result = await svc.restore(
-            backup_path=request.backup_path, force=request.force
-        )
+        result = await svc.restore(backup_path=request.backup_path, force=request.force)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

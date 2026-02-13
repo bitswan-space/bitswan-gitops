@@ -31,7 +31,9 @@ def generate_password(length: int = 32) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-async def run_docker_command(*args: str, cwd: str | None = None) -> tuple[str, str, int]:
+async def run_docker_command(
+    *args: str, cwd: str | None = None
+) -> tuple[str, str, int]:
     """Run a docker command asynchronously, return (stdout, stderr, returncode)."""
     proc = await asyncio.create_subprocess_exec(
         *args,
@@ -117,8 +119,12 @@ class InfraService(ABC):
     async def is_running(self) -> bool:
         """Check if the service container is running."""
         stdout, _, rc = await run_docker_command(
-            "docker", "ps", "--filter", f"name=^/{self.container_name}$",
-            "--format", "{{.Names}}"
+            "docker",
+            "ps",
+            "--filter",
+            f"name=^/{self.container_name}$",
+            "--format",
+            "{{.Names}}",
         )
         return rc == 0 and stdout.strip() != ""
 
@@ -271,7 +277,9 @@ class InfraService(ABC):
 
     async def start(self) -> dict:
         """Start the service container via docker start."""
-        logger.info(f"Starting {self.display_name} container '{self.container_name}'...")
+        logger.info(
+            f"Starting {self.display_name} container '{self.container_name}'..."
+        )
         stdout, stderr, rc = await run_docker_command(
             "docker", "start", self.container_name
         )
@@ -282,7 +290,9 @@ class InfraService(ABC):
 
     async def stop(self) -> dict:
         """Stop the service container via docker stop."""
-        logger.info(f"Stopping {self.display_name} container '{self.container_name}'...")
+        logger.info(
+            f"Stopping {self.display_name} container '{self.container_name}'..."
+        )
         stdout, stderr, rc = await run_docker_command(
             "docker", "stop", self.container_name
         )
@@ -340,9 +350,7 @@ def get_service(
     if service_type == "couchdb":
         from app.services.couchdb_service import CouchDBService
 
-        return CouchDBService(
-            workspace_name, stage, image=kwargs.get("image", "")
-        )
+        return CouchDBService(workspace_name, stage, image=kwargs.get("image", ""))
     elif service_type == "kafka":
         from app.services.kafka_service import KafkaService
 
@@ -353,4 +361,6 @@ def get_service(
             ui_image=kwargs.get("ui_image", ""),
         )
     else:
-        raise ValueError(f"Unknown service type: {service_type}. Supported: couchdb, kafka")
+        raise ValueError(
+            f"Unknown service type: {service_type}. Supported: couchdb, kafka"
+        )

@@ -147,9 +147,7 @@ async def scale_automation(
     except ValueError:
         raise HTTPException(status_code=400, detail="replicas must be an integer")
     if replicas_int < 1:
-        raise HTTPException(
-            status_code=400, detail="replicas must be at least 1"
-        )
+        raise HTTPException(status_code=400, detail="replicas must be at least 1")
     return await automation_service.scale_automation(deployment_id, replicas_int)
 
 

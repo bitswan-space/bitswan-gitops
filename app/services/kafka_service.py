@@ -9,7 +9,11 @@ import logging
 import os
 import secrets as secrets_module
 
-from app.services.infra_service import InfraService, generate_password, run_docker_command
+from app.services.infra_service import (
+    InfraService,
+    generate_password,
+    run_docker_command,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +77,7 @@ class KafkaService(InfraService):
         kafka_host = self.container_name
 
         jaas_config = (
-            f'org.apache.kafka.common.security.plain.PlainLoginModule required '
+            f"org.apache.kafka.common.security.plain.PlainLoginModule required "
             f'username="admin" password="{admin_password}" '
             f'user_admin="{admin_password}";'
         )
