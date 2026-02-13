@@ -824,10 +824,28 @@ fi
             # Re-read to get updated config
             bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
-        # Auto-enable declared services for this deployment
+        # Auto-enable declared services for this deployment.
+        # Check bitswan.yaml first, then fall back to automation config on disk
+        # so that promoted deployments (which don't have services in bitswan.yaml)
+        # still trigger service auto-enable.
         deployment_conf = bs_yaml.get("deployments", {}).get(deployment_id, {}) or {}
         deploy_services = services or deployment_conf.get("services")
         deploy_stage = stage or deployment_conf.get("stage") or "production"
+        if deploy_stage == "":
+            deploy_stage = "production"
+
+        if not deploy_services and deploy_stage != "live-dev":
+            # Read services from automation config on disk
+            source = deployment_conf.get("source") or deployment_conf.get("checksum") or deployment_id
+            source_dir = os.path.join(self.gitops_dir, source)
+            if os.path.exists(source_dir):
+                auto_conf = read_automation_config(source_dir)
+                if auto_conf.services:
+                    deploy_services = {
+                        svc_name: {"enabled": svc_dep.enabled}
+                        for svc_name, svc_dep in auto_conf.services.items()
+                    }
+
         if deploy_services:
             await self.enable_services(deploy_services, deploy_stage)
 
@@ -1484,6 +1502,18 @@ fi
             else:
                 pipeline_conf = read_pipeline_conf(source_dir)
                 automation_config = read_automation_config(source_dir)
+
+            # Ensure services from automation config on disk are reflected in
+            # the deployment conf so _merge_infra_services() can discover them.
+            # Without this, promoted deployments (dev/staging/production) whose
+            # bitswan.yaml entry lacks a "services" key would be invisible to
+            # the infra-service merge step, and their Kafka/CouchDB/etc.
+            # containers could be removed as orphans.
+            if automation_config.services and not conf.get("services"):
+                conf["services"] = {
+                    svc_name: {"enabled": svc_dep.enabled}
+                    for svc_name, svc_dep in automation_config.services.items()
+                }
 
             if self.workspace_id and self.aoc_url and self.aoc_token:
                 # generate jwt token for automation
