@@ -226,6 +226,22 @@ class AsyncDockerClient:
         """Inspect an exec instance."""
         return await self._get(f"/exec/{exec_id}/json")
 
+    async def watch_events(self, filters: Optional[dict] = None):
+        """Watch Docker events as an async generator. Yields parsed event dicts."""
+        session = await self._get_session()
+        params = {}
+        if filters:
+            params["filters"] = json.dumps(filters)
+
+        async with session.get(
+            "http://localhost/events",
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=0),
+        ) as response:
+            async for line in response.content:
+                if line.strip():
+                    yield json.loads(line)
+
 
 class DockerError(Exception):
     """Docker API error."""

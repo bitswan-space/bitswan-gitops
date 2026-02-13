@@ -9,6 +9,7 @@ from typing import Optional, AsyncGenerator, Dict
 
 from app.utils import calculate_git_tree_hash, save_image
 from app.async_docker import get_async_docker_client, DockerError
+from app.event_broadcaster import event_broadcaster
 
 import docker  # Keep for sync build process in background thread
 from fastapi import UploadFile, HTTPException
@@ -132,6 +133,11 @@ class ImageService:
             shutil.copytree(source_dir, destination_dir)
 
         return destination_dir
+
+    async def _broadcast_images(self):
+        """Broadcast current image list via SSE."""
+        images = await self.get_images()
+        await event_broadcaster.broadcast("images", images)
 
     async def get_images(self):
         """
@@ -269,6 +275,12 @@ class ImageService:
                         f.write(
                             f"Warning: Failed to commit build context to git: {str(git_error)}\n"
                         )
+
+                # Broadcast image changes via SSE
+                try:
+                    asyncio.run(self._broadcast_images())
+                except Exception:
+                    pass
 
         # Start the build in a separate thread
         import threading
@@ -444,6 +456,12 @@ class ImageService:
                 building_log_file_path, _, _ = self._log_paths(checksum)
                 if os.path.exists(building_log_file_path):
                     os.remove(building_log_file_path)
+
+            # Broadcast image changes via SSE
+            try:
+                await self._broadcast_images()
+            except Exception:
+                pass
 
             return {
                 "status": "success",
