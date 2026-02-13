@@ -12,7 +12,6 @@ from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
     AutomationConfig,
-    KNOWN_STAGES,
     ServiceDependency,
     calculate_git_tree_hash,
     docker_compose_up,
@@ -505,7 +504,9 @@ class AutomationService:
                 current_checksum = deployment_config.get("checksum")
                 current_replicas = deployment_config.get("replicas", 1)
 
-                checksum_changed = current_checksum and current_checksum != previous_checksum
+                checksum_changed = (
+                    current_checksum and current_checksum != previous_checksum
+                )
                 replicas_changed = current_replicas != previous_replicas
 
                 if checksum_changed or replicas_changed:
@@ -836,7 +837,11 @@ fi
 
         if not deploy_services and deploy_stage != "live-dev":
             # Read services from automation config on disk
-            source = deployment_conf.get("source") or deployment_conf.get("checksum") or deployment_id
+            source = (
+                deployment_conf.get("source")
+                or deployment_conf.get("checksum")
+                or deployment_id
+            )
             source_dir = os.path.join(self.gitops_dir, source)
             if os.path.exists(source_dir):
                 auto_conf = read_automation_config(source_dir)
@@ -857,7 +862,9 @@ fi
 
         # deploy the automation and its infra services
         deployment_result = await docker_compose_up(
-            self.gitops_dir, dc_yaml, deployment_id,
+            self.gitops_dir,
+            dc_yaml,
+            deployment_id,
             extra_services=infra_service_names,
         )
 
@@ -999,9 +1006,7 @@ fi
 
         # Commit with a descriptive message using GitLockContext
         async with GitLockContext(timeout=10.0):
-            await call_git_command(
-                "git", "add", "bitswan.yaml", cwd=self.gitops_dir
-            )
+            await call_git_command("git", "add", "bitswan.yaml", cwd=self.gitops_dir)
             await call_git_command(
                 "git",
                 "commit",
@@ -1014,7 +1019,11 @@ fi
         # Ensure infrastructure services are enabled/running
         deploy_services = deployment_config.get("services")
         if not deploy_services:
-            source = deployment_config.get("source") or deployment_config.get("checksum") or deployment_id
+            source = (
+                deployment_config.get("source")
+                or deployment_config.get("checksum")
+                or deployment_id
+            )
             source_dir = os.path.join(self.gitops_dir, source)
             if os.path.exists(source_dir):
                 auto_conf = read_automation_config(source_dir)
@@ -1032,7 +1041,9 @@ fi
         self._save_docker_compose(dc_yaml)
 
         deployment_result = await docker_compose_up(
-            self.gitops_dir, dc_yaml, deployment_id,
+            self.gitops_dir,
+            dc_yaml,
+            deployment_id,
             extra_services=infra_service_names,
         )
 
@@ -1220,9 +1231,7 @@ fi
             logs = await docker_client.get_container_logs(container_id, tail=lines)
             if multiple:
                 prefix = f"[replica-{i}] "
-                all_logs.extend(
-                    f"{prefix}{line}" for line in logs.split("\n")
-                )
+                all_logs.extend(f"{prefix}{line}" for line in logs.split("\n"))
             else:
                 all_logs.extend(logs.split("\n"))
 
@@ -1400,9 +1409,7 @@ fi
             print(f"Warning: Exception while getting/creating public client: {str(e)}")
             return None
 
-    async def enable_services(
-        self, services: dict, stage: str
-    ) -> None:
+    async def enable_services(self, services: dict, stage: str) -> None:
         """Auto-enable infrastructure services for a specific deployment.
 
         Takes the services dict (e.g. {"kafka": {"enabled": true}}) and the
@@ -1414,14 +1421,20 @@ fi
         mapped_stage = stage_for_deployment(stage)
 
         for svc_type, svc_conf in services.items():
-            enabled = svc_conf.get("enabled", True) if isinstance(svc_conf, dict) else bool(svc_conf)
+            enabled = (
+                svc_conf.get("enabled", True)
+                if isinstance(svc_conf, dict)
+                else bool(svc_conf)
+            )
             if not enabled:
                 continue
 
             try:
                 svc = get_service(svc_type, self.workspace_name, stage=mapped_stage)
             except ValueError:
-                logger.warning(f"Unknown service type '{svc_type}', skipping auto-enable")
+                logger.warning(
+                    f"Unknown service type '{svc_type}', skipping auto-enable"
+                )
                 continue
 
             if not svc.is_enabled():
@@ -1453,7 +1466,9 @@ fi
                         try:
                             await svc._register_with_caddy()
                         except Exception as e:
-                            logger.warning(f"Failed to re-register {svc.display_name} with Caddy: {e}")
+                            logger.warning(
+                                f"Failed to re-register {svc.display_name} with Caddy: {e}"
+                            )
 
     def _resolve_service_secrets(
         self, automation_config: AutomationConfig, stage: str
@@ -1477,9 +1492,7 @@ fi
                 continue
 
             try:
-                svc = get_service(
-                    svc_type, self.workspace_name, stage=mapped_stage
-                )
+                svc = get_service(svc_type, self.workspace_name, stage=mapped_stage)
             except ValueError:
                 logger.warning(f"Unknown service type '{svc_type}', skipping")
                 continue
@@ -1546,7 +1559,11 @@ fi
                 if stored_services:
                     svc_deps = {}
                     for svc_name, svc_conf in stored_services.items():
-                        enabled = svc_conf.get("enabled", True) if isinstance(svc_conf, dict) else bool(svc_conf)
+                        enabled = (
+                            svc_conf.get("enabled", True)
+                            if isinstance(svc_conf, dict)
+                            else bool(svc_conf)
+                        )
                         svc_deps[svc_name] = ServiceDependency(enabled=enabled)
                     automation_config.services = svc_deps
                 pipeline_conf = None

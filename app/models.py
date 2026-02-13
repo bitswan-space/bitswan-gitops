@@ -95,6 +95,7 @@ class ServiceDisableRequest(BaseModel):
 
 class ServiceActionRequest(BaseModel):
     """Request for start/stop/update actions."""
+
     stage: str = ""
     image: str | None = None
 

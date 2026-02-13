@@ -5,4 +5,4 @@ gitops.py
 *.pyo
 *.pyd
 .venv
-.env
+.envruff-x86_64-unknown-linux-gnu/

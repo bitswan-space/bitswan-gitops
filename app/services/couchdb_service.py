@@ -100,8 +100,13 @@ class CouchDBService(InfraService):
 
         # Get list of databases
         stdout, stderr, rc = await run_docker_command(
-            "docker", "exec", self.container_name,
-            "curl", "-s", "-u", f"{user}:{password}",
+            "docker",
+            "exec",
+            self.container_name,
+            "curl",
+            "-s",
+            "-u",
+            f"{user}:{password}",
             "http://localhost:5984/_all_dbs",
         )
         if rc != 0:
@@ -126,8 +131,13 @@ class CouchDBService(InfraService):
 
                 # Get all documents with include_docs=true
                 stdout, stderr, rc = await run_docker_command(
-                    "docker", "exec", self.container_name,
-                    "curl", "-s", "-u", f"{user}:{password}",
+                    "docker",
+                    "exec",
+                    self.container_name,
+                    "curl",
+                    "-s",
+                    "-u",
+                    f"{user}:{password}",
                     f"http://localhost:5984/{db_name}/_all_docs?include_docs=true",
                 )
                 if rc != 0:
@@ -252,16 +262,30 @@ class CouchDBService(InfraService):
 
                 # Check if database exists, create if not
                 stdout, _, _ = await run_docker_command(
-                    "docker", "exec", self.container_name,
-                    "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                    "-u", f"{user}:{password}",
+                    "docker",
+                    "exec",
+                    self.container_name,
+                    "curl",
+                    "-s",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{http_code}",
+                    "-u",
+                    f"{user}:{password}",
                     f"http://localhost:5984/{db_name}",
                 )
                 if stdout.strip() != "200":
                     await run_docker_command(
-                        "docker", "exec", self.container_name,
-                        "curl", "-s", "-X", "PUT",
-                        "-u", f"{user}:{password}",
+                        "docker",
+                        "exec",
+                        self.container_name,
+                        "curl",
+                        "-s",
+                        "-X",
+                        "PUT",
+                        "-u",
+                        f"{user}:{password}",
                         f"http://localhost:5984/{db_name}",
                     )
 
@@ -281,8 +305,12 @@ class CouchDBService(InfraService):
                 # Bulk insert via stdin
                 bulk_payload = json.dumps({"docs": docs})
                 proc = await asyncio.create_subprocess_exec(
-                    "docker", "exec", "-i", self.container_name,
-                    "sh", "-c",
+                    "docker",
+                    "exec",
+                    "-i",
+                    self.container_name,
+                    "sh",
+                    "-c",
                     f"curl -s -X POST -H 'Content-Type: application/json' "
                     f"-u '{user}:{password}' --data-binary @- "
                     f"'http://localhost:5984/{db_name}/_bulk_docs'",
@@ -290,15 +318,11 @@ class CouchDBService(InfraService):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                stdout_bytes, _ = await proc.communicate(
-                    input=bulk_payload.encode()
-                )
+                stdout_bytes, _ = await proc.communicate(input=bulk_payload.encode())
 
                 response = json.loads(stdout_bytes.decode())
                 success_count = sum(
-                    1
-                    for item in response
-                    if "rev" in item and "error" not in item
+                    1 for item in response if "rev" in item and "error" not in item
                 )
                 logger.info(
                     f"Restored {success_count}/{len(docs)} documents to '{db_name}'"
