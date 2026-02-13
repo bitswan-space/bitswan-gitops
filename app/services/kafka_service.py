@@ -13,6 +13,28 @@ from app.services.infra_service import InfraService, generate_password, run_dock
 
 logger = logging.getLogger(__name__)
 
+# Entrypoint script that builds the JAAS config from KAFKA_ADMIN_PASSWORD
+# env var, then execs the original confluent entrypoint.
+# NOTE: $$ is docker-compose escaping — becomes $ in the actual shell command.
+KAFKA_ENTRYPOINT_SCRIPT = """\
+cat > /etc/kafka/kafka_server_jaas.conf <<JAASEOF
+KafkaServer {
+   org.apache.kafka.common.security.plain.PlainLoginModule required
+   username="admin"
+   password="$$KAFKA_ADMIN_PASSWORD"
+   user_admin="$$KAFKA_ADMIN_PASSWORD";
+};
+
+Client {
+   org.apache.kafka.common.security.plain.PlainLoginModule required
+   username="admin"
+   password="$$KAFKA_ADMIN_PASSWORD"
+   user_admin="$$KAFKA_ADMIN_PASSWORD";
+};
+JAASEOF
+exec /etc/confluent/docker/run
+"""
+
 
 def generate_cluster_id() -> str:
     """Generate a random Kafka cluster ID (URL-safe base64-encoded 16 random bytes)."""
@@ -45,26 +67,10 @@ class KafkaService(InfraService):
     def ui_container_name(self) -> str:
         return f"{self.workspace_name}__kafka{self.service_suffix}-ui"
 
-    @property
-    def jaas_file_name(self) -> str:
-        return f"kafka-{self.stage}_server_jaas.conf"
-
-    @property
-    def jaas_file_path(self) -> str:
-        return os.path.join(self.secrets_dir, self.jaas_file_name)
-
-    @property
-    def jaas_file_path_host(self) -> str:
-        return os.path.join(self.secrets_dir_host, self.jaas_file_name)
-
     def _generate_secrets_content(self) -> str:
         admin_password = generate_password()
         ui_password = generate_password()
         kafka_host = self.container_name
-
-        # Store passwords for use by _create_jaas_config
-        self._admin_password = admin_password
-        self._ui_password = ui_password
 
         jaas_config = (
             f'org.apache.kafka.common.security.plain.PlainLoginModule required '
@@ -82,53 +88,6 @@ class KafkaService(InfraService):
         ]
         return "\n".join(lines) + "\n"
 
-    def _create_jaas_config(self) -> None:
-        """Create the JAAS configuration file for Kafka."""
-        admin_password = getattr(self, "_admin_password", "")
-        if not admin_password:
-            # Try reading from secrets file
-            if os.path.exists(self.secrets_file_path):
-                with open(self.secrets_file_path, "r") as f:
-                    for line in f:
-                        if line.startswith("KAFKA_ADMIN_PASSWORD="):
-                            admin_password = line.split("=", 1)[1].strip()
-                            break
-
-        jaas_content = (
-            f'KafkaServer {{\n'
-            f'   org.apache.kafka.common.security.plain.PlainLoginModule required\n'
-            f'   username="admin"\n'
-            f'   password="{admin_password}"\n'
-            f'   user_admin="{admin_password}";\n'
-            f'}};\n'
-            f'\n'
-            f'Client {{\n'
-            f'   org.apache.kafka.common.security.plain.PlainLoginModule required\n'
-            f'   username="admin"\n'
-            f'   password="{admin_password}"\n'
-            f'   user_admin="{admin_password}";\n'
-            f'}};\n'
-        )
-
-        os.makedirs(self.secrets_dir, mode=0o700, exist_ok=True)
-        with open(self.jaas_file_path, "w") as f:
-            f.write(jaas_content)
-        logger.info(
-            f"{self.display_name} JAAS config saved to: {self.jaas_file_path}"
-        )
-
-    def ensure_config(self) -> None:
-        """Ensure JAAS config exists at the secrets_dir path."""
-        if not os.path.exists(self.jaas_file_path):
-            logger.info(
-                f"JAAS config missing at {self.jaas_file_path}, regenerating"
-            )
-            self._create_jaas_config()
-
-    async def _extra_enable_setup(self) -> None:
-        """Create JAAS config during enable."""
-        self._create_jaas_config()
-
     async def stop(self) -> dict:
         """Stop both Kafka broker and UI containers."""
         result = await super().stop()
@@ -138,11 +97,6 @@ class KafkaService(InfraService):
         except Exception as e:
             logger.warning(f"Failed to stop Kafka UI container: {e}")
         return result
-
-    async def _extra_disable_cleanup(self) -> None:
-        """Remove JAAS config during disable."""
-        if os.path.exists(self.jaas_file_path):
-            os.remove(self.jaas_file_path)
 
     def _generate_compose_dict(self) -> dict:
         cluster_id = generate_cluster_id()
@@ -170,6 +124,7 @@ class KafkaService(InfraService):
                 f"kafka{self.service_suffix}": {
                     "image": self.kafka_image,
                     "container_name": self.container_name,
+                    "entrypoint": ["/bin/bash", "-c", KAFKA_ENTRYPOINT_SCRIPT],
                     "environment": {
                         "KAFKA_NODE_ID": 1,
                         "KAFKA_PROCESS_ROLES": "broker,controller",
@@ -190,7 +145,6 @@ class KafkaService(InfraService):
                     },
                     "volumes": [
                         f"{self.volume_name}:/var/lib/kafka/data",
-                        f"{self.jaas_file_path_host}:/etc/kafka/kafka_server_jaas.conf",
                     ],
                     "env_file": [self.secrets_file_path],
                     "restart": "unless-stopped",

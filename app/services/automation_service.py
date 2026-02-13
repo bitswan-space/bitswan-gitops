@@ -1718,8 +1718,7 @@ fi
             if not svc.is_enabled():
                 continue
 
-            # Ensure config files exist (e.g. JAAS for Kafka) in case
-            # they were created at an old path before migration.
+            # Hook for services that need extra config before compose generation.
             svc.ensure_config()
 
             svc_compose = svc._generate_compose_dict()
