@@ -12,7 +12,7 @@ from watchdog.events import FileSystemEventHandler
 
 
 from .async_docker import get_async_docker_client
-from .dependencies import get_automation_service, get_image_service
+from .dependencies import get_automation_service
 from .event_broadcaster import event_broadcaster
 from .mqtt import mqtt_resource
 from .mqtt_publish_automations import publish_automations
