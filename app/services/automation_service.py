@@ -917,12 +917,29 @@ fi
 
         filtered_bs_yaml = {"deployments": active_deployments}
 
-        # Auto-enable services for each active deployment
+        # Auto-enable services for each active deployment.
+        # Read from bitswan.yaml first, fall back to automation config on disk.
         for dep_id, dep_conf in active_deployments.items():
-            dep_conf = dep_conf or {}
+            if dep_conf is None:
+                dep_conf = {}
+                active_deployments[dep_id] = dep_conf
             dep_services = dep_conf.get("services")
+            dep_stage = dep_conf.get("stage") or "production"
+            if dep_stage == "":
+                dep_stage = "production"
+
+            if not dep_services and dep_stage != "live-dev":
+                source = dep_conf.get("source") or dep_conf.get("checksum") or dep_id
+                source_dir = os.path.join(self.gitops_dir, source)
+                if os.path.exists(source_dir):
+                    auto_conf = read_automation_config(source_dir)
+                    if auto_conf.services:
+                        dep_services = {
+                            svc_name: {"enabled": svc_dep.enabled}
+                            for svc_name, svc_dep in auto_conf.services.items()
+                        }
+
             if dep_services:
-                dep_stage = dep_conf.get("stage") or "production"
                 await self.enable_services(dep_services, dep_stage)
 
         dc_yaml, _infra_names = self.generate_docker_compose(filtered_bs_yaml)
@@ -993,6 +1010,21 @@ fi
                 cwd=self.gitops_dir,
             )
             await call_git_command("git", "push", cwd=self.gitops_dir)
+
+        # Ensure infrastructure services are enabled/running
+        deploy_services = deployment_config.get("services")
+        if not deploy_services:
+            source = deployment_config.get("source") or deployment_config.get("checksum") or deployment_id
+            source_dir = os.path.join(self.gitops_dir, source)
+            if os.path.exists(source_dir):
+                auto_conf = read_automation_config(source_dir)
+                if auto_conf.services:
+                    deploy_services = {
+                        svc_name: {"enabled": svc_dep.enabled}
+                        for svc_name, svc_dep in auto_conf.services.items()
+                    }
+        if deploy_services:
+            await self.enable_services(deploy_services, stage)
 
         # Regenerate docker-compose and deploy
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
@@ -1400,6 +1432,28 @@ fi
                     await svc.enable()
                 except Exception as e:
                     logger.error(f"Failed to auto-enable {svc.display_name}: {e}")
+            else:
+                running = await svc.is_running()
+                if not running:
+                    logger.warning(
+                        f"{svc.display_name} is enabled but not running — "
+                        f"attempting to start container"
+                    )
+                    try:
+                        await svc.start()
+                        logger.info(f"{svc.display_name} started successfully")
+                    except Exception:
+                        # Container may have been removed entirely;
+                        # docker-compose up will recreate it.
+                        logger.info(
+                            f"Could not start {svc.display_name} container "
+                            f"(may have been removed) — docker-compose up will recreate it"
+                        )
+                        # Re-register with Caddy in case it was lost
+                        try:
+                            await svc._register_with_caddy()
+                        except Exception as e:
+                            logger.warning(f"Failed to re-register {svc.display_name} with Caddy: {e}")
 
     def _resolve_service_secrets(
         self, automation_config: AutomationConfig, stage: str
@@ -1445,7 +1499,9 @@ fi
         external_networks = {"bitswan_network"}
         deployments = bs_yaml.get("deployments", {})
         for deployment_id, conf in deployments.items():
-            conf = conf or {}
+            if conf is None:
+                conf = {}
+                deployments[deployment_id] = conf
             entry = {}
 
             source = conf.get("source") or conf.get("checksum") or deployment_id
@@ -1869,6 +1925,11 @@ fi
                 continue
 
             if not svc.is_enabled():
+                logger.warning(
+                    f"{svc.display_name} is declared by a deployment but not enabled "
+                    f"(secrets file missing at {svc.secrets_file_path}). "
+                    f"Skipping compose merge — this service will NOT run."
+                )
                 continue
 
             # Hook for services that need extra config before compose generation.
