@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 import os
 import functools
 import threading
@@ -10,13 +11,17 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 
-from .dependencies import get_automation_service
+from .async_docker import get_async_docker_client
+from .dependencies import get_automation_service, get_image_service
+from .event_broadcaster import event_broadcaster
 from .mqtt import mqtt_resource
 from .mqtt_publish_automations import publish_automations
 from .mqtt_processes import (
     publish_processes,
     setup_mqtt_subscriptions,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class WorkspaceChangeHandler(FileSystemEventHandler):
@@ -63,9 +68,48 @@ class WorkspaceChangeHandler(FileSystemEventHandler):
             self.schedule_update()
 
 
+async def _broadcast_automations_after_delay():
+    """Debounced broadcast of automation state after Docker events settle."""
+    await asyncio.sleep(0.5)
+    try:
+        automations = await get_automation_service().get_automations()
+        data = [a.model_dump(mode="json") if hasattr(a, "model_dump") else a for a in automations]
+        await event_broadcaster.broadcast("automations", data)
+    except Exception as e:
+        logger.warning("Failed to broadcast automations: %s", e)
+
+
+async def _docker_event_watcher():
+    """Watch Docker container events and broadcast automation state changes."""
+    docker_client = get_async_docker_client()
+    workspace = os.environ.get("BITSWAN_WORKSPACE_NAME", "")
+    debounce_task: asyncio.Task | None = None
+
+    filters: dict = {"type": ["container"]}
+    if workspace:
+        filters["label"] = [f"gitops.workspace={workspace}"]
+
+    while True:
+        try:
+            async for event in docker_client.watch_events(filters=filters):
+                action = event.get("Action", "")
+                if action in ("start", "stop", "die", "destroy", "create"):
+                    if debounce_task and not debounce_task.done():
+                        debounce_task.cancel()
+                    debounce_task = asyncio.create_task(
+                        _broadcast_automations_after_delay()
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Docker event watcher error: %s, reconnecting in 5s", e)
+            await asyncio.sleep(5)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     observer = None
+    watcher_task: asyncio.Task | None = None
 
     scheduler = AsyncIOScheduler(timezone="UTC")
     result = await mqtt_resource.connect()
@@ -104,9 +148,20 @@ async def lifespan(app: FastAPI):
     # Warm the history cache in the background so first requests are fast
     asyncio.create_task(get_automation_service().warm_history_cache())
 
+    # Start Docker event watcher for SSE push updates
+    watcher_task = asyncio.create_task(_docker_event_watcher())
+
     try:
         yield
     finally:
+        # Stop Docker event watcher
+        if watcher_task:
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
+
         if observer:
             observer.stop()
             # Run blocking join in executor to avoid blocking event loop
