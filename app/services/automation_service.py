@@ -135,6 +135,7 @@ class AutomationService:
                 version_hash=bs_yaml["deployments"][deployment_id].get(
                     "checksum", None
                 ),
+                replicas=bs_yaml["deployments"][deployment_id].get("replicas", 1),
             )
             for deployment_id in bs_yaml["deployments"]
         }
@@ -186,6 +187,7 @@ class AutomationService:
                     relative_path=pres[deployment_id].relative_path,
                     stage=pres[deployment_id].stage,
                     version_hash=pres[deployment_id].version_hash,
+                    replicas=pres[deployment_id].replicas,
                 )
 
         return list(pres.values())
@@ -477,9 +479,10 @@ class AutomationService:
         )
         content_by_hash = dict(results)
 
-        # Process sequentially to track checksum changes
+        # Process sequentially to track checksum and replicas changes
         history_entries = []
         previous_checksum = None
+        previous_replicas = None
 
         for commit in commits:
             commit_hash = commit["commit"]
@@ -500,8 +503,12 @@ class AutomationService:
                     continue
 
                 current_checksum = deployment_config.get("checksum")
+                current_replicas = deployment_config.get("replicas", 1)
 
-                if current_checksum and current_checksum != previous_checksum:
+                checksum_changed = current_checksum and current_checksum != previous_checksum
+                replicas_changed = current_replicas != previous_replicas
+
+                if checksum_changed or replicas_changed:
                     entry = {
                         "commit": commit_hash,
                         "author": commit["author"],
@@ -512,9 +519,11 @@ class AutomationService:
                         "relative_path": deployment_config.get("relative_path"),
                         "active": deployment_config.get("active"),
                         "tag_checksum": deployment_config.get("tag_checksum"),
+                        "replicas": current_replicas,
                     }
                     history_entries.append(entry)
                     previous_checksum = current_checksum
+                    previous_replicas = current_replicas
 
             except yaml.YAMLError:
                 continue
@@ -538,107 +547,113 @@ class AutomationService:
         }
 
     async def start_oauth2_proxy_in_container(self, deployment_id: str):
-        """Start oauth2-proxy in a running container after deployment"""
+        """Start oauth2-proxy in all running containers for a deployment"""
         containers = await self.get_container(deployment_id)
 
         if not containers:
             return False
 
-        container = containers[0]
-        container_id = container.get("Id")
-        labels = container.get("Labels", {})
-        container_name = container.get("Names", [deployment_id])[0].lstrip("/")
+        success = True
+        for container in containers:
+            container_id = container.get("Id")
+            labels = container.get("Labels", {})
+            container_name = container.get("Names", [deployment_id])[0].lstrip("/")
 
-        # Check if oauth2 is enabled via labels
-        if labels.get("gitops.oauth2.enabled") != "true":
-            return False
+            # Check if oauth2 is enabled via labels
+            if labels.get("gitops.oauth2.enabled") != "true":
+                continue
 
-        # Ensure container is running
-        state = container.get("State", "")
-        if state != "running":
-            print(
-                f"Warning: Container {container_name} is not running (status: {state}), cannot start oauth2-proxy"
-            )
-            return False
-
-        upstream_url = labels.get("gitops.oauth2.upstream")
-        if not upstream_url:
-            print(
-                f"Warning: No upstream URL found for oauth2-proxy in deployment {deployment_id}"
-            )
-            return False
-
-        try:
-            docker_client = get_async_docker_client()
-
-            # Check if oauth2-proxy is already running to avoid duplicates
-            exec_id = await docker_client.exec_create(
-                container_id, ["sh", "-c", "pgrep -f oauth2-proxy || true"]
-            )
-            output = await docker_client.exec_start(exec_id)
-            exec_info = await docker_client.exec_inspect(exec_id)
-
-            if exec_info.get("ExitCode") == 0 and output.strip():
-                print(f"oauth2-proxy already running in container {container_name}")
-                return True
-
-            # Start oauth2-proxy in the background
-            print(
-                f"Starting oauth2-proxy with upstream: {upstream_url} in container {container_name}"
-            )
-            cmd = [
-                "sh",
-                "-c",
-                f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &",
-            ]
-            exec_id = await docker_client.exec_create(container_id, cmd)
-            await docker_client.exec_start(exec_id)
-            exec_info = await docker_client.exec_inspect(exec_id)
-
-            if exec_info.get("ExitCode", 0) == 0:
+            # Ensure container is running
+            state = container.get("State", "")
+            if state != "running":
                 print(
-                    f"Successfully started oauth2-proxy in container {container_name}"
+                    f"Warning: Container {container_name} is not running (status: {state}), cannot start oauth2-proxy"
                 )
-                return True
-            else:
-                print(f"Failed to start oauth2-proxy in container {container_name}")
-                return False
+                success = False
+                continue
 
-        except Exception as e:
-            print(
-                f"Exception while starting oauth2-proxy in container {container_name}: {str(e)}"
-            )
-            return False
+            upstream_url = labels.get("gitops.oauth2.upstream")
+            if not upstream_url:
+                print(
+                    f"Warning: No upstream URL found for oauth2-proxy in deployment {deployment_id}"
+                )
+                success = False
+                continue
+
+            try:
+                docker_client = get_async_docker_client()
+
+                # Check if oauth2-proxy is already running to avoid duplicates
+                exec_id = await docker_client.exec_create(
+                    container_id, ["sh", "-c", "pgrep -f oauth2-proxy || true"]
+                )
+                output = await docker_client.exec_start(exec_id)
+                exec_info = await docker_client.exec_inspect(exec_id)
+
+                if exec_info.get("ExitCode") == 0 and output.strip():
+                    print(f"oauth2-proxy already running in container {container_name}")
+                    continue
+
+                # Start oauth2-proxy in the background
+                print(
+                    f"Starting oauth2-proxy with upstream: {upstream_url} in container {container_name}"
+                )
+                cmd = [
+                    "sh",
+                    "-c",
+                    f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &",
+                ]
+                exec_id = await docker_client.exec_create(container_id, cmd)
+                await docker_client.exec_start(exec_id)
+                exec_info = await docker_client.exec_inspect(exec_id)
+
+                if exec_info.get("ExitCode", 0) == 0:
+                    print(
+                        f"Successfully started oauth2-proxy in container {container_name}"
+                    )
+                else:
+                    print(f"Failed to start oauth2-proxy in container {container_name}")
+                    success = False
+
+            except Exception as e:
+                print(
+                    f"Exception while starting oauth2-proxy in container {container_name}: {str(e)}"
+                )
+                success = False
+
+        return success
 
     async def install_certificates_in_container(self, deployment_id: str):
-        """Install CA certificates in a running container after deployment"""
+        """Install CA certificates in all running containers for a deployment"""
         containers = await self.get_container(deployment_id)
 
         if not containers:
             return False
 
-        container = containers[0]
-        container_id = container.get("Id")
-        labels = container.get("Labels", {})
-        container_name = container.get("Names", [deployment_id])[0].lstrip("/")
+        success = True
+        for container in containers:
+            container_id = container.get("Id")
+            labels = container.get("Labels", {})
+            container_name = container.get("Names", [deployment_id])[0].lstrip("/")
 
-        # Check if certificate installation is enabled via labels
-        if labels.get("gitops.certs.enabled") != "true":
-            return False
+            # Check if certificate installation is enabled via labels
+            if labels.get("gitops.certs.enabled") != "true":
+                continue
 
-        # Ensure container is running
-        state = container.get("State", "")
-        if state != "running":
-            print(
-                f"Warning: Container {container_name} is not running (status: {state}), cannot install certificates"
-            )
-            return False
+            # Ensure container is running
+            state = container.get("State", "")
+            if state != "running":
+                print(
+                    f"Warning: Container {container_name} is not running (status: {state}), cannot install certificates"
+                )
+                success = False
+                continue
 
-        try:
-            docker_client = get_async_docker_client()
+            try:
+                docker_client = get_async_docker_client()
 
-            # Install certificates: copy from custom dir, rename .pem to .crt, and update
-            cert_install_script = """
+                # Install certificates: copy from custom dir, rename .pem to .crt, and update
+                cert_install_script = """
 if [ -d /usr/local/share/ca-certificates/custom ]; then
     cp /usr/local/share/ca-certificates/custom/*.crt /usr/local/share/ca-certificates/ 2>/dev/null || true
     cp /usr/local/share/ca-certificates/custom/*.pem /usr/local/share/ca-certificates/ 2>/dev/null || true
@@ -651,28 +666,29 @@ else
     echo "No custom CA certificates directory found"
 fi
 """
-            print(f"Installing CA certificates in container {container_name}")
-            cmd = ["sh", "-c", cert_install_script]
-            exec_id = await docker_client.exec_create(container_id, cmd)
-            output = await docker_client.exec_start(exec_id)
-            exec_info = await docker_client.exec_inspect(exec_id)
+                print(f"Installing CA certificates in container {container_name}")
+                cmd = ["sh", "-c", cert_install_script]
+                exec_id = await docker_client.exec_create(container_id, cmd)
+                output = await docker_client.exec_start(exec_id)
+                exec_info = await docker_client.exec_inspect(exec_id)
 
-            if exec_info.get("ExitCode", 0) == 0:
-                print(
-                    f"Successfully installed certificates in container {container_name}: {output.strip()}"
-                )
-                return True
-            else:
-                print(
-                    f"Failed to install certificates in container {container_name}: {output.strip()}"
-                )
-                return False
+                if exec_info.get("ExitCode", 0) == 0:
+                    print(
+                        f"Successfully installed certificates in container {container_name}: {output.strip()}"
+                    )
+                else:
+                    print(
+                        f"Failed to install certificates in container {container_name}: {output.strip()}"
+                    )
+                    success = False
 
-        except Exception as e:
-            print(
-                f"Exception while installing certificates in container {container_name}: {str(e)}"
-            )
-            return False
+            except Exception as e:
+                print(
+                    f"Exception while installing certificates in container {container_name}: {str(e)}"
+                )
+                success = False
+
+        return success
 
     async def delete_automation(self, deployment_id: str):
         await self.remove_automation_from_bitswan(deployment_id)
@@ -721,6 +737,7 @@ fi
         auth: bool | None = None,
         allowed_domains: list[str] | None = None,
         services: dict | None = None,
+        replicas: int | None = None,
     ):
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
@@ -751,6 +768,7 @@ fi
                 auth,
                 allowed_domains,
                 services,
+                replicas,
             ]
         )
         if has_updates:
@@ -788,6 +806,8 @@ fi
                 deployment_config["allowed_domains"] = allowed_domains
             if services is not None:
                 deployment_config["services"] = services
+            if replicas is not None:
+                deployment_config["replicas"] = replicas
 
             # Set active to True by default when deploying (unless explicitly set to False)
             if "active" not in deployment_config:
@@ -914,8 +934,77 @@ fi
             "result": deployment_result,
         }
 
+    async def scale_automation(self, deployment_id: str, replicas: int):
+        """Scale an automation to the specified number of replicas."""
+        os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+
+        if not bs_yaml or deployment_id not in bs_yaml.get("deployments", {}):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Deployment {deployment_id} not found",
+            )
+
+        deployment_config = bs_yaml["deployments"][deployment_id]
+        stage = deployment_config.get("stage", "production")
+        if stage == "":
+            stage = "production"
+
+        if stage == "live-dev":
+            raise HTTPException(
+                status_code=400,
+                detail="Scaling is not supported for live-dev deployments",
+            )
+
+        deployment_config["replicas"] = replicas
+
+        bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+        with open(bitswan_yaml_path, "w") as f:
+            yaml.dump(bs_yaml, f)
+
+        # Commit with a descriptive message using GitLockContext
+        async with GitLockContext(timeout=10.0):
+            await call_git_command(
+                "git", "add", "bitswan.yaml", cwd=self.gitops_dir
+            )
+            await call_git_command(
+                "git",
+                "commit",
+                "-m",
+                f"scale deployment {deployment_id} to {replicas} replicas",
+                cwd=self.gitops_dir,
+            )
+            await call_git_command("git", "push", cwd=self.gitops_dir)
+
+        # Regenerate docker-compose and deploy
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+        dc_yaml, infra_service_names = self.generate_docker_compose(bs_yaml)
+        self._save_docker_compose(dc_yaml)
+
+        deployment_result = await docker_compose_up(
+            self.gitops_dir, dc_yaml, deployment_id,
+            extra_services=infra_service_names,
+        )
+
+        for result in deployment_result.values():
+            if result["return_code"] != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error scaling deployment: \nstdout:\n {result['stdout']}\nstderr:\n{result['stderr']}\n",
+                )
+
+        # Run post-deploy hooks on all containers
+        await self.install_certificates_in_container(deployment_id)
+        await self.start_oauth2_proxy_in_container(deployment_id)
+
+        return {
+            "status": "success",
+            "message": f"Scaled deployment {deployment_id} to {replicas} replicas",
+            "replicas": replicas,
+        }
+
     async def start_automation(self, deployment_id: str):
-        """Start a container using async Docker client."""
+        """Start all containers for a deployment using async Docker client."""
         containers = await self.get_container(deployment_id)
 
         if not containers:
@@ -924,16 +1013,17 @@ fi
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container_id = containers[0].get("Id")
         docker_client = get_async_docker_client()
-        await docker_client.start_container(container_id)
+        for container in containers:
+            container_id = container.get("Id")
+            await docker_client.start_container(container_id)
 
         await self.install_certificates_in_container(deployment_id)
         await self.start_oauth2_proxy_in_container(deployment_id)
 
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} started successfully",
+            "message": f"Container(s) for deployment {deployment_id} started successfully",
         }
 
     async def mark_as_inactive(self, deployment_id: str):
@@ -990,7 +1080,7 @@ fi
         return active_deployments
 
     async def stop_automation(self, deployment_id: str):
-        """Stop a container using async Docker client."""
+        """Stop all containers for a deployment using async Docker client."""
         containers = await self.get_container(deployment_id)
 
         if not containers:
@@ -999,19 +1089,20 @@ fi
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container_id = containers[0].get("Id")
         docker_client = get_async_docker_client()
-        await docker_client.stop_container(container_id)
+        for container in containers:
+            container_id = container.get("Id")
+            await docker_client.stop_container(container_id)
 
         await self.mark_as_inactive(deployment_id)
 
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} stopped successfully",
+            "message": f"Container(s) for deployment {deployment_id} stopped successfully",
         }
 
     async def restart_automation(self, deployment_id: str):
-        """Restart a container using async Docker client."""
+        """Restart all containers for a deployment using async Docker client."""
         containers = await self.get_container(deployment_id)
 
         if not containers:
@@ -1020,16 +1111,17 @@ fi
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container_id = containers[0].get("Id")
         docker_client = get_async_docker_client()
-        await docker_client.restart_container(container_id)
+        for container in containers:
+            container_id = container.get("Id")
+            await docker_client.restart_container(container_id)
 
         await self.install_certificates_in_container(deployment_id)
         await self.start_oauth2_proxy_in_container(deployment_id)
 
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} restarted successfully",
+            "message": f"Container(s) for deployment {deployment_id} restarted successfully",
         }
 
     async def activate_automation(self, deployment_id: str):
@@ -1069,14 +1161,25 @@ fi
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container_id = containers[0].get("Id")
         docker_client = get_async_docker_client()
-        logs = await docker_client.get_container_logs(container_id, tail=lines)
+        multiple = len(containers) > 1
 
-        return {"status": "success", "logs": logs.split("\n")}
+        all_logs = []
+        for i, container in enumerate(containers):
+            container_id = container.get("Id")
+            logs = await docker_client.get_container_logs(container_id, tail=lines)
+            if multiple:
+                prefix = f"[replica-{i}] "
+                all_logs.extend(
+                    f"{prefix}{line}" for line in logs.split("\n")
+                )
+            else:
+                all_logs.extend(logs.split("\n"))
+
+        return {"status": "success", "logs": all_logs}
 
     async def remove_automation(self, deployment_id: str):
-        """Remove a container using async Docker client."""
+        """Remove all containers for a deployment using async Docker client."""
         containers = await self.get_container(deployment_id)
 
         if not containers:
@@ -1085,14 +1188,15 @@ fi
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container_id = containers[0].get("Id")
         docker_client = get_async_docker_client()
-        await docker_client.stop_container(container_id)
-        await docker_client.remove_container(container_id)
+        for container in containers:
+            container_id = container.get("Id")
+            await docker_client.stop_container(container_id)
+            await docker_client.remove_container(container_id)
 
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} removed successfully",
+            "message": f"Container(s) for deployment {deployment_id} removed successfully",
         }
 
     async def pull_and_deploy(self, branch_name: str):
@@ -1396,7 +1500,9 @@ fi
                 print("Skipping JWT token generation")
             else:
                 entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
-            entry["container_name"] = f"{self.workspace_name}__{deployment_id}"
+            replicas = conf.get("replicas", 1)
+            if replicas <= 1:
+                entry["container_name"] = f"{self.workspace_name}__{deployment_id}"
             entry["restart"] = "always"
             entry["labels"] = {
                 "gitops.deployment_id": deployment_id,
@@ -1483,15 +1589,32 @@ fi
             if network_mode:
                 entry["network_mode"] = network_mode
             elif "networks" in conf:
-                entry["networks"] = conf["networks"].copy()
+                networks_list = conf["networks"].copy()
             elif "default-networks" in bs_yaml:
-                entry["networks"] = bs_yaml["default-networks"].copy()
+                networks_list = bs_yaml["default-networks"].copy()
             else:
-                entry["networks"] = ["bitswan_network"]
-            if entry.get("networks"):
-                external_networks.update(set(entry["networks"]))
+                networks_list = ["bitswan_network"]
 
-            passthroughs = ["volumes", "ports", "devices", "container_name"]
+            if not network_mode:
+                if replicas > 1:
+                    # Use network aliases instead of container_name for DNS round-robin
+                    alias = f"{self.workspace_name}__{deployment_id}"
+                    entry["networks"] = {
+                        net: {"aliases": [alias]} for net in networks_list
+                    }
+                    entry["deploy"] = {"replicas": replicas}
+                else:
+                    entry["networks"] = networks_list
+
+            if entry.get("networks"):
+                if isinstance(entry["networks"], dict):
+                    external_networks.update(entry["networks"].keys())
+                else:
+                    external_networks.update(set(entry["networks"]))
+
+            passthroughs = ["volumes", "ports", "devices"]
+            if replicas <= 1:
+                passthroughs.append("container_name")
             entry.update({p: conf[p] for p in passthroughs if p in conf})
 
             deployment_dir = os.path.join(self.gitops_dir_host, source)

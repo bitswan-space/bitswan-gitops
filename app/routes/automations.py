@@ -59,6 +59,7 @@ async def deploy_automation(
         None
     ),  # comma-separated list of CORS allowed domains
     services: str | None = Form(None),  # JSON: {"kafka": {"enabled": true}, ...}
+    replicas: str | None = Form(None),  # replicas as string from form
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     # Validate stage if provided
@@ -81,6 +82,7 @@ async def deploy_automation(
         if allowed_domains
         else None
     )
+    replicas_int = int(replicas) if replicas else None
     import json as _json
 
     services_dict = None
@@ -104,6 +106,7 @@ async def deploy_automation(
         auth=auth_bool,
         allowed_domains=allowed_domains_list,
         services=services_dict,
+        replicas=replicas_int,
     )
 
 
@@ -131,6 +134,23 @@ async def restart_automation(
 ):
     # Now fully async using aiohttp Docker client
     return await automation_service.restart_automation(deployment_id)
+
+
+@router.post("/{deployment_id}/scale")
+async def scale_automation(
+    deployment_id: str,
+    replicas: str = Form(...),
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    try:
+        replicas_int = int(replicas)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="replicas must be an integer")
+    if replicas_int < 1:
+        raise HTTPException(
+            status_code=400, detail="replicas must be at least 1"
+        )
+    return await automation_service.scale_automation(deployment_id, replicas_int)
 
 
 @router.post("/{deployment_id}/activate")
