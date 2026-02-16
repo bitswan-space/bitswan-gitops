@@ -75,6 +75,7 @@ class KafkaService(InfraService):
         admin_password = generate_password()
         ui_password = generate_password()
         kafka_host = self.container_name
+        cluster_id = generate_cluster_id()
 
         jaas_config = (
             f"org.apache.kafka.common.security.plain.PlainLoginModule required "
@@ -86,6 +87,7 @@ class KafkaService(InfraService):
             f"KAFKA_ADMIN_PASSWORD={admin_password}",
             f"KAFKA_UI_PASSWORD={ui_password}",
             f"KAFKA_HOSTNAME={kafka_host}",
+            f"KAFKA_CLUSTER_ID={cluster_id}",
             f"KAFKA_LISTENER_NAME_SASL_PLAINTEXT_PLAIN_SASL_JAAS_CONFIG='{jaas_config}'",
             f"SPRING_SECURITY_USER_PASSWORD={ui_password}",
             f"KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG='{jaas_config}'",
@@ -102,8 +104,32 @@ class KafkaService(InfraService):
             logger.warning(f"Failed to stop Kafka UI container: {e}")
         return result
 
-    def _generate_compose_dict(self) -> dict:
+    def _read_cluster_id(self) -> str:
+        """Read the persisted Kafka cluster ID from the secrets file.
+
+        Falls back to generating a new ID (and appending it to the secrets
+        file) for backwards compatibility with deployments that predate
+        cluster ID persistence.
+        """
+        if os.path.exists(self.secrets_file_path):
+            with open(self.secrets_file_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("KAFKA_CLUSTER_ID="):
+                        return line.split("=", 1)[1]
+
+        # Backwards compat: generate once and persist
         cluster_id = generate_cluster_id()
+        if os.path.exists(self.secrets_file_path):
+            with open(self.secrets_file_path, "a") as f:
+                f.write(f"KAFKA_CLUSTER_ID={cluster_id}\n")
+            logger.info(
+                f"Persisted new Kafka cluster ID to {self.secrets_file_path}"
+            )
+        return cluster_id
+
+    def _generate_compose_dict(self) -> dict:
+        cluster_id = self._read_cluster_id()
 
         return {
             "version": "3",
