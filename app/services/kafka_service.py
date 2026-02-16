@@ -123,9 +123,7 @@ class KafkaService(InfraService):
         if os.path.exists(self.secrets_file_path):
             with open(self.secrets_file_path, "a") as f:
                 f.write(f"KAFKA_CLUSTER_ID={cluster_id}\n")
-            logger.info(
-                f"Persisted new Kafka cluster ID to {self.secrets_file_path}"
-            )
+            logger.info(f"Persisted new Kafka cluster ID to {self.secrets_file_path}")
         return cluster_id
 
     def _generate_compose_dict(self) -> dict:
