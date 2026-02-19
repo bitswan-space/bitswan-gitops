@@ -1858,6 +1858,22 @@ fi
                             status_code=500, detail="Error adding route to Caddy"
                         )
 
+            # Add the public hostname as a network alias so other containers
+            # on the same Docker network can reach this automation by its URL.
+            if expose and port and self.gitops_domain and not network_mode:
+                url_host = f"{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
+                networks = entry.get("networks")
+                if isinstance(networks, dict):
+                    for net_conf in networks.values():
+                        aliases = net_conf.setdefault("aliases", [])
+                        if url_host not in aliases:
+                            aliases.append(url_host)
+                elif isinstance(networks, list):
+                    # Convert list form to dict form so we can attach aliases
+                    entry["networks"] = {
+                        net: {"aliases": [url_host]} for net in networks
+                    }
+
             # Always pass Keycloak URL for JWT verification
             # KEYCLOAK_URL format: https://keycloak.example.com/realms/realm-name
             keycloak_url = os.environ.get("KEYCLOAK_URL", "")
