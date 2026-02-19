@@ -1676,6 +1676,17 @@ fi
             if self.gitops_domain:
                 entry["environment"]["BITSWAN_GITOPS_DOMAIN"] = self.gitops_domain
 
+            # Deployment and image checksums + deploy timestamp
+            deploy_checksum = conf.get("checksum")
+            if deploy_checksum:
+                entry["environment"]["BITSWAN_DEPLOY_CHECKSUM"] = deploy_checksum
+            image_checksum = conf.get("tag_checksum")
+            if image_checksum:
+                entry["environment"]["BITSWAN_IMAGE_CHECKSUM"] = image_checksum
+            entry["environment"]["BITSWAN_DEPLOY_TIME"] = (
+                datetime.utcnow().isoformat() + "Z"
+            )
+
             network_mode = None
             secret_groups = []
 
