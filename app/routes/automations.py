@@ -9,7 +9,7 @@ from fastapi import (
     Request,
     Header,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from app.services.automation_service import AutomationService
 from app.dependencies import get_automation_service
 import tempfile
@@ -175,6 +175,23 @@ async def get_automation_logs(
 ):
     # Now fully async using aiohttp Docker client
     return await automation_service.get_automation_logs(deployment_id, lines)
+
+
+@router.get("/{deployment_id}/logs/stream")
+async def stream_automation_logs(
+    deployment_id: str,
+    lines: int = Query(200, ge=1, le=10000),
+    since: int = Query(0, ge=0),
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    return StreamingResponse(
+        automation_service.stream_automation_logs(deployment_id, lines=lines, since=since),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/{deployment_id}")
