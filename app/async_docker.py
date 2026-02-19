@@ -3,9 +3,10 @@ Async Docker client using aiohttp to communicate with Docker daemon via Unix soc
 Replaces the synchronous docker-py library for better concurrency.
 """
 
+import asyncio
 import aiohttp
 import json
-from typing import Any, Optional
+from typing import Any, AsyncGenerator, Optional
 from urllib.parse import quote
 
 
@@ -173,6 +174,69 @@ class AsyncDockerClient:
             # We need to strip these headers to get clean log output
             raw_logs = await response.read()
             return _decode_docker_logs(raw_logs)
+
+    async def stream_container_logs(
+        self,
+        container_id: str,
+        tail: int = 200,
+        since: int = 0,
+        stdout: bool = True,
+        stderr: bool = True,
+    ) -> AsyncGenerator[str, None]:
+        """Stream container logs as an async generator. Yields decoded log lines."""
+        params = {
+            "follow": "true",
+            "tail": str(tail),
+            "timestamps": "true",
+            "stdout": "true" if stdout else "false",
+            "stderr": "true" if stderr else "false",
+        }
+        if since > 0:
+            params["since"] = str(since)
+
+        session = await self._get_session()
+        url = f"http://localhost/containers/{quote(container_id, safe='')}/logs"
+
+        try:
+            async with session.get(
+                url,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=0),
+            ) as response:
+                if response.status >= 400:
+                    data = await response.text()
+                    raise DockerError(response.status, data)
+
+                buf = b""
+                async for chunk in response.content.iter_any():
+                    buf += chunk
+                    # Docker multiplexed stream: 8-byte header + payload per frame
+                    while len(buf) >= 8:
+                        stream_type = buf[0]
+                        if stream_type not in (0, 1, 2):
+                            # Not multiplexed — treat as raw text
+                            lines = buf.decode("utf-8", errors="replace").split("\n")
+                            buf = b""
+                            for line in lines:
+                                stripped = line.rstrip("\r")
+                                if stripped:
+                                    yield stripped
+                            break
+
+                        frame_size = int.from_bytes(buf[4:8], byteorder="big")
+                        if len(buf) < 8 + frame_size:
+                            break  # wait for more data
+
+                        frame = buf[8 : 8 + frame_size]
+                        buf = buf[8 + frame_size :]
+                        text = frame.decode("utf-8", errors="replace")
+                        for line in text.split("\n"):
+                            stripped = line.rstrip("\r")
+                            if stripped:
+                                yield stripped
+        except (asyncio.IncompleteReadError, aiohttp.ClientPayloadError):
+            # Container stopped or connection lost — end the stream gracefully
+            return
 
     async def get_image(self, image_name: str) -> dict:
         """Get image details."""

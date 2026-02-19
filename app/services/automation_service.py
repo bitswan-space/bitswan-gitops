@@ -1237,6 +1237,83 @@ fi
 
         return {"status": "success", "logs": all_logs}
 
+    async def stream_automation_logs(
+        self, deployment_id: str, lines: int = 200, since: int = 0
+    ):
+        """Stream container logs as SSE events (async generator).
+
+        Yields SSE-formatted strings:
+          event: metadata  — replica count, container info
+          event: log       — {replica, line} for each log line
+          event: error     — per-replica errors
+          event: end       — all streams finished
+          : keepalive      — periodic to keep connection alive
+        """
+        containers = await self.get_container(deployment_id)
+
+        if not containers:
+            yield f"event: error\ndata: {json.dumps({'message': 'No containers found'})}\n\n"
+            yield "event: end\ndata: {}\n\n"
+            return
+
+        multiple = len(containers) > 1
+        metadata = {
+            "replicas": len(containers),
+            "containers": [
+                {
+                    "id": c.get("Id", "")[:12],
+                    "name": (c.get("Names") or ["unknown"])[0].lstrip("/"),
+                    "state": c.get("State", "unknown"),
+                }
+                for c in containers
+            ],
+        }
+        yield f"event: metadata\ndata: {json.dumps(metadata)}\n\n"
+
+        docker_client = get_async_docker_client()
+        queue: asyncio.Queue = asyncio.Queue()
+        active_tasks = len(containers)
+
+        async def read_replica(index: int, container_id: str):
+            nonlocal active_tasks
+            try:
+                async for line in docker_client.stream_container_logs(
+                    container_id, tail=lines, since=since
+                ):
+                    prefix = f"[replica-{index}] " if multiple else ""
+                    await queue.put(
+                        f"event: log\ndata: {json.dumps({'replica': index, 'line': prefix + line})}\n\n"
+                    )
+            except Exception as e:
+                await queue.put(
+                    f"event: error\ndata: {json.dumps({'replica': index, 'message': str(e)})}\n\n"
+                )
+            finally:
+                active_tasks -= 1
+                await queue.put(None)  # sentinel
+
+        tasks = []
+        for i, container in enumerate(containers):
+            container_id = container.get("Id")
+            tasks.append(asyncio.create_task(read_replica(i, container_id)))
+
+        sentinels_received = 0
+        keepalive_interval = 30
+        while sentinels_received < len(containers):
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=keepalive_interval)
+                if item is None:
+                    sentinels_received += 1
+                    continue
+                yield item
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+
+        yield "event: end\ndata: {}\n\n"
+
+        for task in tasks:
+            task.cancel()
+
     async def remove_automation(self, deployment_id: str):
         """Remove all containers for a deployment using async Docker client."""
         containers = await self.get_container(deployment_id)
