@@ -167,16 +167,6 @@ async def deactivate_automation(
     return await automation_service.deactivate_automation(deployment_id)
 
 
-@router.get("/{deployment_id}/logs")
-async def get_automation_logs(
-    deployment_id: str,
-    lines: int = 100,
-    automation_service: AutomationService = Depends(get_automation_service),
-):
-    # Now fully async using aiohttp Docker client
-    return await automation_service.get_automation_logs(deployment_id, lines)
-
-
 @router.get("/{deployment_id}/logs/stream")
 async def stream_automation_logs(
     deployment_id: str,
@@ -185,7 +175,9 @@ async def stream_automation_logs(
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     return StreamingResponse(
-        automation_service.stream_automation_logs(deployment_id, lines=lines, since=since),
+        automation_service.stream_automation_logs(
+            deployment_id, lines=lines, since=since
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

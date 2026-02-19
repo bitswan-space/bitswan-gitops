@@ -1212,31 +1212,6 @@ fi
             "message": f"Deployment {deployment_id} deactivated successfully",
         }
 
-    async def get_automation_logs(self, deployment_id: str, lines: int = 100):
-        """Get container logs using async Docker client."""
-        containers = await self.get_container(deployment_id)
-
-        if not containers:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No container found for deployment ID: {deployment_id}",
-            )
-
-        docker_client = get_async_docker_client()
-        multiple = len(containers) > 1
-
-        all_logs = []
-        for i, container in enumerate(containers):
-            container_id = container.get("Id")
-            logs = await docker_client.get_container_logs(container_id, tail=lines)
-            if multiple:
-                prefix = f"[replica-{i}] "
-                all_logs.extend(f"{prefix}{line}" for line in logs.split("\n"))
-            else:
-                all_logs.extend(logs.split("\n"))
-
-        return {"status": "success", "logs": all_logs}
-
     async def stream_automation_logs(
         self, deployment_id: str, lines: int = 200, since: int = 0
     ):
