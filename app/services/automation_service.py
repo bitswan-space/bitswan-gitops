@@ -1705,14 +1705,19 @@ fi
             if automation_config.config_format == "toml":
                 # For TOML format, use stage-specific secrets only (no fallback)
                 if stage == "live-dev":
-                    # live-dev uses its own secrets, or falls back to dev secrets
+                    # live-dev and dev share secrets — fall back to each other
                     secret_groups = (
                         automation_config.live_dev_groups
                         or automation_config.dev_groups
                         or []
                     )
-                elif stage == "dev" and automation_config.dev_groups:
-                    secret_groups = automation_config.dev_groups
+                elif stage == "dev":
+                    # dev and live-dev share secrets — fall back to each other
+                    secret_groups = (
+                        automation_config.dev_groups
+                        or automation_config.live_dev_groups
+                        or []
+                    )
                 elif stage == "staging" and automation_config.staging_groups:
                     secret_groups = automation_config.staging_groups
                 elif stage == "production" and automation_config.production_groups:
