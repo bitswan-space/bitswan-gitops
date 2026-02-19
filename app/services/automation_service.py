@@ -1675,6 +1675,17 @@ fi
                 entry["environment"]["BITSWAN_WORKSPACE_NAME"] = self.workspace_name
             if self.gitops_domain:
                 entry["environment"]["BITSWAN_GITOPS_DOMAIN"] = self.gitops_domain
+            # URL template for service discovery — automations can swap
+            # {name} to reach any other exposed automation in the same stage.
+            # Deployment IDs follow the convention: {name}-{stage} for
+            # non-production, and just {name} for production.
+            if self.workspace_name and self.gitops_domain:
+                stage_suffix = f"-{stage}" if stage and stage != "production" else ""
+                entry["environment"]["BITSWAN_URL_TEMPLATE"] = (
+                    f"https://{self.workspace_name}-"
+                    "{name}"
+                    f"{stage_suffix}.{self.gitops_domain}"
+                )
 
             # Deployment and image checksums + deploy timestamp
             deploy_checksum = conf.get("checksum")
