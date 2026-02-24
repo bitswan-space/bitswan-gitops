@@ -73,10 +73,7 @@ class GitLockContext:
 class AutomationConfig:
     """Unified automation configuration from either automation.toml or pipelines.conf."""
 
-    id: str | None = (
-        None  # Unique automation ID (used as Keycloak client_id when auth=True)
-    )
-    auth: bool = False  # Enable Keycloak authentication
+    id: str | None = None  # Unique automation ID
     image: str = "bitswan/pipeline-runtime-environment:latest"
     expose: bool = False
     expose_to: list[str] | None = None
@@ -128,7 +125,6 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
 
         return AutomationConfig(
             id=deployment.get("id"),
-            auth=deployment.get("auth", False),
             image=deployment.get(
                 "image", "bitswan/pipeline-runtime-environment:latest"
             ),
@@ -176,15 +172,13 @@ def read_automation_config(source_dir: str) -> AutomationConfig:
             expose_to_value = pipeline_conf.get("deployment", "expose_to")
             expose_to = [g.strip() for g in expose_to_value.split(",") if g.strip()]
 
-        # Parse id and auth for Keycloak
+        # Parse id for Keycloak
         automation_id = None
         if pipeline_conf.has_option("deployment", "id"):
             automation_id = pipeline_conf.get("deployment", "id")
-        auth = pipeline_conf.getboolean("deployment", "auth", fallback=False)
 
         return AutomationConfig(
             id=automation_id,
-            auth=auth,
             image=pipeline_conf.get(
                 "deployment",
                 "pre",

@@ -699,7 +699,6 @@ fi
         mount_path: str | None = None,
         secret_groups: list[str] | None = None,
         automation_id: str | None = None,
-        auth: bool | None = None,
         allowed_domains: list[str] | None = None,
     ):
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
@@ -728,7 +727,6 @@ fi
                 mount_path,
                 secret_groups,
                 automation_id,
-                auth,
                 allowed_domains,
             ]
         )
@@ -761,8 +759,6 @@ fi
                 deployment_config["secret_groups"] = secret_groups
             if automation_id is not None:
                 deployment_config["id"] = automation_id
-            if auth is not None:
-                deployment_config["auth"] = auth
             if allowed_domains is not None:
                 deployment_config["allowed_domains"] = allowed_domains
 
@@ -1145,64 +1141,6 @@ fi
             print(f"Warning: Exception while adding redirect URI to Keycloak: {str(e)}")
             return None
 
-    def get_or_create_public_client(
-        self,
-        client_id: str,
-        redirect_uri: str,
-        web_origins: list[str] | None = None,
-    ):
-        """
-        Get or create a public Keycloak client for frontend apps.
-
-        Args:
-            client_id: The client ID for the public client
-            redirect_uri: The redirect URI for this deployment
-            web_origins: List of allowed CORS origins for the client
-
-        Returns:
-            dict with client_id, issuer_url, etc. or None if failed
-        """
-        if not self.workspace_id:
-            print(
-                f"Warning: Workspace {self.workspace_name} is missing an ID, skipping public client creation"
-            )
-            return None
-        if not self.aoc_url or not self.aoc_token:
-            print(
-                "Warning: AOC URL or token not configured, skipping public client creation"
-            )
-            return None
-
-        url = f"{self.aoc_url}/api/automation_server/workspaces/{self.workspace_id}/keycloak/public-client/"
-
-        headers = {
-            "Authorization": f"Bearer {self.aoc_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-        }
-
-        if web_origins:
-            payload["web_origins"] = web_origins
-
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                print(f"Successfully got/created public client: {client_id}")
-                return result
-            else:
-                error_detail = (
-                    f"Keycloak API error: {response.status_code} - {response.text}"
-                )
-                print(f"Warning: Failed to get/create public client: {error_detail}")
-                return None
-        except Exception as e:
-            print(f"Warning: Exception while getting/creating public client: {str(e)}")
-            return None
-
     def generate_docker_compose(self, bs_yaml: dict):
         dc = {
             "version": "3",
@@ -1232,7 +1170,6 @@ fi
                 stored_mount_path = conf.get("mount_path", "/app/")
                 stored_secret_groups = conf.get("secret_groups")
                 stored_id = conf.get("id")
-                stored_auth = conf.get("auth", False)
                 stored_allowed_domains = conf.get("allowed_domains")
 
                 if not stored_image:
@@ -1242,7 +1179,6 @@ fi
                 # Create a minimal AutomationConfig from stored values
                 automation_config = AutomationConfig(
                     id=stored_id,
-                    auth=stored_auth,
                     image=stored_image,
                     expose=stored_expose,
                     port=stored_port,
@@ -1437,66 +1373,14 @@ fi
                             status_code=500, detail="Error adding route to Caddy"
                         )
 
-            # Always pass Keycloak URL for JWT verification
-            # KEYCLOAK_URL format: https://keycloak.example.com/realms/realm-name
-            keycloak_url = os.environ.get("KEYCLOAK_URL", "")
-            if keycloak_url:
-                entry["environment"]["KEYCLOAK_URL"] = (
-                    keycloak_url.rsplit("/realms/", 1)[0]
-                    if "/realms/" in keycloak_url
-                    else keycloak_url
-                )
-                entry["environment"]["KEYCLOAK_REALM"] = (
-                    keycloak_url.rsplit("/realms/", 1)[-1]
-                    if "/realms/" in keycloak_url
-                    else ""
-                )
-                entry["environment"]["KEYCLOAK_ISSUER_URL"] = keycloak_url
+            # Inject AOC URL for deployment auth (JWT verification via JWKS)
+            # Public AOC API URL is constructed from the gitops domain
+            aoc_public_url = f"https://api.{self.gitops_domain}"
+            entry["environment"]["AOC_URL"] = aoc_public_url
 
-            # Handle Keycloak public client for frontend apps
-            # Uses auth + id approach: when auth=true, id is used as Keycloak client_id
-            if automation_config.auth and automation_config.id:
-                # Build the redirect URI for this deployment
-                automation_url = f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
-                redirect_uri = f"{automation_url}/*"
-
-                # Build web_origins for CORS: automation URL + any allowed_domains from config
-                web_origins = [automation_url]
-                if automation_config.allowed_domains:
-                    web_origins.extend(automation_config.allowed_domains)
-
-                # Get or create the public client via AOC
-                client_result = self.get_or_create_public_client(
-                    client_id=automation_config.id,
-                    redirect_uri=redirect_uri,
-                    web_origins=web_origins,
-                )
-
-                if client_result:
-                    # Inject Keycloak client ID and override URL if available from client result
-                    entry["environment"]["KEYCLOAK_CLIENT_ID"] = client_result.get(
-                        "client_id", automation_config.id
-                    )
-                    if client_result.get("issuer_url"):
-                        issuer_url = client_result.get("issuer_url")
-                        entry["environment"]["KEYCLOAK_URL"] = (
-                            issuer_url.rsplit("/realms/", 1)[0]
-                            if "/realms/" in issuer_url
-                            else issuer_url
-                        )
-                        entry["environment"]["KEYCLOAK_REALM"] = (
-                            issuer_url.rsplit("/realms/", 1)[-1]
-                            if "/realms/" in issuer_url
-                            else ""
-                        )
-                        entry["environment"]["KEYCLOAK_ISSUER_URL"] = issuer_url
-                    print(
-                        f"Injected Keycloak config for client {automation_config.id} into deployment {deployment_id}"
-                    )
-                else:
-                    print(
-                        f"Warning: Failed to get/create public client {automation_config.id} for deployment {deployment_id}"
-                    )
+            # Inject workspace ID for deployment auth login flow
+            if self.workspace_id:
+                entry["environment"]["BITSWAN_WORKSPACE_ID"] = self.workspace_id
 
             if "volumes" not in entry:
                 entry["volumes"] = []
