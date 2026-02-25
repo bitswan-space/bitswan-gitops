@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 import json
 from tempfile import NamedTemporaryFile
@@ -10,6 +12,7 @@ from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
     AutomationConfig,
+    ServiceDependency,
     calculate_git_tree_hash,
     docker_compose_up,
     generate_workspace_url,
@@ -26,6 +29,8 @@ from app.utils import (
 from app.async_docker import get_async_docker_client, DockerError
 from app.services.image_service import ImageService
 from fastapi import UploadFile, HTTPException
+
+logger = logging.getLogger(__name__)
 
 
 class AutomationService:
@@ -52,8 +57,29 @@ class AutomationService:
         # Uses same path structure as jupyter_service for consistency
         self.workspace_dir = os.path.join(self.bs_home, "workspace")
         self.workspace_dir_host = os.path.join(self.bs_home_host, "workspace")
-        # Cache for automation history: key is (deployment_id, page, page_size), value is (commit_hash, response)
-        self._history_cache: dict[tuple[str, int, int], tuple[str, dict]] = {}
+        # Cache full history per deployment_id: {deployment_id: (commit_hash, [entries])}
+        self._history_cache: dict[str, tuple[str, list]] = {}
+
+    async def warm_history_cache(self):
+        """Pre-warm the history cache for all known deployments."""
+        logger = logging.getLogger(__name__)
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+        if not bs_yaml or "deployments" not in bs_yaml:
+            logger.info("History cache warm-up: no deployments found, skipping")
+            return
+
+        deployment_ids = list(bs_yaml["deployments"].keys())
+        logger.info(
+            f"History cache warm-up: warming {len(deployment_ids)} deployment(s)"
+        )
+        for deployment_id in deployment_ids:
+            try:
+                await self.get_automation_history(deployment_id)
+            except Exception as e:
+                logger.warning(
+                    f"History cache warm-up: failed for {deployment_id}: {e}"
+                )
+        logger.info("History cache warm-up: done")
 
     async def get_container(self, deployment_id) -> list[dict]:
         """Get containers for a specific deployment using async Docker client."""
@@ -108,6 +134,7 @@ class AutomationService:
                 version_hash=bs_yaml["deployments"][deployment_id].get(
                     "checksum", None
                 ),
+                replicas=bs_yaml["deployments"][deployment_id].get("replicas", 1),
             )
             for deployment_id in bs_yaml["deployments"]
         }
@@ -159,6 +186,7 @@ class AutomationService:
                     relative_path=pres[deployment_id].relative_path,
                     stage=pres[deployment_id].stage,
                     version_hash=pres[deployment_id].version_hash,
+                    replicas=pres[deployment_id].replicas,
                 )
 
         return list(pres.values())
@@ -389,10 +417,6 @@ class AutomationService:
         Cached responses are invalidated when the commit hash changes.
         """
 
-        # Get git log for bitswan.yaml file
-        # Use git log to get commits that modified bitswan.yaml
-        # Then parse each commit to see if it affected the deployment_id
-
         host_path = os.environ.get("HOST_PATH")
         if host_path:
             bitswan_dir = self.gitops_dir_host
@@ -402,20 +426,13 @@ class AutomationService:
         # Get the latest commit hash
         current_commit_hash = await self._get_latest_commit_hash(bitswan_dir)
 
-        # Check cache
-        cache_key = (deployment_id, page, page_size)
-        if cache_key in self._history_cache:
-            cached_commit_hash, cached_response = self._history_cache[cache_key]
-            # If commit hash matches, return cached response
+        # Check cache - we cache the full history per deployment, not per page
+        if deployment_id in self._history_cache:
+            cached_commit_hash, cached_entries = self._history_cache[deployment_id]
             if cached_commit_hash == current_commit_hash:
-                return cached_response
-            # If commit hash changed, invalidate all caches
+                return self._paginate_history(cached_entries, page, page_size)
             else:
                 self._history_cache.clear()
-
-        # Get git log for bitswan.yaml file
-        # Use git log to get commits that modified bitswan.yaml
-        # Then parse each commit to see if it affected the deployment_id
 
         # Get commits that modified bitswan.yaml
         log_format = '{"commit": "%H", "author": "%an", "date": "%ai", "message": "%s"}'
@@ -444,27 +461,36 @@ class AutomationService:
             except json.JSONDecodeError:
                 continue
 
-        # Now check each commit to see if it actually changed the deployment_id
+        # Fetch bitswan.yaml content for all commits in parallel (capped concurrency)
+        sem = asyncio.Semaphore(20)
+
+        async def fetch_yaml_at_commit(commit_hash: str) -> tuple[str, str | None]:
+            async with sem:
+                stdout, stderr, rc = await call_git_command_with_output(
+                    "git", "show", f"{commit_hash}:bitswan.yaml", cwd=bitswan_dir
+                )
+                if rc != 0:
+                    return commit_hash, None
+                return commit_hash, stdout
+
+        results = await asyncio.gather(
+            *[fetch_yaml_at_commit(c["commit"]) for c in commits]
+        )
+        content_by_hash = dict(results)
+
+        # Process sequentially to track checksum and replicas changes
         history_entries = []
         previous_checksum = None
+        previous_replicas = None
 
         for commit in commits:
             commit_hash = commit["commit"]
-
-            # Get the bitswan.yaml content at this commit
-            stdout, stderr, return_code = await call_git_command_with_output(
-                "git",
-                "show",
-                f"{commit_hash}:bitswan.yaml",
-                cwd=bitswan_dir,
-            )
-
-            if return_code != 0:
-                # File might not exist at this commit, skip
+            content = content_by_hash.get(commit_hash)
+            if content is None:
                 continue
 
             try:
-                commit_yaml = yaml.safe_load(stdout)
+                commit_yaml = yaml.safe_load(content)
                 if not commit_yaml or "deployments" not in commit_yaml:
                     continue
 
@@ -472,15 +498,18 @@ class AutomationService:
                     deployment_id
                 )
 
-                # Only add entry if there's a checksum and it's different from the previous one
                 if deployment_config is None:
-                    # Deployment doesn't exist in this commit, skip
                     continue
 
                 current_checksum = deployment_config.get("checksum")
+                current_replicas = deployment_config.get("replicas", 1)
 
-                # Only add entry if checksum exists and is different from previous checksum
-                if current_checksum and current_checksum != previous_checksum:
+                checksum_changed = (
+                    current_checksum and current_checksum != previous_checksum
+                )
+                replicas_changed = current_replicas != previous_replicas
+
+                if checksum_changed or replicas_changed:
                     entry = {
                         "commit": commit_hash,
                         "author": commit["author"],
@@ -491,135 +520,141 @@ class AutomationService:
                         "relative_path": deployment_config.get("relative_path"),
                         "active": deployment_config.get("active"),
                         "tag_checksum": deployment_config.get("tag_checksum"),
+                        "replicas": current_replicas,
                     }
                     history_entries.append(entry)
                     previous_checksum = current_checksum
+                    previous_replicas = current_replicas
 
             except yaml.YAMLError:
                 continue
 
-        # Paginate results
-        total = len(history_entries)
+        # Cache the full history list for this deployment
+        self._history_cache[deployment_id] = (current_commit_hash, history_entries)
+
+        return self._paginate_history(history_entries, page, page_size)
+
+    @staticmethod
+    def _paginate_history(entries: list, page: int, page_size: int) -> dict:
+        total = len(entries)
         start = (page - 1) * page_size
         end = start + page_size
-        paginated_entries = history_entries[start:end]
-
-        response = {
-            "items": paginated_entries,
+        return {
+            "items": entries[start:end],
             "total": total,
             "page": page,
             "page_size": page_size,
             "total_pages": (total + page_size - 1) // page_size,
         }
 
-        # Cache the response with the current commit hash
-        cache_key = (deployment_id, page, page_size)
-        self._history_cache[cache_key] = (current_commit_hash, response)
-
-        return response
-
     async def start_oauth2_proxy_in_container(self, deployment_id: str):
-        """Start oauth2-proxy in a running container after deployment"""
+        """Start oauth2-proxy in all running containers for a deployment"""
         containers = await self.get_container(deployment_id)
 
         if not containers:
             return False
 
-        container = containers[0]
-        container_id = container.get("Id")
-        labels = container.get("Labels", {})
-        container_name = container.get("Names", [deployment_id])[0].lstrip("/")
+        success = True
+        for container in containers:
+            container_id = container.get("Id")
+            labels = container.get("Labels", {})
+            container_name = container.get("Names", [deployment_id])[0].lstrip("/")
 
-        # Check if oauth2 is enabled via labels
-        if labels.get("gitops.oauth2.enabled") != "true":
-            return False
+            # Check if oauth2 is enabled via labels
+            if labels.get("gitops.oauth2.enabled") != "true":
+                continue
 
-        # Ensure container is running
-        state = container.get("State", "")
-        if state != "running":
-            print(
-                f"Warning: Container {container_name} is not running (status: {state}), cannot start oauth2-proxy"
-            )
-            return False
-
-        upstream_url = labels.get("gitops.oauth2.upstream")
-        if not upstream_url:
-            print(
-                f"Warning: No upstream URL found for oauth2-proxy in deployment {deployment_id}"
-            )
-            return False
-
-        try:
-            docker_client = get_async_docker_client()
-
-            # Check if oauth2-proxy is already running to avoid duplicates
-            exec_id = await docker_client.exec_create(
-                container_id, ["sh", "-c", "pgrep -f oauth2-proxy || true"]
-            )
-            output = await docker_client.exec_start(exec_id)
-            exec_info = await docker_client.exec_inspect(exec_id)
-
-            if exec_info.get("ExitCode") == 0 and output.strip():
-                print(f"oauth2-proxy already running in container {container_name}")
-                return True
-
-            # Start oauth2-proxy in the background
-            print(
-                f"Starting oauth2-proxy with upstream: {upstream_url} in container {container_name}"
-            )
-            cmd = [
-                "sh",
-                "-c",
-                f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &",
-            ]
-            exec_id = await docker_client.exec_create(container_id, cmd)
-            await docker_client.exec_start(exec_id)
-            exec_info = await docker_client.exec_inspect(exec_id)
-
-            if exec_info.get("ExitCode", 0) == 0:
+            # Ensure container is running
+            state = container.get("State", "")
+            if state != "running":
                 print(
-                    f"Successfully started oauth2-proxy in container {container_name}"
+                    f"Warning: Container {container_name} is not running (status: {state}), cannot start oauth2-proxy"
                 )
-                return True
-            else:
-                print(f"Failed to start oauth2-proxy in container {container_name}")
-                return False
+                success = False
+                continue
 
-        except Exception as e:
-            print(
-                f"Exception while starting oauth2-proxy in container {container_name}: {str(e)}"
-            )
-            return False
+            upstream_url = labels.get("gitops.oauth2.upstream")
+            if not upstream_url:
+                print(
+                    f"Warning: No upstream URL found for oauth2-proxy in deployment {deployment_id}"
+                )
+                success = False
+                continue
+
+            try:
+                docker_client = get_async_docker_client()
+
+                # Check if oauth2-proxy is already running to avoid duplicates
+                exec_id = await docker_client.exec_create(
+                    container_id, ["sh", "-c", "pgrep -f oauth2-proxy || true"]
+                )
+                output = await docker_client.exec_start(exec_id)
+                exec_info = await docker_client.exec_inspect(exec_id)
+
+                if exec_info.get("ExitCode") == 0 and output.strip():
+                    print(f"oauth2-proxy already running in container {container_name}")
+                    continue
+
+                # Start oauth2-proxy in the background
+                print(
+                    f"Starting oauth2-proxy with upstream: {upstream_url} in container {container_name}"
+                )
+                cmd = [
+                    "sh",
+                    "-c",
+                    f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &",
+                ]
+                exec_id = await docker_client.exec_create(container_id, cmd)
+                await docker_client.exec_start(exec_id)
+                exec_info = await docker_client.exec_inspect(exec_id)
+
+                if exec_info.get("ExitCode", 0) == 0:
+                    print(
+                        f"Successfully started oauth2-proxy in container {container_name}"
+                    )
+                else:
+                    print(f"Failed to start oauth2-proxy in container {container_name}")
+                    success = False
+
+            except Exception as e:
+                print(
+                    f"Exception while starting oauth2-proxy in container {container_name}: {str(e)}"
+                )
+                success = False
+
+        return success
 
     async def install_certificates_in_container(self, deployment_id: str):
-        """Install CA certificates in a running container after deployment"""
+        """Install CA certificates in all running containers for a deployment"""
         containers = await self.get_container(deployment_id)
 
         if not containers:
             return False
 
-        container = containers[0]
-        container_id = container.get("Id")
-        labels = container.get("Labels", {})
-        container_name = container.get("Names", [deployment_id])[0].lstrip("/")
+        success = True
+        for container in containers:
+            container_id = container.get("Id")
+            labels = container.get("Labels", {})
+            container_name = container.get("Names", [deployment_id])[0].lstrip("/")
 
-        # Check if certificate installation is enabled via labels
-        if labels.get("gitops.certs.enabled") != "true":
-            return False
+            # Check if certificate installation is enabled via labels
+            if labels.get("gitops.certs.enabled") != "true":
+                continue
 
-        # Ensure container is running
-        state = container.get("State", "")
-        if state != "running":
-            print(
-                f"Warning: Container {container_name} is not running (status: {state}), cannot install certificates"
-            )
-            return False
+            # Ensure container is running
+            state = container.get("State", "")
+            if state != "running":
+                print(
+                    f"Warning: Container {container_name} is not running (status: {state}), cannot install certificates"
+                )
+                success = False
+                continue
 
-        try:
-            docker_client = get_async_docker_client()
+            try:
+                docker_client = get_async_docker_client()
 
-            # Install certificates: copy from custom dir, rename .pem to .crt, and update
-            cert_install_script = """
+                # Install certificates: copy from custom dir, rename .pem to .crt, and update
+                cert_install_script = """
 if [ -d /usr/local/share/ca-certificates/custom ]; then
     cp /usr/local/share/ca-certificates/custom/*.crt /usr/local/share/ca-certificates/ 2>/dev/null || true
     cp /usr/local/share/ca-certificates/custom/*.pem /usr/local/share/ca-certificates/ 2>/dev/null || true
@@ -632,28 +667,29 @@ else
     echo "No custom CA certificates directory found"
 fi
 """
-            print(f"Installing CA certificates in container {container_name}")
-            cmd = ["sh", "-c", cert_install_script]
-            exec_id = await docker_client.exec_create(container_id, cmd)
-            output = await docker_client.exec_start(exec_id)
-            exec_info = await docker_client.exec_inspect(exec_id)
+                print(f"Installing CA certificates in container {container_name}")
+                cmd = ["sh", "-c", cert_install_script]
+                exec_id = await docker_client.exec_create(container_id, cmd)
+                output = await docker_client.exec_start(exec_id)
+                exec_info = await docker_client.exec_inspect(exec_id)
 
-            if exec_info.get("ExitCode", 0) == 0:
-                print(
-                    f"Successfully installed certificates in container {container_name}: {output.strip()}"
-                )
-                return True
-            else:
-                print(
-                    f"Failed to install certificates in container {container_name}: {output.strip()}"
-                )
-                return False
+                if exec_info.get("ExitCode", 0) == 0:
+                    print(
+                        f"Successfully installed certificates in container {container_name}: {output.strip()}"
+                    )
+                else:
+                    print(
+                        f"Failed to install certificates in container {container_name}: {output.strip()}"
+                    )
+                    success = False
 
-        except Exception as e:
-            print(
-                f"Exception while installing certificates in container {container_name}: {str(e)}"
-            )
-            return False
+            except Exception as e:
+                print(
+                    f"Exception while installing certificates in container {container_name}: {str(e)}"
+                )
+                success = False
+
+        return success
 
     async def delete_automation(self, deployment_id: str):
         await self.remove_automation_from_bitswan(deployment_id)
@@ -700,6 +736,8 @@ fi
         secret_groups: list[str] | None = None,
         automation_id: str | None = None,
         allowed_domains: list[str] | None = None,
+        services: dict | None = None,
+        replicas: int | None = None,
     ):
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
@@ -728,6 +766,8 @@ fi
                 secret_groups,
                 automation_id,
                 allowed_domains,
+                services,
+                replicas,
             ]
         )
         if has_updates:
@@ -761,6 +801,10 @@ fi
                 deployment_config["id"] = automation_id
             if allowed_domains is not None:
                 deployment_config["allowed_domains"] = allowed_domains
+            if services is not None:
+                deployment_config["services"] = services
+            if replicas is not None:
+                deployment_config["replicas"] = replicas
 
             # Set active to True by default when deploying (unless explicitly set to False)
             if "active" not in deployment_config:
@@ -777,14 +821,47 @@ fi
             # Re-read to get updated config
             bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
-        dc_yaml = self.generate_docker_compose(bs_yaml)
+        # Auto-enable declared services for this deployment.
+        # Check bitswan.yaml first, then fall back to automation config on disk
+        # so that promoted deployments (which don't have services in bitswan.yaml)
+        # still trigger service auto-enable.
+        deployment_conf = bs_yaml.get("deployments", {}).get(deployment_id, {}) or {}
+        deploy_services = services or deployment_conf.get("services")
+        deploy_stage = stage or deployment_conf.get("stage") or "production"
+        if deploy_stage == "":
+            deploy_stage = "production"
+
+        if not deploy_services and deploy_stage != "live-dev":
+            # Read services from automation config on disk
+            source = (
+                deployment_conf.get("source")
+                or deployment_conf.get("checksum")
+                or deployment_id
+            )
+            source_dir = os.path.join(self.gitops_dir, source)
+            if os.path.exists(source_dir):
+                auto_conf = read_automation_config(source_dir)
+                if auto_conf.services:
+                    deploy_services = {
+                        svc_name: {"enabled": svc_dep.enabled}
+                        for svc_name, svc_dep in auto_conf.services.items()
+                    }
+
+        if deploy_services:
+            await self.enable_services(deploy_services, deploy_stage)
+
+        dc_yaml, infra_service_names = self.generate_docker_compose(bs_yaml)
+        self._save_docker_compose(dc_yaml)
         deployments = bs_yaml.get("deployments", {})
 
         dc_config = yaml.safe_load(dc_yaml)
 
-        # deploy the automation
+        # deploy the automation and its infra services
         deployment_result = await docker_compose_up(
-            self.gitops_dir, dc_yaml, deployment_id
+            self.gitops_dir,
+            dc_yaml,
+            deployment_id,
+            extra_services=infra_service_names,
         )
 
         # record deployment in bitswan.yaml
@@ -843,9 +920,37 @@ fi
 
         filtered_bs_yaml = {"deployments": active_deployments}
 
-        dc_yaml = self.generate_docker_compose(filtered_bs_yaml)
+        # Auto-enable services for each active deployment.
+        # Read from bitswan.yaml first, fall back to automation config on disk.
+        for dep_id, dep_conf in active_deployments.items():
+            if dep_conf is None:
+                dep_conf = {}
+                active_deployments[dep_id] = dep_conf
+            dep_services = dep_conf.get("services")
+            dep_stage = dep_conf.get("stage") or "production"
+            if dep_stage == "":
+                dep_stage = "production"
+
+            if not dep_services and dep_stage != "live-dev":
+                source = dep_conf.get("source") or dep_conf.get("checksum") or dep_id
+                source_dir = os.path.join(self.gitops_dir, source)
+                if os.path.exists(source_dir):
+                    auto_conf = read_automation_config(source_dir)
+                    if auto_conf.services:
+                        dep_services = {
+                            svc_name: {"enabled": svc_dep.enabled}
+                            for svc_name, svc_dep in auto_conf.services.items()
+                        }
+
+            if dep_services:
+                await self.enable_services(dep_services, dep_stage)
+
+        dc_yaml, _infra_names = self.generate_docker_compose(filtered_bs_yaml)
+        self._save_docker_compose(dc_yaml)
         deployments = active_deployments
 
+        # deploy_automations starts all services (no filter), so infra services
+        # are included automatically via --remove-orphans
         deployment_result = await docker_compose_up(self.gitops_dir, dc_yaml)
 
         for result in deployment_result.values():
@@ -867,8 +972,96 @@ fi
             "result": deployment_result,
         }
 
+    async def scale_automation(self, deployment_id: str, replicas: int):
+        """Scale an automation to the specified number of replicas."""
+        os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+
+        if not bs_yaml or deployment_id not in bs_yaml.get("deployments", {}):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Deployment {deployment_id} not found",
+            )
+
+        deployment_config = bs_yaml["deployments"][deployment_id]
+        stage = deployment_config.get("stage", "production")
+        if stage == "":
+            stage = "production"
+
+        if stage == "live-dev":
+            raise HTTPException(
+                status_code=400,
+                detail="Scaling is not supported for live-dev deployments",
+            )
+
+        deployment_config["replicas"] = replicas
+
+        bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+        with open(bitswan_yaml_path, "w") as f:
+            yaml.dump(bs_yaml, f)
+
+        # Commit with a descriptive message using GitLockContext
+        async with GitLockContext(timeout=10.0):
+            await call_git_command("git", "add", "bitswan.yaml", cwd=self.gitops_dir)
+            await call_git_command(
+                "git",
+                "commit",
+                "-m",
+                f"scale deployment {deployment_id} to {replicas} replicas",
+                cwd=self.gitops_dir,
+            )
+            await call_git_command("git", "push", cwd=self.gitops_dir)
+
+        # Ensure infrastructure services are enabled/running
+        deploy_services = deployment_config.get("services")
+        if not deploy_services:
+            source = (
+                deployment_config.get("source")
+                or deployment_config.get("checksum")
+                or deployment_id
+            )
+            source_dir = os.path.join(self.gitops_dir, source)
+            if os.path.exists(source_dir):
+                auto_conf = read_automation_config(source_dir)
+                if auto_conf.services:
+                    deploy_services = {
+                        svc_name: {"enabled": svc_dep.enabled}
+                        for svc_name, svc_dep in auto_conf.services.items()
+                    }
+        if deploy_services:
+            await self.enable_services(deploy_services, stage)
+
+        # Regenerate docker-compose and deploy
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+        dc_yaml, infra_service_names = self.generate_docker_compose(bs_yaml)
+        self._save_docker_compose(dc_yaml)
+
+        deployment_result = await docker_compose_up(
+            self.gitops_dir,
+            dc_yaml,
+            deployment_id,
+            extra_services=infra_service_names,
+        )
+
+        for result in deployment_result.values():
+            if result["return_code"] != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error scaling deployment: \nstdout:\n {result['stdout']}\nstderr:\n{result['stderr']}\n",
+                )
+
+        # Run post-deploy hooks on all containers
+        await self.install_certificates_in_container(deployment_id)
+        await self.start_oauth2_proxy_in_container(deployment_id)
+
+        return {
+            "status": "success",
+            "message": f"Scaled deployment {deployment_id} to {replicas} replicas",
+            "replicas": replicas,
+        }
+
     async def start_automation(self, deployment_id: str):
-        """Start a container using async Docker client."""
+        """Start all containers for a deployment using async Docker client."""
         containers = await self.get_container(deployment_id)
 
         if not containers:
@@ -877,16 +1070,17 @@ fi
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container_id = containers[0].get("Id")
         docker_client = get_async_docker_client()
-        await docker_client.start_container(container_id)
+        for container in containers:
+            container_id = container.get("Id")
+            await docker_client.start_container(container_id)
 
         await self.install_certificates_in_container(deployment_id)
         await self.start_oauth2_proxy_in_container(deployment_id)
 
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} started successfully",
+            "message": f"Container(s) for deployment {deployment_id} started successfully",
         }
 
     async def mark_as_inactive(self, deployment_id: str):
@@ -943,7 +1137,7 @@ fi
         return active_deployments
 
     async def stop_automation(self, deployment_id: str):
-        """Stop a container using async Docker client."""
+        """Stop all containers for a deployment using async Docker client."""
         containers = await self.get_container(deployment_id)
 
         if not containers:
@@ -952,19 +1146,20 @@ fi
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container_id = containers[0].get("Id")
         docker_client = get_async_docker_client()
-        await docker_client.stop_container(container_id)
+        for container in containers:
+            container_id = container.get("Id")
+            await docker_client.stop_container(container_id)
 
         await self.mark_as_inactive(deployment_id)
 
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} stopped successfully",
+            "message": f"Container(s) for deployment {deployment_id} stopped successfully",
         }
 
     async def restart_automation(self, deployment_id: str):
-        """Restart a container using async Docker client."""
+        """Restart all containers for a deployment using async Docker client."""
         containers = await self.get_container(deployment_id)
 
         if not containers:
@@ -973,16 +1168,17 @@ fi
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container_id = containers[0].get("Id")
         docker_client = get_async_docker_client()
-        await docker_client.restart_container(container_id)
+        for container in containers:
+            container_id = container.get("Id")
+            await docker_client.restart_container(container_id)
 
         await self.install_certificates_in_container(deployment_id)
         await self.start_oauth2_proxy_in_container(deployment_id)
 
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} restarted successfully",
+            "message": f"Container(s) for deployment {deployment_id} restarted successfully",
         }
 
     async def activate_automation(self, deployment_id: str):
@@ -1012,24 +1208,85 @@ fi
             "message": f"Deployment {deployment_id} deactivated successfully",
         }
 
-    async def get_automation_logs(self, deployment_id: str, lines: int = 100):
-        """Get container logs using async Docker client."""
+    async def stream_automation_logs(
+        self, deployment_id: str, lines: int = 200, since: int = 0
+    ):
+        """Stream container logs as SSE events (async generator).
+
+        Yields SSE-formatted strings:
+          event: metadata  — replica count, container info
+          event: log       — {replica, line} for each log line
+          event: error     — per-replica errors
+          event: end       — all streams finished
+          : keepalive      — periodic to keep connection alive
+        """
         containers = await self.get_container(deployment_id)
 
         if not containers:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No container found for deployment ID: {deployment_id}",
-            )
+            yield f"event: error\ndata: {json.dumps({'message': 'No containers found'})}\n\n"
+            yield "event: end\ndata: {}\n\n"
+            return
 
-        container_id = containers[0].get("Id")
+        multiple = len(containers) > 1
+        metadata = {
+            "replicas": len(containers),
+            "containers": [
+                {
+                    "id": c.get("Id", "")[:12],
+                    "name": (c.get("Names") or ["unknown"])[0].lstrip("/"),
+                    "state": c.get("State", "unknown"),
+                }
+                for c in containers
+            ],
+        }
+        yield f"event: metadata\ndata: {json.dumps(metadata)}\n\n"
+
         docker_client = get_async_docker_client()
-        logs = await docker_client.get_container_logs(container_id, tail=lines)
+        queue: asyncio.Queue = asyncio.Queue()
+        active_tasks = len(containers)
 
-        return {"status": "success", "logs": logs.split("\n")}
+        async def read_replica(index: int, container_id: str):
+            nonlocal active_tasks
+            try:
+                async for line in docker_client.stream_container_logs(
+                    container_id, tail=lines, since=since
+                ):
+                    prefix = f"[replica-{index}] " if multiple else ""
+                    await queue.put(
+                        f"event: log\ndata: {json.dumps({'replica': index, 'line': prefix + line})}\n\n"
+                    )
+            except Exception as e:
+                await queue.put(
+                    f"event: error\ndata: {json.dumps({'replica': index, 'message': str(e)})}\n\n"
+                )
+            finally:
+                active_tasks -= 1
+                await queue.put(None)  # sentinel
+
+        tasks = []
+        for i, container in enumerate(containers):
+            container_id = container.get("Id")
+            tasks.append(asyncio.create_task(read_replica(i, container_id)))
+
+        sentinels_received = 0
+        keepalive_interval = 30
+        while sentinels_received < len(containers):
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=keepalive_interval)
+                if item is None:
+                    sentinels_received += 1
+                    continue
+                yield item
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+
+        yield "event: end\ndata: {}\n\n"
+
+        for task in tasks:
+            task.cancel()
 
     async def remove_automation(self, deployment_id: str):
-        """Remove a container using async Docker client."""
+        """Remove all containers for a deployment using async Docker client."""
         containers = await self.get_container(deployment_id)
 
         if not containers:
@@ -1038,14 +1295,15 @@ fi
                 detail=f"No container found for deployment ID: {deployment_id}",
             )
 
-        container_id = containers[0].get("Id")
         docker_client = get_async_docker_client()
-        await docker_client.stop_container(container_id)
-        await docker_client.remove_container(container_id)
+        for container in containers:
+            container_id = container.get("Id")
+            await docker_client.stop_container(container_id)
+            await docker_client.remove_container(container_id)
 
         return {
             "status": "success",
-            "message": f"Container for deployment {deployment_id} removed successfully",
+            "message": f"Container(s) for deployment {deployment_id} removed successfully",
         }
 
     async def pull_and_deploy(self, branch_name: str):
@@ -1149,7 +1407,9 @@ fi
         external_networks = {"bitswan_network"}
         deployments = bs_yaml.get("deployments", {})
         for deployment_id, conf in deployments.items():
-            conf = conf or {}
+            if conf is None:
+                conf = {}
+                deployments[deployment_id] = conf
             entry = {}
 
             source = conf.get("source") or conf.get("checksum") or deployment_id
@@ -1187,6 +1447,18 @@ fi
                     live_dev_groups=stored_secret_groups,
                     allowed_domains=stored_allowed_domains,
                 )
+                # Read services from stored config (sent by extension)
+                stored_services = conf.get("services")
+                if stored_services:
+                    svc_deps = {}
+                    for svc_name, svc_conf in stored_services.items():
+                        enabled = (
+                            svc_conf.get("enabled", True)
+                            if isinstance(svc_conf, dict)
+                            else bool(svc_conf)
+                        )
+                        svc_deps[svc_name] = ServiceDependency(enabled=enabled)
+                    automation_config.services = svc_deps
                 pipeline_conf = None
             elif not os.path.exists(source_dir):
                 raise HTTPException(
@@ -1196,6 +1468,18 @@ fi
             else:
                 pipeline_conf = read_pipeline_conf(source_dir)
                 automation_config = read_automation_config(source_dir)
+
+            # Ensure services from automation config on disk are reflected in
+            # the deployment conf so _merge_infra_services() can discover them.
+            # Without this, promoted deployments (dev/staging/production) whose
+            # bitswan.yaml entry lacks a "services" key would be invisible to
+            # the infra-service merge step, and their Kafka/CouchDB/etc.
+            # containers could be removed as orphans.
+            if automation_config.services and not conf.get("services"):
+                conf["services"] = {
+                    svc_name: {"enabled": svc_dep.enabled}
+                    for svc_name, svc_dep in automation_config.services.items()
+                }
 
             if self.workspace_id and self.aoc_url and self.aoc_token:
                 # generate jwt token for automation
@@ -1212,7 +1496,9 @@ fi
                 print("Skipping JWT token generation")
             else:
                 entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
-            entry["container_name"] = f"{self.workspace_name}__{deployment_id}"
+            replicas = conf.get("replicas", 1)
+            if replicas <= 1:
+                entry["container_name"] = f"{self.workspace_name}__{deployment_id}"
             entry["restart"] = "always"
             entry["labels"] = {
                 "gitops.deployment_id": deployment_id,
@@ -1230,6 +1516,28 @@ fi
                 entry["environment"]["BITSWAN_WORKSPACE_NAME"] = self.workspace_name
             if self.gitops_domain:
                 entry["environment"]["BITSWAN_GITOPS_DOMAIN"] = self.gitops_domain
+            # URL template for service discovery — automations can swap
+            # {name} to reach any other exposed automation in the same stage.
+            # Deployment IDs follow the convention: {name}-{stage} for
+            # non-production, and just {name} for production.
+            if self.workspace_name and self.gitops_domain:
+                stage_suffix = f"-{stage}" if stage and stage != "production" else ""
+                entry["environment"]["BITSWAN_URL_TEMPLATE"] = (
+                    f"https://{self.workspace_name}-"
+                    "{name}"
+                    f"{stage_suffix}.{self.gitops_domain}"
+                )
+
+            # Deployment and image checksums + deploy timestamp
+            deploy_checksum = conf.get("checksum")
+            if deploy_checksum:
+                entry["environment"]["BITSWAN_DEPLOY_CHECKSUM"] = deploy_checksum
+            image_checksum = conf.get("tag_checksum")
+            if image_checksum:
+                entry["environment"]["BITSWAN_IMAGE_CHECKSUM"] = image_checksum
+            entry["environment"]["BITSWAN_DEPLOY_TIME"] = (
+                datetime.utcnow().isoformat() + "Z"
+            )
 
             network_mode = None
             secret_groups = []
@@ -1281,21 +1589,50 @@ fi
                             entry["env_file"] = []
                         entry["env_file"].append(secret_env_file)
 
+            # Inject service dependency secrets (from [services.*] in automation.toml)
+            service_secret_names = self._resolve_service_secrets(
+                automation_config, stage
+            )
+            for svc_secret_name in service_secret_names:
+                svc_secret_path = os.path.join(self.secrets_dir, svc_secret_name)
+                if os.path.exists(svc_secret_path):
+                    if not entry.get("env_file"):
+                        entry["env_file"] = []
+                    if svc_secret_path not in entry["env_file"]:
+                        entry["env_file"].append(svc_secret_path)
+
             if not network_mode:
                 network_mode = conf.get("network_mode")
 
             if network_mode:
                 entry["network_mode"] = network_mode
             elif "networks" in conf:
-                entry["networks"] = conf["networks"].copy()
+                networks_list = conf["networks"].copy()
             elif "default-networks" in bs_yaml:
-                entry["networks"] = bs_yaml["default-networks"].copy()
+                networks_list = bs_yaml["default-networks"].copy()
             else:
-                entry["networks"] = ["bitswan_network"]
-            if entry.get("networks"):
-                external_networks.update(set(entry["networks"]))
+                networks_list = ["bitswan_network"]
 
-            passthroughs = ["volumes", "ports", "devices", "container_name"]
+            if not network_mode:
+                if replicas > 1:
+                    # Use network aliases instead of container_name for DNS round-robin
+                    alias = f"{self.workspace_name}__{deployment_id}"
+                    entry["networks"] = {
+                        net: {"aliases": [alias]} for net in networks_list
+                    }
+                    entry["deploy"] = {"replicas": replicas}
+                else:
+                    entry["networks"] = networks_list
+
+            if entry.get("networks"):
+                if isinstance(entry["networks"], dict):
+                    external_networks.update(entry["networks"].keys())
+                else:
+                    external_networks.update(set(entry["networks"]))
+
+            passthroughs = ["volumes", "ports", "devices"]
+            if replicas <= 1:
+                passthroughs.append("container_name")
             entry.update({p: conf[p] for p in passthroughs if p in conf})
 
             deployment_dir = os.path.join(self.gitops_dir_host, source)
@@ -1373,10 +1710,22 @@ fi
                             status_code=500, detail="Error adding route to Caddy"
                         )
 
-            # Inject AOC URL for deployment auth (JWT verification via JWKS)
-            # Public AOC API URL is constructed from the gitops domain
-            aoc_public_url = f"https://api.{self.gitops_domain}"
-            entry["environment"]["AOC_URL"] = aoc_public_url
+
+            # Add the public hostname as a network alias so other containers
+            # on the same Docker network can reach this automation by its URL.
+            if expose and port and self.gitops_domain and not network_mode:
+                url_host = f"{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
+                networks = entry.get("networks")
+                if isinstance(networks, dict):
+                    for net_conf in networks.values():
+                        aliases = net_conf.setdefault("aliases", [])
+                        if url_host not in aliases:
+                            aliases.append(url_host)
+                elif isinstance(networks, list):
+                    # Convert list form to dict form so we can attach aliases
+                    entry["networks"] = {
+                        net: {"aliases": [url_host]} for net in networks
+                    }
 
             # Inject workspace ID for deployment auth login flow
             if self.workspace_id:
@@ -1410,8 +1759,94 @@ fi
             if conf.get("enabled", True):
                 dc["services"][deployment_id] = entry
 
+        # Merge infra service entries (Kafka, CouchDB, etc.) for enabled services
+        infra_service_names = self._merge_infra_services(
+            dc, deployments, external_networks
+        )
+
         dc["networks"] = {}
         for network in external_networks:
             dc["networks"][network] = {"external": True}
         dc_yaml = yaml.dump(dc)
-        return dc_yaml
+        return dc_yaml, infra_service_names
+
+    def _save_docker_compose(self, dc_yaml: str) -> None:
+        """Save the generated docker-compose.yaml to the gitops directory for debugging."""
+        dc_path = os.path.join(self.gitops_dir, "docker-compose.yaml")
+        with open(dc_path, "w") as f:
+            f.write(dc_yaml)
+        logger.info(f"Saved docker-compose.yaml to {dc_path}")
+
+    def _merge_infra_services(
+        self, dc: dict, deployments: dict, external_networks: set
+    ) -> list[str]:
+        """Merge enabled infra service compose dicts into the main docker-compose.
+
+        Returns the list of compose service names that were merged.
+        """
+        from app.services.infra_service import get_service, stage_for_deployment
+
+        merged_service_names: list[str] = []
+
+        # Collect unique (service_type, stage) pairs from all deployments
+        seen: set[tuple[str, str]] = set()
+        for dep_conf in deployments.values():
+            dep_conf = dep_conf or {}
+            dep_services = dep_conf.get("services")
+            if not dep_services:
+                continue
+            dep_stage = dep_conf.get("stage") or "production"
+            mapped_stage = stage_for_deployment(dep_stage)
+            for svc_type, svc_conf in dep_services.items():
+                enabled = (
+                    svc_conf.get("enabled", True)
+                    if isinstance(svc_conf, dict)
+                    else bool(svc_conf)
+                )
+                if enabled:
+                    seen.add((svc_type, mapped_stage))
+
+        # For each enabled service, generate and merge its compose dict
+        for svc_type, svc_stage in seen:
+            try:
+                svc = get_service(svc_type, self.workspace_name, stage=svc_stage)
+            except ValueError:
+                logger.warning(
+                    f"Unknown service type '{svc_type}', skipping compose merge"
+                )
+                continue
+
+            if not svc.is_enabled():
+                logger.warning(
+                    f"{svc.display_name} is declared by a deployment but not enabled "
+                    f"(secrets file missing at {svc.secrets_file_path}). "
+                    f"Skipping compose merge — this service will NOT run."
+                )
+                continue
+
+            # Hook for services that need extra config before compose generation.
+            svc.ensure_config()
+
+            svc_compose = svc._generate_compose_dict()
+
+            # Merge services
+            for svc_name, svc_entry in svc_compose.get("services", {}).items():
+                if svc_name not in dc["services"]:
+                    dc["services"][svc_name] = svc_entry
+                    merged_service_names.append(svc_name)
+
+            # Merge volumes
+            svc_volumes = svc_compose.get("volumes", {})
+            if svc_volumes:
+                if "volumes" not in dc:
+                    dc["volumes"] = {}
+                for vol_name, vol_conf in svc_volumes.items():
+                    if vol_name not in dc["volumes"]:
+                        dc["volumes"][vol_name] = vol_conf
+
+            # Collect networks
+            for net_name, net_conf in svc_compose.get("networks", {}).items():
+                if net_conf and net_conf.get("external"):
+                    external_networks.add(net_name)
+
+        return merged_service_names

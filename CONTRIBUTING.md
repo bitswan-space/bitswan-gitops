@@ -34,3 +34,33 @@ Enabling DEBUG=true for hot-reload support
 ```bash
 bitswan workspace update <workspace-name> --disable-dev-mode
 ```
+
+## Running Tests
+
+The project uses [pytest](https://docs.pytest.org/) with end-to-end tests that spin up a real uvicorn server against a temporary git repository.
+
+### Setup
+
+```bash
+uv venv .venv
+uv pip install -e ".[dev]"
+```
+
+### Run all tests
+
+```bash
+.venv/bin/python -m pytest tests -v
+```
+
+### What the tests do
+
+The E2E suite (`tests/test_automation_history_e2e.py`):
+
+1. Creates a temp git repo with known `bitswan.yaml` commits
+2. Starts a real uvicorn server (including lifespan and background cache warm-up)
+3. Makes HTTP requests against the running server
+4. Verifies correctness, pagination, cache consistency, and concurrent request safety
+
+### CI
+
+Tests run automatically on every push and pull request via GitHub Actions (`.github/workflows/lint.yml`).

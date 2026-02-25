@@ -9,7 +9,7 @@ from fastapi import (
     Request,
     Header,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from app.services.automation_service import AutomationService
 from app.dependencies import get_automation_service
 import tempfile
@@ -57,6 +57,8 @@ async def deploy_automation(
     allowed_domains: str | None = Form(
         None
     ),  # comma-separated list of CORS allowed domains
+    services: str | None = Form(None),  # JSON: {"kafka": {"enabled": true}, ...}
+    replicas: str | None = Form(None),  # replicas as string from form
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     # Validate stage if provided
@@ -78,6 +80,15 @@ async def deploy_automation(
         if allowed_domains
         else None
     )
+    replicas_int = int(replicas) if replicas else None
+    import json as _json
+
+    services_dict = None
+    if services:
+        try:
+            services_dict = _json.loads(services)
+        except _json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid services JSON")
 
     return await automation_service.deploy_automation(
         deployment_id,
@@ -91,6 +102,8 @@ async def deploy_automation(
         secret_groups=secret_groups_list,
         automation_id=automation_id,
         allowed_domains=allowed_domains_list,
+        services=services_dict,
+        replicas=replicas_int,
     )
 
 
@@ -120,6 +133,21 @@ async def restart_automation(
     return await automation_service.restart_automation(deployment_id)
 
 
+@router.post("/{deployment_id}/scale")
+async def scale_automation(
+    deployment_id: str,
+    replicas: str = Form(...),
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    try:
+        replicas_int = int(replicas)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="replicas must be an integer")
+    if replicas_int < 1:
+        raise HTTPException(status_code=400, detail="replicas must be at least 1")
+    return await automation_service.scale_automation(deployment_id, replicas_int)
+
+
 @router.post("/{deployment_id}/activate")
 async def activate_automation(
     deployment_id: str,
@@ -136,14 +164,23 @@ async def deactivate_automation(
     return await automation_service.deactivate_automation(deployment_id)
 
 
-@router.get("/{deployment_id}/logs")
-async def get_automation_logs(
+@router.get("/{deployment_id}/logs/stream")
+async def stream_automation_logs(
     deployment_id: str,
-    lines: int = 100,
+    lines: int = Query(200, ge=1, le=10000),
+    since: int = Query(0, ge=0),
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    # Now fully async using aiohttp Docker client
-    return await automation_service.get_automation_logs(deployment_id, lines)
+    return StreamingResponse(
+        automation_service.stream_automation_logs(
+            deployment_id, lines=lines, since=since
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/{deployment_id}")
