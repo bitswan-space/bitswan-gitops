@@ -1,3 +1,9 @@
+import asyncio
+import json as _json
+import logging
+import os
+import tempfile
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -10,10 +16,13 @@ from fastapi import (
     Header,
 )
 from fastapi.responses import JSONResponse, StreamingResponse
+
+from app.deploy_manager import DeployManager, DeployStatus, DeployStep, deploy_manager
+from app.event_broadcaster import event_broadcaster
 from app.services.automation_service import AutomationService
 from app.dependencies import get_automation_service
-import tempfile
-import os
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/automations", tags=["automations"])
 
@@ -41,6 +50,73 @@ async def pull_and_deploy(
     return await automation_service.pull_and_deploy(branch_name)
 
 
+async def _run_deploy_with_progress(
+    task_id: str,
+    deployment_id: str,
+    automation_service: AutomationService,
+    deploy_kwargs: dict,
+):
+    """Background coroutine that runs deploy_automation with progress broadcasting."""
+
+    async def progress_callback(step: str, message: str):
+        # Never set COMPLETED here — only _run_deploy_with_progress decides success/failure
+        deploy_step = DeployStep(step)
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.IN_PROGRESS,
+            step=deploy_step,
+            message=message,
+        )
+        task = deploy_manager.get_task(task_id)
+        if task:
+            await event_broadcaster.broadcast("deploy_progress", task.to_dict())
+
+    async def _broadcast_task():
+        task = deploy_manager.get_task(task_id)
+        if task:
+            await event_broadcaster.broadcast("deploy_progress", task.to_dict())
+
+    try:
+        await deploy_manager.update_task(
+            task_id, status=DeployStatus.IN_PROGRESS, message="Starting deployment..."
+        )
+        await _broadcast_task()
+
+        await automation_service.deploy_automation(
+            **deploy_kwargs, progress_callback=progress_callback
+        )
+
+        # deploy_automation returned without exception → success
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.COMPLETED,
+            step=DeployStep.DONE,
+            message="Deployment completed successfully",
+        )
+        await _broadcast_task()
+    except Exception as exc:
+        logger.exception("Deploy failed for %s (task %s)", deployment_id, task_id)
+        error_detail = str(exc)
+        if hasattr(exc, "detail"):
+            error_detail = exc.detail
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.FAILED,
+            error=error_detail,
+            message="Deployment failed",
+        )
+        await _broadcast_task()
+
+
+@router.get("/deploy-status/{task_id}")
+async def get_deploy_status(task_id: str):
+    """Poll fallback for SSE drops — returns current deploy task state."""
+    task = deploy_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Deploy task not found")
+    return task.to_dict()
+
+
 @router.post("/{deployment_id}/deploy")
 async def deploy_automation(
     deployment_id: str,
@@ -62,6 +138,13 @@ async def deploy_automation(
     replicas: str | None = Form(None),  # replicas as string from form
     automation_service: AutomationService = Depends(get_automation_service),
 ):
+    # Guard: reject if already deploying
+    if deploy_manager.is_deploying(deployment_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Deployment {deployment_id} is already in progress",
+        )
+
     # Validate stage if provided
     if stage is not None and stage not in ["dev", "staging", "production", "live-dev"]:
         raise HTTPException(
@@ -83,7 +166,6 @@ async def deploy_automation(
         else None
     )
     replicas_int = int(replicas) if replicas else None
-    import json as _json
 
     services_dict = None
     if services:
@@ -92,8 +174,16 @@ async def deploy_automation(
         except _json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid services JSON")
 
-    return await automation_service.deploy_automation(
-        deployment_id,
+    # Create tracked deploy task
+    task = await deploy_manager.create_task(deployment_id)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Deployment {deployment_id} is already in progress",
+        )
+
+    deploy_kwargs = dict(
+        deployment_id=deployment_id,
         checksum=checksum,
         stage=stage,
         relative_path=relative_path,
@@ -107,6 +197,22 @@ async def deploy_automation(
         allowed_domains=allowed_domains_list,
         services=services_dict,
         replicas=replicas_int,
+    )
+
+    # Spawn background task — returns 202 immediately
+    asyncio.create_task(
+        _run_deploy_with_progress(
+            task.task_id, deployment_id, automation_service, deploy_kwargs
+        )
+    )
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "task_id": task.task_id,
+            "deployment_id": deployment_id,
+            "status": "pending",
+        },
     )
 
 
