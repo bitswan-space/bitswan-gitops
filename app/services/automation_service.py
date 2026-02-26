@@ -486,10 +486,7 @@ class AutomationService:
 
             # Fetch bitswan.yaml content for this batch in parallel
             results = await asyncio.gather(
-                *[
-                    self._fetch_yaml_at_commit(c["commit"], bitswan_dir)
-                    for c in batch
-                ]
+                *[self._fetch_yaml_at_commit(c["commit"], bitswan_dir) for c in batch]
             )
             content_by_hash = dict(results)
 
@@ -881,7 +878,9 @@ fi
             await _report("enabling_services", "Enabling declared services...")
             await self.enable_services(deploy_services, deploy_stage)
 
-        await _report("generating_compose", "Generating docker-compose configuration...")
+        await _report(
+            "generating_compose", "Generating docker-compose configuration..."
+        )
         dc_yaml, infra_service_names = self.generate_docker_compose(bs_yaml)
         self._save_docker_compose(dc_yaml)
         deployments = bs_yaml.get("deployments", {})
