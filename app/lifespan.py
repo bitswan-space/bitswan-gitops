@@ -13,6 +13,7 @@ from watchdog.events import FileSystemEventHandler
 
 from .async_docker import get_async_docker_client
 from .dependencies import get_automation_service
+from .deploy_manager import deploy_manager
 from .event_broadcaster import event_broadcaster
 from .mqtt import mqtt_resource
 from .mqtt_publish_automations import publish_automations
@@ -145,6 +146,14 @@ async def lifespan(app: FastAPI):
             print(f"Started watching workspace directory: {workspace_dir}")
         else:
             print(f"Workspace directory does not exist: {workspace_dir}")
+
+        # Clean up completed/failed deploy tasks every 10 minutes
+        scheduler.add_job(
+            deploy_manager.cleanup_old_tasks,
+            trigger="interval",
+            minutes=10,
+            name="cleanup_deploy_tasks",
+        )
 
         scheduler.start()
 

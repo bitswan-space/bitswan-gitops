@@ -7,7 +7,7 @@ import zipfile
 import yaml
 import requests
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
@@ -739,7 +739,12 @@ fi
         allowed_domains: list[str] | None = None,
         services: dict | None = None,
         replicas: int | None = None,
+        progress_callback: Callable[..., Any] | None = None,
     ):
+        async def _report(step: str, message: str):
+            if progress_callback is not None:
+                await progress_callback(step, message)
+
         os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
@@ -752,6 +757,8 @@ fi
             await update_git(
                 self.gitops_dir, self.gitops_dir_host, deployment_id, "initialize"
             )
+
+        await _report("updating_config", "Updating deployment configuration...")
 
         # Update bitswan.yaml with new parameters if provided
         has_updates = any(
@@ -852,8 +859,10 @@ fi
                     }
 
         if deploy_services:
+            await _report("enabling_services", "Enabling declared services...")
             await self.enable_services(deploy_services, deploy_stage)
 
+        await _report("generating_compose", "Generating docker-compose configuration...")
         dc_yaml, infra_service_names = self.generate_docker_compose(bs_yaml)
         self._save_docker_compose(dc_yaml)
         deployments = bs_yaml.get("deployments", {})
@@ -861,6 +870,7 @@ fi
         dc_config = yaml.safe_load(dc_yaml)
 
         # deploy the automation and its infra services
+        await _report("docker_compose_up", "Starting containers...")
         deployment_result = await docker_compose_up(
             self.gitops_dir,
             dc_yaml,
@@ -882,10 +892,13 @@ fi
                     detail=f"Error deploying services: \ndocker-compose:\n {dc_yaml}\n\nstdout:\n {result['stdout']}\nstderr:\n{result['stderr']}\n",
                 )
 
+        await _report("installing_certs", "Installing certificates...")
         await self.install_certificates_in_container(deployment_id)
+        await _report("starting_oauth2_proxy", "Starting OAuth2 proxy...")
         await self.start_oauth2_proxy_in_container(deployment_id)
 
         if image_tag:
+            await _report("storing_tags", "Recording image tag...")
             bs_yaml = read_bitswan_yaml(self.gitops_dir)
             if (
                 bs_yaml

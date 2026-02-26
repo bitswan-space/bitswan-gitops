@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.dependencies import get_automation_service, get_image_service
+from app.deploy_manager import deploy_manager
 from app.event_broadcaster import event_broadcaster
 
 router = APIRouter(tags=["events"])
@@ -31,6 +32,10 @@ async def stream_events():
 
             images = await get_image_service().get_images()
             yield f"event: images\ndata: {json.dumps(images)}\n\n"
+
+            # Send active deploy tasks so reconnecting clients pick up current state
+            for task in deploy_manager.get_all_active_tasks():
+                yield f"event: deploy_progress\ndata: {json.dumps(task.to_dict())}\n\n"
 
             while True:
                 try:
