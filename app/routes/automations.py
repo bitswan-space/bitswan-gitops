@@ -17,7 +17,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.deploy_manager import DeployManager, DeployStatus, DeployStep, deploy_manager
+from app.deploy_manager import DeployStatus, DeployStep, deploy_manager
 from app.event_broadcaster import event_broadcaster
 from app.services.automation_service import AutomationService
 from app.dependencies import get_automation_service
