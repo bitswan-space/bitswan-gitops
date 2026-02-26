@@ -751,7 +751,6 @@ fi
         mount_path: str | None = None,
         secret_groups: list[str] | None = None,
         automation_id: str | None = None,
-        auth: bool | None = None,
         allowed_domains: list[str] | None = None,
         services: dict | None = None,
         replicas: int | None = None,
@@ -789,7 +788,6 @@ fi
                 mount_path,
                 secret_groups,
                 automation_id,
-                auth,
                 allowed_domains,
                 services,
                 replicas,
@@ -824,8 +822,6 @@ fi
                 deployment_config["secret_groups"] = secret_groups
             if automation_id is not None:
                 deployment_config["id"] = automation_id
-            if auth is not None:
-                deployment_config["auth"] = auth
             if allowed_domains is not None:
                 deployment_config["allowed_domains"] = allowed_domains
             if services is not None:
@@ -1434,159 +1430,6 @@ fi
             print(f"Warning: Exception while adding redirect URI to Keycloak: {str(e)}")
             return None
 
-    def get_or_create_public_client(
-        self,
-        client_id: str,
-        redirect_uri: str,
-        web_origins: list[str] | None = None,
-    ):
-        """
-        Get or create a public Keycloak client for frontend apps.
-
-        Args:
-            client_id: The client ID for the public client
-            redirect_uri: The redirect URI for this deployment
-            web_origins: List of allowed CORS origins for the client
-
-        Returns:
-            dict with client_id, issuer_url, etc. or None if failed
-        """
-        if not self.workspace_id:
-            print(
-                f"Warning: Workspace {self.workspace_name} is missing an ID, skipping public client creation"
-            )
-            return None
-        if not self.aoc_url or not self.aoc_token:
-            print(
-                "Warning: AOC URL or token not configured, skipping public client creation"
-            )
-            return None
-
-        url = f"{self.aoc_url}/api/automation_server/workspaces/{self.workspace_id}/keycloak/public-client/"
-
-        headers = {
-            "Authorization": f"Bearer {self.aoc_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-        }
-
-        if web_origins:
-            payload["web_origins"] = web_origins
-
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                print(f"Successfully got/created public client: {client_id}")
-                return result
-            else:
-                error_detail = (
-                    f"Keycloak API error: {response.status_code} - {response.text}"
-                )
-                print(f"Warning: Failed to get/create public client: {error_detail}")
-                return None
-        except Exception as e:
-            print(f"Warning: Exception while getting/creating public client: {str(e)}")
-            return None
-
-    async def enable_services(self, services: dict, stage: str) -> None:
-        """Auto-enable infrastructure services for a specific deployment.
-
-        Takes the services dict (e.g. {"kafka": {"enabled": true}}) and the
-        deployment stage, and enables any declared services that aren't already
-        running.
-        """
-        from app.services.infra_service import get_service, stage_for_deployment
-
-        mapped_stage = stage_for_deployment(stage)
-
-        for svc_type, svc_conf in services.items():
-            enabled = (
-                svc_conf.get("enabled", True)
-                if isinstance(svc_conf, dict)
-                else bool(svc_conf)
-            )
-            if not enabled:
-                continue
-
-            try:
-                svc = get_service(svc_type, self.workspace_name, stage=mapped_stage)
-            except ValueError:
-                logger.warning(
-                    f"Unknown service type '{svc_type}', skipping auto-enable"
-                )
-                continue
-
-            if not svc.is_enabled():
-                logger.info(
-                    f"Auto-enabling {svc.display_name} for workspace '{self.workspace_name}'"
-                )
-                try:
-                    await svc.enable()
-                except Exception as e:
-                    logger.error(f"Failed to auto-enable {svc.display_name}: {e}")
-            else:
-                running = await svc.is_running()
-                if not running:
-                    logger.warning(
-                        f"{svc.display_name} is enabled but not running — "
-                        f"attempting to start container"
-                    )
-                    try:
-                        await svc.start()
-                        logger.info(f"{svc.display_name} started successfully")
-                    except Exception:
-                        # Container may have been removed entirely;
-                        # docker-compose up will recreate it.
-                        logger.info(
-                            f"Could not start {svc.display_name} container "
-                            f"(may have been removed) — docker-compose up will recreate it"
-                        )
-                        # Re-register with Caddy in case it was lost
-                        try:
-                            await svc._register_with_caddy()
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to re-register {svc.display_name} with Caddy: {e}"
-                            )
-
-    def _resolve_service_secrets(
-        self, automation_config: AutomationConfig, stage: str
-    ) -> list[str]:
-        """Resolve service dependencies and return list of secret file names to inject.
-
-        Uses the deployment's own stage to determine the service realm
-        (live-dev maps to dev). Returns the corresponding secrets file names
-        (e.g., 'kafka-dev', 'couchdb-production').
-        """
-        if not automation_config.services:
-            return []
-
-        from app.services.infra_service import get_service, stage_for_deployment
-
-        mapped_stage = stage_for_deployment(stage)
-
-        secret_names = []
-        for svc_type, svc_dep in automation_config.services.items():
-            if not svc_dep.enabled:
-                continue
-
-            try:
-                svc = get_service(svc_type, self.workspace_name, stage=mapped_stage)
-            except ValueError:
-                logger.warning(f"Unknown service type '{svc_type}', skipping")
-                continue
-
-            secret_names.append(svc.secrets_file_name)
-            logger.info(
-                f"Service dependency: {svc.display_name} -> secrets '{svc.secrets_file_name}'"
-            )
-
-        return secret_names
-
     def generate_docker_compose(self, bs_yaml: dict):
         dc = {
             "version": "3",
@@ -1618,7 +1461,6 @@ fi
                 stored_mount_path = conf.get("mount_path", "/app/")
                 stored_secret_groups = conf.get("secret_groups")
                 stored_id = conf.get("id")
-                stored_auth = conf.get("auth", False)
                 stored_allowed_domains = conf.get("allowed_domains")
 
                 if not stored_image:
@@ -1628,7 +1470,6 @@ fi
                 # Create a minimal AutomationConfig from stored values
                 automation_config = AutomationConfig(
                     id=stored_id,
-                    auth=stored_auth,
                     image=stored_image,
                     expose=stored_expose,
                     port=stored_port,
@@ -1905,6 +1746,7 @@ fi
                             status_code=500, detail="Error adding route to Caddy"
                         )
 
+
             # Add the public hostname as a network alias so other containers
             # on the same Docker network can reach this automation by its URL.
             if expose and port and self.gitops_domain and not network_mode:
@@ -1921,66 +1763,9 @@ fi
                         net: {"aliases": [url_host]} for net in networks
                     }
 
-            # Always pass Keycloak URL for JWT verification
-            # KEYCLOAK_URL format: https://keycloak.example.com/realms/realm-name
-            keycloak_url = os.environ.get("KEYCLOAK_URL", "")
-            if keycloak_url:
-                entry["environment"]["KEYCLOAK_URL"] = (
-                    keycloak_url.rsplit("/realms/", 1)[0]
-                    if "/realms/" in keycloak_url
-                    else keycloak_url
-                )
-                entry["environment"]["KEYCLOAK_REALM"] = (
-                    keycloak_url.rsplit("/realms/", 1)[-1]
-                    if "/realms/" in keycloak_url
-                    else ""
-                )
-                entry["environment"]["KEYCLOAK_ISSUER_URL"] = keycloak_url
-
-            # Handle Keycloak public client for frontend apps
-            # Uses auth + id approach: when auth=true, id is used as Keycloak client_id
-            if automation_config.auth and automation_config.id:
-                # Build the redirect URI for this deployment
-                automation_url = f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
-                redirect_uri = f"{automation_url}/*"
-
-                # Build web_origins for CORS: automation URL + any allowed_domains from config
-                web_origins = [automation_url]
-                if automation_config.allowed_domains:
-                    web_origins.extend(automation_config.allowed_domains)
-
-                # Get or create the public client via AOC
-                client_result = self.get_or_create_public_client(
-                    client_id=automation_config.id,
-                    redirect_uri=redirect_uri,
-                    web_origins=web_origins,
-                )
-
-                if client_result:
-                    # Inject Keycloak client ID and override URL if available from client result
-                    entry["environment"]["KEYCLOAK_CLIENT_ID"] = client_result.get(
-                        "client_id", automation_config.id
-                    )
-                    if client_result.get("issuer_url"):
-                        issuer_url = client_result.get("issuer_url")
-                        entry["environment"]["KEYCLOAK_URL"] = (
-                            issuer_url.rsplit("/realms/", 1)[0]
-                            if "/realms/" in issuer_url
-                            else issuer_url
-                        )
-                        entry["environment"]["KEYCLOAK_REALM"] = (
-                            issuer_url.rsplit("/realms/", 1)[-1]
-                            if "/realms/" in issuer_url
-                            else ""
-                        )
-                        entry["environment"]["KEYCLOAK_ISSUER_URL"] = issuer_url
-                    print(
-                        f"Injected Keycloak config for client {automation_config.id} into deployment {deployment_id}"
-                    )
-                else:
-                    print(
-                        f"Warning: Failed to get/create public client {automation_config.id} for deployment {deployment_id}"
-                    )
+            # Inject workspace ID for deployment auth login flow
+            if self.workspace_id:
+                entry["environment"]["BITSWAN_WORKSPACE_ID"] = self.workspace_id
 
             if "volumes" not in entry:
                 entry["volumes"] = []

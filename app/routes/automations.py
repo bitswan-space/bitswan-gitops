@@ -130,7 +130,6 @@ async def deploy_automation(
     mount_path: str | None = Form(None),
     secret_groups: str | None = Form(None),  # comma-separated list of secret groups
     automation_id: str | None = Form(None),  # Unique automation ID for Keycloak
-    auth: str | None = Form(None),  # "true" or "false" - enable Keycloak auth
     allowed_domains: str | None = Form(
         None
     ),  # comma-separated list of CORS allowed domains
@@ -159,7 +158,6 @@ async def deploy_automation(
         if secret_groups
         else None
     )
-    auth_bool = auth.lower() == "true" if auth else None
     allowed_domains_list = (
         [d.strip() for d in allowed_domains.split(",") if d.strip()]
         if allowed_domains
@@ -193,7 +191,6 @@ async def deploy_automation(
         mount_path=mount_path,
         secret_groups=secret_groups_list,
         automation_id=automation_id,
-        auth=auth_bool,
         allowed_domains=allowed_domains_list,
         services=services_dict,
         replicas=replicas_int,
