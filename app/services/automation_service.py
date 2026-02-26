@@ -408,6 +408,16 @@ class AutomationService:
             )
         return stdout.strip()
 
+    async def _fetch_yaml_at_commit(
+        self, commit_hash: str, bitswan_dir: str
+    ) -> tuple[str, str | None]:
+        stdout, stderr, rc = await call_git_command_with_output(
+            "git", "show", f"{commit_hash}:bitswan.yaml", cwd=bitswan_dir
+        )
+        if rc != 0:
+            return commit_hash, None
+        return commit_hash, stdout
+
     async def get_automation_history(
         self, deployment_id: str, page: int = 1, page_size: int = 20
     ):
@@ -461,76 +471,85 @@ class AutomationService:
             except json.JSONDecodeError:
                 continue
 
-        # Fetch bitswan.yaml content for all commits in parallel (capped concurrency)
-        sem = asyncio.Semaphore(20)
+        # Process commits in batches — stop early when we have enough entries.
+        # Only cache the result if we processed ALL commits (complete history).
+        entries_needed = page * page_size
+        BATCH_SIZE = 20
 
-        async def fetch_yaml_at_commit(commit_hash: str) -> tuple[str, str | None]:
-            async with sem:
-                stdout, stderr, rc = await call_git_command_with_output(
-                    "git", "show", f"{commit_hash}:bitswan.yaml", cwd=bitswan_dir
-                )
-                if rc != 0:
-                    return commit_hash, None
-                return commit_hash, stdout
-
-        results = await asyncio.gather(
-            *[fetch_yaml_at_commit(c["commit"]) for c in commits]
-        )
-        content_by_hash = dict(results)
-
-        # Process sequentially to track checksum and replicas changes
         history_entries = []
         previous_checksum = None
         previous_replicas = None
+        processed_all = True
 
-        for commit in commits:
-            commit_hash = commit["commit"]
-            content = content_by_hash.get(commit_hash)
-            if content is None:
-                continue
+        for batch_start in range(0, len(commits), BATCH_SIZE):
+            batch = commits[batch_start : batch_start + BATCH_SIZE]
 
-            try:
-                commit_yaml = yaml.safe_load(content)
-                if not commit_yaml or "deployments" not in commit_yaml:
+            # Fetch bitswan.yaml content for this batch in parallel
+            results = await asyncio.gather(
+                *[
+                    self._fetch_yaml_at_commit(c["commit"], bitswan_dir)
+                    for c in batch
+                ]
+            )
+            content_by_hash = dict(results)
+
+            for commit in batch:
+                commit_hash = commit["commit"]
+                content = content_by_hash.get(commit_hash)
+                if content is None:
                     continue
 
-                deployment_config = commit_yaml.get("deployments", {}).get(
-                    deployment_id
-                )
+                try:
+                    commit_yaml = yaml.safe_load(content)
+                    if not commit_yaml or "deployments" not in commit_yaml:
+                        continue
 
-                if deployment_config is None:
+                    deployment_config = commit_yaml.get("deployments", {}).get(
+                        deployment_id
+                    )
+
+                    if deployment_config is None:
+                        continue
+
+                    current_checksum = deployment_config.get("checksum")
+                    current_replicas = deployment_config.get("replicas", 1)
+
+                    checksum_changed = (
+                        current_checksum and current_checksum != previous_checksum
+                    )
+                    replicas_changed = current_replicas != previous_replicas
+
+                    if checksum_changed or replicas_changed:
+                        entry = {
+                            "commit": commit_hash,
+                            "author": commit["author"],
+                            "date": commit["date"],
+                            "message": commit["message"],
+                            "checksum": current_checksum,
+                            "stage": deployment_config.get("stage", "production"),
+                            "relative_path": deployment_config.get("relative_path"),
+                            "active": deployment_config.get("active"),
+                            "tag_checksum": deployment_config.get("tag_checksum"),
+                            "replicas": current_replicas,
+                        }
+                        history_entries.append(entry)
+                        previous_checksum = current_checksum
+                        previous_replicas = current_replicas
+
+                except yaml.YAMLError:
                     continue
 
-                current_checksum = deployment_config.get("checksum")
-                current_replicas = deployment_config.get("replicas", 1)
+            # Early exit: we have enough entries for the requested page
+            if len(history_entries) >= entries_needed:
+                processed_all = (batch_start + BATCH_SIZE) >= len(commits)
+                break
 
-                checksum_changed = (
-                    current_checksum and current_checksum != previous_checksum
-                )
-                replicas_changed = current_replicas != previous_replicas
-
-                if checksum_changed or replicas_changed:
-                    entry = {
-                        "commit": commit_hash,
-                        "author": commit["author"],
-                        "date": commit["date"],
-                        "message": commit["message"],
-                        "checksum": current_checksum,
-                        "stage": deployment_config.get("stage", "production"),
-                        "relative_path": deployment_config.get("relative_path"),
-                        "active": deployment_config.get("active"),
-                        "tag_checksum": deployment_config.get("tag_checksum"),
-                        "replicas": current_replicas,
-                    }
-                    history_entries.append(entry)
-                    previous_checksum = current_checksum
-                    previous_replicas = current_replicas
-
-            except yaml.YAMLError:
-                continue
-
-        # Cache the full history list for this deployment
-        self._history_cache[deployment_id] = (current_commit_hash, history_entries)
+        # Only cache if we processed all commits (complete history)
+        if processed_all:
+            self._history_cache[deployment_id] = (
+                current_commit_hash,
+                history_entries,
+            )
 
         return self._paginate_history(history_entries, page, page_size)
 
