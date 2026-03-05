@@ -455,8 +455,10 @@ def _calculate_git_tree_hash_recursive(
 
     # Get all entries and sort them (directories first, then alphabetical)
     items = []
+    # Directories that may be generated at runtime and should not affect checksums
+    _ignore_dirs = {".git", "dist", "__pycache__"}
     for item in os.listdir(dir_path):
-        if item == ".git":
+        if item in _ignore_dirs:
             continue
         item_path = os.path.join(dir_path, item)
         # Skip symlinks - they should not be included in deployments

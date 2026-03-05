@@ -27,6 +27,12 @@ USER root
 
 # Install Bitswan Automation Server CLI (latest)
 RUN apt-get update && apt-get install -y curl jq tar
+
+# Download oauth2-proxy
+RUN LATEST_VERSION=$(curl -s https://api.github.com/repos/bitswan-space/bitswan-aoc-oauth2/releases/latest | jq -r '.tag_name') \
+    && curl -L -o /usr/local/bin/oauth2-proxy https://github.com/bitswan-space/bitswan-aoc-oauth2/releases/download/${LATEST_VERSION}/oauth2-proxy-mqtt \
+    && chmod +x /usr/local/bin/oauth2-proxy
+
 RUN set -e; \
   LATEST_VERSION="$(curl -sL https://api.github.com/repos/bitswan-space/bitswan-automation-server/releases/latest | jq -r .tag_name)"; \
   TMP_DIR="$(mktemp -d)"; \

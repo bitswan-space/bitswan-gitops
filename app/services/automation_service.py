@@ -47,7 +47,7 @@ class AutomationService:
         self.aoc_token = os.environ.get("BITSWAN_AOC_TOKEN")
         self.gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN")
         self.workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME")
-        self.oauth2_proxy_path = os.environ.get("OAUTH2_PROXY_PATH")
+        self.oauth2_proxy_path = "/usr/local/bin/oauth2-proxy"
         self.oauth2_proxy_port = 9999
         self.certs_dir_host = os.environ.get("BITSWAN_CERTS_DIR")
         self.gitops_dir = os.path.join(self.bs_home, "gitops")
@@ -602,13 +602,29 @@ class AutomationService:
 
                 # Check if oauth2-proxy is already running to avoid duplicates
                 exec_id = await docker_client.exec_create(
-                    container_id, ["sh", "-c", "pgrep -f oauth2-proxy || true"]
+                    container_id, ["sh", "-c", "pgrep -x oauth2-proxy || true"]
                 )
                 output = await docker_client.exec_start(exec_id)
                 exec_info = await docker_client.exec_inspect(exec_id)
 
                 if exec_info.get("ExitCode") == 0 and output.strip():
                     print(f"oauth2-proxy already running in container {container_name}")
+                    continue
+
+                # Copy oauth2-proxy binary into the container
+                proc = await asyncio.create_subprocess_exec(
+                    "docker", "cp",
+                    self.oauth2_proxy_path,
+                    f"{container_id}:/usr/local/bin/oauth2-proxy",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    print(
+                        f"Failed to copy oauth2-proxy into container {container_name}: {stderr.decode()}"
+                    )
+                    success = False
                     continue
 
                 # Start oauth2-proxy in the background
@@ -1434,6 +1450,37 @@ fi
             print(f"Warning: Exception while adding redirect URI to Keycloak: {str(e)}")
             return None
 
+    def get_or_create_automation_client(self, deployment_id):
+        """Get or create a Keycloak client for a specific automation (expose_to).
+
+        Each automation gets its own client so it can have its own expose_to groups.
+        Returns dict with client_id, client_secret, issuer_url or None.
+        """
+        if not self.workspace_id or not self.aoc_url or not self.aoc_token:
+            print("Warning: AOC not configured, skipping automation client creation")
+            return None
+
+        url = f"{self.aoc_url}/api/automation_server/workspaces/{self.workspace_id}/keycloak/automation-client/"
+        headers = {
+            "Authorization": f"Bearer {self.aoc_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = requests.post(
+                url, headers=headers,
+                json={"deployment_id": deployment_id},
+                timeout=30,
+            )
+            if response.status_code in (200, 201):
+                return response.json()
+            else:
+                print(f"Warning: Failed to get automation client: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            print(f"Warning: Exception getting automation client: {e}")
+            return None
+
     def get_or_create_public_client(
         self,
         client_id: str,
@@ -1864,30 +1911,32 @@ fi
                     endpoint = automation_url
                     redirect_uri = f"{endpoint}/oauth2/callback"
 
-                    # Register the redirect URI with Keycloak
-                    self.add_keycloak_redirect_uri(redirect_uri)
+                    # Get or create a dedicated automation client
+                    # (one per automation, so each can have its own expose_to)
+                    automation_client = self.get_or_create_automation_client(deployment_id)
+                    if not automation_client:
+                        raise Exception(
+                            f"Failed to get or create automation client for expose_to on {deployment_id}"
+                        )
 
+                    # Start with the editor's OAUTH2 env vars as defaults,
+                    # then override with per-automation specifics
                     oauth2_envs = {
                         k: v for k, v in os.environ.items() if k.startswith("OAUTH2")
                     }
-                    oauth2_envs.update(
-                        {
-                            "OAUTH_ENABLED": "true",
-                        }
-                    )
-
-                    oauth2_envs.update(
-                        {
-                            "OAUTH2_PROXY_UPSTREAM": f"http://127.0.0.1:{port}",
-                            "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
-                            "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(expose_to_groups),
-                            "BITSWAN_AUTOMATION_URL": automation_url,
-                        }
-                    )
-                    entry["environment"] = oauth2_envs
-                    entry["volumes"] = [
-                        f"{self.oauth2_proxy_path}:/usr/local/bin/oauth2-proxy:ro"
-                    ]
+                    oauth2_envs.update({
+                        "OAUTH_ENABLED": "true",
+                        "OAUTH2_PROXY_CLIENT_ID": automation_client["client_id"],
+                        "OAUTH2_PROXY_CLIENT_SECRET": automation_client["client_secret"],
+                        "OAUTH2_PROXY_SCOPE": "openid email profile",
+                        "OAUTH2_PROXY_UPSTREAM": f"http://127.0.0.1:{port}",
+                        "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
+                        "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(expose_to_groups),
+                        "OAUTH2_PROXY_SET_XAUTHREQUEST": "true",
+                        "OAUTH2_PROXY_PASS_ACCESS_TOKEN": "true",
+                        "BITSWAN_AUTOMATION_URL": automation_url,
+                    })
+                    entry["environment"].update(oauth2_envs)
 
                     # Store oauth2 config in labels for post-deployment execution
                     entry["labels"]["gitops.oauth2.enabled"] = "true"
