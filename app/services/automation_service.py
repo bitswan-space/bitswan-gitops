@@ -32,6 +32,10 @@ from fastapi import UploadFile, HTTPException
 
 logger = logging.getLogger(__name__)
 
+# How often oauth2-proxy refreshes the session cookie (and access token).
+# Should be shorter than the access token lifespan in Keycloak (15m for automation clients).
+OAUTH2_COOKIE_REFRESH = "14m"
+
 
 class AutomationService:
     def __init__(self):
@@ -589,14 +593,6 @@ class AutomationService:
                 success = False
                 continue
 
-            upstream_url = labels.get("gitops.oauth2.upstream")
-            if not upstream_url:
-                print(
-                    f"Warning: No upstream URL found for oauth2-proxy in deployment {deployment_id}"
-                )
-                success = False
-                continue
-
             try:
                 docker_client = get_async_docker_client()
 
@@ -627,14 +623,21 @@ class AutomationService:
                     success = False
                     continue
 
+                # Build the backend logout URL from the host's OIDC issuer URL
+                logout_flag = ""
+                issuer_url = os.environ.get("OAUTH2_PROXY_OIDC_ISSUER_URL", "").strip()
+                if issuer_url:
+                    logout_url = f"{issuer_url}/protocol/openid-connect/logout?id_token_hint={{id_token}}"
+                    logout_flag = f" --backend-logout-url='{logout_url}'"
+
                 # Start oauth2-proxy in the background
                 print(
-                    f"Starting oauth2-proxy with upstream: {upstream_url} in container {container_name}"
+                    f"Starting oauth2-proxy in container {container_name}"
                 )
                 cmd = [
                     "sh",
                     "-c",
-                    f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &",
+                    f"oauth2-proxy{logout_flag} > /tmp/oauth2-proxy.log 2>&1 &",
                 ]
                 exec_id = await docker_client.exec_create(container_id, cmd)
                 await docker_client.exec_start(exec_id)
@@ -763,6 +766,7 @@ fi
         # Automation config values (for live-dev, sent by extension)
         image: str | None = None,
         expose: bool | None = None,
+        expose_to: list[str] | None = None,
         port: int | None = None,
         mount_path: str | None = None,
         secret_groups: list[str] | None = None,
@@ -801,6 +805,7 @@ fi
                 relative_path,
                 image,
                 expose,
+                expose_to,
                 port,
                 mount_path,
                 secret_groups,
@@ -832,6 +837,8 @@ fi
                 deployment_config["image"] = image
             if expose is not None:
                 deployment_config["expose"] = expose
+            if expose_to is not None:
+                deployment_config["expose_to"] = expose_to
             if port is not None:
                 deployment_config["port"] = port
             if mount_path is not None:
@@ -1450,7 +1457,7 @@ fi
             print(f"Warning: Exception while adding redirect URI to Keycloak: {str(e)}")
             return None
 
-    def get_or_create_automation_client(self, deployment_id):
+    def get_or_create_automation_client(self, deployment_id, redirect_uri):
         """Get or create a Keycloak client for a specific automation (expose_to).
 
         Each automation gets its own client so it can have its own expose_to groups.
@@ -1469,7 +1476,7 @@ fi
         try:
             response = requests.post(
                 url, headers=headers,
-                json={"deployment_id": deployment_id},
+                json={"deployment_id": deployment_id, "redirect_uri": redirect_uri},
                 timeout=30,
             )
             if response.status_code in (200, 201):
@@ -1661,6 +1668,7 @@ fi
                 # This avoids needing filesystem access to the workspace
                 stored_image = conf.get("image")
                 stored_expose = conf.get("expose", False)
+                stored_expose_to = conf.get("expose_to")
                 stored_port = conf.get("port", 8080)
                 stored_mount_path = conf.get("mount_path", "/app/")
                 stored_secret_groups = conf.get("secret_groups")
@@ -1678,6 +1686,7 @@ fi
                     auth=stored_auth,
                     image=stored_image,
                     expose=stored_expose,
+                    expose_to=stored_expose_to,
                     port=stored_port,
                     config_format="toml",
                     mount_path=stored_mount_path,
@@ -1913,7 +1922,7 @@ fi
 
                     # Get or create a dedicated automation client
                     # (one per automation, so each can have its own expose_to)
-                    automation_client = self.get_or_create_automation_client(deployment_id)
+                    automation_client = self.get_or_create_automation_client(deployment_id, redirect_uri)
                     if not automation_client:
                         raise Exception(
                             f"Failed to get or create automation client for expose_to on {deployment_id}"
@@ -1929,20 +1938,18 @@ fi
                         "OAUTH2_PROXY_CLIENT_ID": automation_client["client_id"],
                         "OAUTH2_PROXY_CLIENT_SECRET": automation_client["client_secret"],
                         "OAUTH2_PROXY_SCOPE": "openid email profile",
-                        "OAUTH2_PROXY_UPSTREAM": f"http://127.0.0.1:{port}",
+                        "OAUTH2_PROXY_UPSTREAMS": f"http://127.0.0.1:{port}",
                         "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
                         "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(expose_to_groups),
                         "OAUTH2_PROXY_SET_XAUTHREQUEST": "true",
                         "OAUTH2_PROXY_PASS_ACCESS_TOKEN": "true",
+                        "OAUTH2_PROXY_COOKIE_REFRESH": OAUTH2_COOKIE_REFRESH,
                         "BITSWAN_AUTOMATION_URL": automation_url,
                     })
                     entry["environment"].update(oauth2_envs)
 
                     # Store oauth2 config in labels for post-deployment execution
                     entry["labels"]["gitops.oauth2.enabled"] = "true"
-                    entry["labels"]["gitops.oauth2.upstream"] = (
-                        f"http://127.0.0.1:{port}"
-                    )
                     entry["labels"]["gitops.intended_exposed"] = "true"
                     add_workspace_route_to_caddy(deployment_id, self.oauth2_proxy_port)
 
