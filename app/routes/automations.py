@@ -134,6 +134,7 @@ async def deploy_automation(
     allowed_domains: str | None = Form(
         None
     ),  # comma-separated list of CORS allowed domains
+    expose_to: str | None = Form(None),  # JSON list: ["/Example Org/admin"]
     services: str | None = Form(None),  # JSON: {"kafka": {"enabled": true}, ...}
     replicas: str | None = Form(None),  # replicas as string from form
     automation_service: AutomationService = Depends(get_automation_service),
@@ -167,6 +168,13 @@ async def deploy_automation(
     )
     replicas_int = int(replicas) if replicas else None
 
+    expose_to_list = None
+    if expose_to:
+        try:
+            expose_to_list = _json.loads(expose_to)
+        except _json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid expose_to JSON")
+
     services_dict = None
     if services:
         try:
@@ -189,6 +197,7 @@ async def deploy_automation(
         relative_path=relative_path,
         image=image,
         expose=expose_bool,
+        expose_to=expose_to_list,
         port=port_int,
         mount_path=mount_path,
         secret_groups=secret_groups_list,
