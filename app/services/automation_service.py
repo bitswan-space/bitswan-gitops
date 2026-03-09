@@ -609,7 +609,8 @@ class AutomationService:
 
                 # Copy oauth2-proxy binary into the container
                 proc = await asyncio.create_subprocess_exec(
-                    "docker", "cp",
+                    "docker",
+                    "cp",
                     self.oauth2_proxy_path,
                     f"{container_id}:/usr/local/bin/oauth2-proxy",
                     stdout=asyncio.subprocess.PIPE,
@@ -631,9 +632,7 @@ class AutomationService:
                     logout_flag = f" --backend-logout-url='{logout_url}'"
 
                 # Start oauth2-proxy in the background
-                print(
-                    f"Starting oauth2-proxy in container {container_name}"
-                )
+                print(f"Starting oauth2-proxy in container {container_name}")
                 cmd = [
                     "sh",
                     "-c",
@@ -1475,14 +1474,17 @@ fi
 
         try:
             response = requests.post(
-                url, headers=headers,
+                url,
+                headers=headers,
                 json={"deployment_id": deployment_id, "redirect_uri": redirect_uri},
                 timeout=30,
             )
             if response.status_code in (200, 201):
                 return response.json()
             else:
-                print(f"Warning: Failed to get automation client: {response.status_code} - {response.text}")
+                print(
+                    f"Warning: Failed to get automation client: {response.status_code} - {response.text}"
+                )
                 return None
         except Exception as e:
             print(f"Warning: Exception getting automation client: {e}")
@@ -1922,7 +1924,9 @@ fi
 
                     # Get or create a dedicated automation client
                     # (one per automation, so each can have its own expose_to)
-                    automation_client = self.get_or_create_automation_client(deployment_id, redirect_uri)
+                    automation_client = self.get_or_create_automation_client(
+                        deployment_id, redirect_uri
+                    )
                     if not automation_client:
                         raise Exception(
                             f"Failed to get or create automation client for expose_to on {deployment_id}"
@@ -1933,19 +1937,23 @@ fi
                     oauth2_envs = {
                         k: v for k, v in os.environ.items() if k.startswith("OAUTH2")
                     }
-                    oauth2_envs.update({
-                        "OAUTH_ENABLED": "true",
-                        "OAUTH2_PROXY_CLIENT_ID": automation_client["client_id"],
-                        "OAUTH2_PROXY_CLIENT_SECRET": automation_client["client_secret"],
-                        "OAUTH2_PROXY_SCOPE": "openid email profile",
-                        "OAUTH2_PROXY_UPSTREAMS": f"http://127.0.0.1:{port}",
-                        "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
-                        "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(expose_to_groups),
-                        "OAUTH2_PROXY_SET_XAUTHREQUEST": "true",
-                        "OAUTH2_PROXY_PASS_ACCESS_TOKEN": "true",
-                        "OAUTH2_PROXY_COOKIE_REFRESH": OAUTH2_COOKIE_REFRESH,
-                        "BITSWAN_AUTOMATION_URL": automation_url,
-                    })
+                    oauth2_envs.update(
+                        {
+                            "OAUTH_ENABLED": "true",
+                            "OAUTH2_PROXY_CLIENT_ID": automation_client["client_id"],
+                            "OAUTH2_PROXY_CLIENT_SECRET": automation_client[
+                                "client_secret"
+                            ],
+                            "OAUTH2_PROXY_SCOPE": "openid email profile",
+                            "OAUTH2_PROXY_UPSTREAMS": f"http://127.0.0.1:{port}",
+                            "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
+                            "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(expose_to_groups),
+                            "OAUTH2_PROXY_SET_XAUTHREQUEST": "true",
+                            "OAUTH2_PROXY_PASS_ACCESS_TOKEN": "true",
+                            "OAUTH2_PROXY_COOKIE_REFRESH": OAUTH2_COOKIE_REFRESH,
+                            "BITSWAN_AUTOMATION_URL": automation_url,
+                        }
+                    )
                     entry["environment"].update(oauth2_envs)
 
                     # Store oauth2 config in labels for post-deployment execution
