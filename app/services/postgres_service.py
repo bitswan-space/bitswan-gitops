@@ -327,3 +327,101 @@ class PostgresService(InfraService):
         finally:
             if should_cleanup and extract_dir:
                 shutil.rmtree(extract_dir, ignore_errors=True)
+
+    async def clear(self) -> dict:
+        """Drop all user-created databases and recreate an empty default database.
+
+        This is a destructive operation — all data in PostgreSQL will be lost.
+        """
+        if not self.is_enabled():
+            raise ValueError(f"{self.display_name} is not enabled")
+        if not await self.is_running():
+            raise ValueError(f"{self.display_name} is not running")
+
+        info = self._get_connection_info()
+        user = info.get("username", "admin")
+        database = info.get("database", "postgres")
+
+        # Get list of user databases (exclude template and postgres system DBs)
+        stdout, stderr, rc = await run_docker_command(
+            "docker",
+            "exec",
+            self.container_name,
+            "psql",
+            "-U",
+            user,
+            "-d",
+            "postgres",
+            "-t",
+            "-A",
+            "-c",
+            "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres';",
+        )
+        if rc != 0:
+            raise RuntimeError(f"Failed to list databases: {stderr}")
+
+        databases = [db.strip() for db in stdout.strip().split("\n") if db.strip()]
+
+        # Drop each user database
+        for db_name in databases:
+            logger.info(f"Dropping database: {db_name}")
+            _, stderr, rc = await run_docker_command(
+                "docker",
+                "exec",
+                self.container_name,
+                "psql",
+                "-U",
+                user,
+                "-d",
+                "postgres",
+                "-c",
+                f'DROP DATABASE IF EXISTS "{db_name}";',
+            )
+            if rc != 0:
+                logger.warning(f"Failed to drop database {db_name}: {stderr}")
+
+        # Drop all objects in the default database (tables, sequences, etc.)
+        drop_sql = (
+            "DO $$ DECLARE r RECORD; BEGIN "
+            "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
+            "EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; "
+            "END LOOP; "
+            "FOR r IN (SELECT sequencename FROM pg_sequences WHERE schemaname = 'public') LOOP "
+            "EXECUTE 'DROP SEQUENCE IF EXISTS ' || quote_ident(r.sequencename) || ' CASCADE'; "
+            "END LOOP; "
+            "END $$;"
+        )
+        _, stderr, rc = await run_docker_command(
+            "docker",
+            "exec",
+            self.container_name,
+            "psql",
+            "-U",
+            user,
+            "-d",
+            database,
+            "-c",
+            drop_sql,
+        )
+        if rc != 0:
+            logger.warning(f"Failed to clean default database: {stderr}")
+
+        # Recreate the default database's public schema cleanly
+        _, _, _ = await run_docker_command(
+            "docker",
+            "exec",
+            self.container_name,
+            "psql",
+            "-U",
+            user,
+            "-d",
+            database,
+            "-c",
+            "DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
+        )
+
+        logger.info("PostgreSQL clear completed — all data removed")
+        return {
+            "status": "ok",
+            "message": "All PostgreSQL data has been deleted",
+        }

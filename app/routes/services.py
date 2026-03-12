@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from app.models import (
     ServiceActionRequest,
     ServiceBackupRequest,
+    ServiceClearRequest,
     ServiceDisableRequest,
     ServiceEnableRequest,
     ServiceRestoreRequest,
@@ -207,6 +208,23 @@ async def restore_postgres(request: ServiceRestoreRequest):
 
         svc = PostgresService(workspace, stage=request.stage)
         result = await svc.restore(backup_path=request.backup_path, force=request.force)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/postgres/clear")
+async def clear_postgres(request: ServiceClearRequest):
+    """Delete all data from PostgreSQL databases."""
+    workspace = _get_workspace_name()
+
+    try:
+        from app.services.postgres_service import PostgresService
+
+        svc = PostgresService(workspace, stage=request.stage)
+        result = await svc.clear()
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

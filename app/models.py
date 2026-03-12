@@ -120,3 +120,7 @@ class ServiceRestoreRequest(BaseModel):
     stage: str = ""
     backup_path: str
     force: bool = False
+
+
+class ServiceClearRequest(BaseModel):
+    stage: str = ""
