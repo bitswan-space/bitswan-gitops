@@ -89,6 +89,7 @@ class ServiceEnableRequest(BaseModel):
     ui_image: str = ""
     postgres_image: str = ""
     pgadmin_image: str = ""
+    minio_image: str = ""
 
 
 class ServiceDisableRequest(BaseModel):

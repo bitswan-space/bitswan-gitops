@@ -445,7 +445,15 @@ def get_service(
             postgres_image=kwargs.get("postgres_image", ""),
             pgadmin_image=kwargs.get("pgadmin_image", ""),
         )
+    elif service_type == "minio":
+        from app.services.minio_service import MinioService
+
+        return MinioService(
+            workspace_name,
+            stage,
+            minio_image=kwargs.get("minio_image", ""),
+        )
     else:
         raise ValueError(
-            f"Unknown service type: {service_type}. Supported: couchdb, kafka, postgres"
+            f"Unknown service type: {service_type}. Supported: couchdb, kafka, postgres, minio"
         )
