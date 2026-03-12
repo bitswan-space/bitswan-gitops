@@ -690,9 +690,7 @@ class AutomationService:
                     exec_info = await docker_client.exec_inspect(exec_id)
 
                     if exec_info.get("ExitCode") == 0 and output.strip():
-                        logger.info(
-                            f"oauth2-proxy already running in {container_name}"
-                        )
+                        logger.info(f"oauth2-proxy already running in {container_name}")
                         continue
 
                     logger.info(
@@ -710,9 +708,7 @@ class AutomationService:
 
                     exec_info = await docker_client.exec_inspect(exec_id)
                     if exec_info.get("ExitCode", 0) == 0:
-                        logger.info(
-                            f"oauth2-proxy started in {container_name}"
-                        )
+                        logger.info(f"oauth2-proxy started in {container_name}")
                     else:
                         logger.error(
                             f"Failed to start oauth2-proxy in {container_name}"
@@ -720,8 +716,7 @@ class AutomationService:
 
             except Exception as e:
                 logger.error(
-                    f"Exception starting oauth2-proxy for infra service "
-                    f"{svc_name}: {e}"
+                    f"Exception starting oauth2-proxy for infra service {svc_name}: {e}"
                 )
 
     async def install_certificates_in_container(self, deployment_id: str):

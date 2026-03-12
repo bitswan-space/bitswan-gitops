@@ -144,7 +144,12 @@ class PostgresService(InfraService):
                     elif line.startswith("POSTGRES_DB="):
                         info["database"] = line.split("=", 1)[1]
         info["port"] = 5432
-        if info.get("username") and info.get("password") and info.get("host") and info.get("database"):
+        if (
+            info.get("username")
+            and info.get("password")
+            and info.get("host")
+            and info.get("database")
+        ):
             info["connection_string"] = (
                 f"postgresql://{info['username']}:{info['password']}"
                 f"@{info['host']}:5432/{info['database']}"
