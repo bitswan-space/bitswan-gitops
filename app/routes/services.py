@@ -20,7 +20,7 @@ from app.services.infra_service import get_service
 
 router = APIRouter(prefix="/services", tags=["services"])
 
-SUPPORTED_SERVICES = ("couchdb", "kafka", "postgres")
+SUPPORTED_SERVICES = ("couchdb", "kafka", "postgres", "minio")
 
 
 def _get_workspace_name() -> str:
@@ -51,6 +51,7 @@ async def enable_service(service_type: str, request: ServiceEnableRequest):
             ui_image=request.ui_image,
             postgres_image=request.postgres_image,
             pgadmin_image=request.pgadmin_image,
+            minio_image=request.minio_image,
         )
         result = await svc.enable()
         return result
@@ -205,6 +206,40 @@ async def restore_postgres(request: ServiceRestoreRequest):
         from app.services.postgres_service import PostgresService
 
         svc = PostgresService(workspace, stage=request.stage)
+        result = await svc.restore(backup_path=request.backup_path, force=request.force)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/minio/backup")
+async def backup_minio(request: ServiceBackupRequest):
+    """Backup MinIO data to a tarball."""
+    workspace = _get_workspace_name()
+
+    try:
+        from app.services.minio_service import MinioService
+
+        svc = MinioService(workspace, stage=request.stage)
+        result = await svc.backup(backup_path=request.backup_path)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/minio/restore")
+async def restore_minio(request: ServiceRestoreRequest):
+    """Restore MinIO data from a backup."""
+    workspace = _get_workspace_name()
+
+    try:
+        from app.services.minio_service import MinioService
+
+        svc = MinioService(workspace, stage=request.stage)
         result = await svc.restore(backup_path=request.backup_path, force=request.force)
         return result
     except ValueError as e:
