@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import shutil
-import tarfile
 import tempfile
 from datetime import datetime
 
