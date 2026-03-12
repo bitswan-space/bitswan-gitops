@@ -20,7 +20,7 @@ from app.services.infra_service import get_service
 
 router = APIRouter(prefix="/services", tags=["services"])
 
-SUPPORTED_SERVICES = ("couchdb", "kafka")
+SUPPORTED_SERVICES = ("couchdb", "kafka", "postgres")
 
 
 def _get_workspace_name() -> str:
@@ -49,6 +49,8 @@ async def enable_service(service_type: str, request: ServiceEnableRequest):
             image=request.image,
             kafka_image=request.kafka_image,
             ui_image=request.ui_image,
+            postgres_image=request.postgres_image,
+            pgadmin_image=request.pgadmin_image,
         )
         result = await svc.enable()
         return result
@@ -169,6 +171,40 @@ async def restore_couchdb(request: ServiceRestoreRequest):
         from app.services.couchdb_service import CouchDBService
 
         svc = CouchDBService(workspace, stage=request.stage)
+        result = await svc.restore(backup_path=request.backup_path, force=request.force)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/postgres/backup")
+async def backup_postgres(request: ServiceBackupRequest):
+    """Backup PostgreSQL databases to a tarball."""
+    workspace = _get_workspace_name()
+
+    try:
+        from app.services.postgres_service import PostgresService
+
+        svc = PostgresService(workspace, stage=request.stage)
+        result = await svc.backup(backup_path=request.backup_path)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/postgres/restore")
+async def restore_postgres(request: ServiceRestoreRequest):
+    """Restore PostgreSQL databases from a backup."""
+    workspace = _get_workspace_name()
+
+    try:
+        from app.services.postgres_service import PostgresService
+
+        svc = PostgresService(workspace, stage=request.stage)
         result = await svc.restore(backup_path=request.backup_path, force=request.force)
         return result
     except ValueError as e:
