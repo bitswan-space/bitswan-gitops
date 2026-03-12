@@ -331,7 +331,8 @@ class InfraService(ABC):
                 f"Starting oauth2-proxy in {container_name} (upstream: {upstream_url})"
             )
             cmd = [
-                "sh", "-c",
+                "sh",
+                "-c",
                 f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &",
             ]
             exec_id = await docker_client.exec_create(container_id, cmd)
@@ -346,9 +347,7 @@ class InfraService(ABC):
                 return False
 
         except Exception as e:
-            logger.error(
-                f"Exception starting oauth2-proxy in {container_name}: {e}"
-            )
+            logger.error(f"Exception starting oauth2-proxy in {container_name}: {e}")
             return False
 
     async def start(self) -> dict:

@@ -182,18 +182,30 @@ class MinioService(InfraService):
             # Mirror each bucket to a temp location inside the container
             backup_container_dir = "/tmp/minio-backup"
             await run_docker_command(
-                "docker", "exec", self.container_name,
-                "rm", "-rf", backup_container_dir,
+                "docker",
+                "exec",
+                self.container_name,
+                "rm",
+                "-rf",
+                backup_container_dir,
             )
             await run_docker_command(
-                "docker", "exec", self.container_name,
-                "mkdir", "-p", backup_container_dir,
+                "docker",
+                "exec",
+                self.container_name,
+                "mkdir",
+                "-p",
+                backup_container_dir,
             )
 
             for bucket in buckets:
                 stdout, stderr, rc = await run_docker_command(
-                    "docker", "exec", self.container_name,
-                    "mc", "mirror", f"local/{bucket}",
+                    "docker",
+                    "exec",
+                    self.container_name,
+                    "mc",
+                    "mirror",
+                    f"local/{bucket}",
                     f"{backup_container_dir}/{bucket}",
                 )
                 if rc != 0:
@@ -213,8 +225,12 @@ class MinioService(InfraService):
 
             # Write manifest inside container
             await run_docker_command(
-                "docker", "exec", self.container_name,
-                "sh", "-c", f"cat > {backup_container_dir}/manifest.json << 'MANIFESTEOF'\n{manifest_json}\nMANIFESTEOF",
+                "docker",
+                "exec",
+                self.container_name,
+                "sh",
+                "-c",
+                f"cat > {backup_container_dir}/manifest.json << 'MANIFESTEOF'\n{manifest_json}\nMANIFESTEOF",
             )
 
             # Create tarball inside container and copy it out
@@ -225,9 +241,15 @@ class MinioService(InfraService):
             tarball_container_path = f"/tmp/{tarball_name}"
 
             stdout, stderr, rc = await run_docker_command(
-                "docker", "exec", self.container_name,
-                "tar", "-czf", tarball_container_path,
-                "-C", backup_container_dir, ".",
+                "docker",
+                "exec",
+                self.container_name,
+                "tar",
+                "-czf",
+                tarball_container_path,
+                "-C",
+                backup_container_dir,
+                ".",
             )
             if rc != 0:
                 raise RuntimeError(f"tar failed: {stderr}")
@@ -236,7 +258,8 @@ class MinioService(InfraService):
             tarball_path = os.path.join(backup_path, tarball_name)
 
             stdout, stderr, rc = await run_docker_command(
-                "docker", "cp",
+                "docker",
+                "cp",
                 f"{self.container_name}:{tarball_container_path}",
                 tarball_path,
             )
@@ -245,8 +268,13 @@ class MinioService(InfraService):
 
             # Cleanup inside container
             await run_docker_command(
-                "docker", "exec", self.container_name,
-                "rm", "-rf", backup_container_dir, tarball_container_path,
+                "docker",
+                "exec",
+                self.container_name,
+                "rm",
+                "-rf",
+                backup_container_dir,
+                tarball_container_path,
             )
 
             logger.info(f"Backup completed: {tarball_path}")
@@ -272,9 +300,16 @@ class MinioService(InfraService):
 
         # Configure mc alias
         stdout, stderr, rc = await run_docker_command(
-            "docker", "exec", self.container_name,
-            "mc", "alias", "set", "local",
-            "http://localhost:9000", access_key, secret_key,
+            "docker",
+            "exec",
+            self.container_name,
+            "mc",
+            "alias",
+            "set",
+            "local",
+            "http://localhost:9000",
+            access_key,
+            secret_key,
         )
         if rc != 0:
             raise RuntimeError(f"mc alias set failed: {stderr}")
@@ -284,36 +319,57 @@ class MinioService(InfraService):
         if os.path.isfile(backup_path) and backup_path.endswith(".tar.gz"):
             # Copy tarball into container and extract
             await run_docker_command(
-                "docker", "exec", self.container_name,
-                "rm", "-rf", restore_container_dir,
+                "docker",
+                "exec",
+                self.container_name,
+                "rm",
+                "-rf",
+                restore_container_dir,
             )
             await run_docker_command(
-                "docker", "exec", self.container_name,
-                "mkdir", "-p", restore_container_dir,
+                "docker",
+                "exec",
+                self.container_name,
+                "mkdir",
+                "-p",
+                restore_container_dir,
             )
 
             stdout, stderr, rc = await run_docker_command(
-                "docker", "cp", backup_path,
+                "docker",
+                "cp",
+                backup_path,
                 f"{self.container_name}:/tmp/minio-restore.tar.gz",
             )
             if rc != 0:
                 raise RuntimeError(f"docker cp failed: {stderr}")
 
             stdout, stderr, rc = await run_docker_command(
-                "docker", "exec", self.container_name,
-                "tar", "-xzf", "/tmp/minio-restore.tar.gz",
-                "-C", restore_container_dir,
+                "docker",
+                "exec",
+                self.container_name,
+                "tar",
+                "-xzf",
+                "/tmp/minio-restore.tar.gz",
+                "-C",
+                restore_container_dir,
             )
             if rc != 0:
                 raise RuntimeError(f"tar extract failed: {stderr}")
         elif os.path.isdir(backup_path):
             # Copy directory contents into container
             await run_docker_command(
-                "docker", "exec", self.container_name,
-                "rm", "-rf", restore_container_dir,
+                "docker",
+                "exec",
+                self.container_name,
+                "rm",
+                "-rf",
+                restore_container_dir,
             )
             stdout, stderr, rc = await run_docker_command(
-                "docker", "cp", backup_path,
+                "docker",
+                "cp",
+                backup_path,
                 f"{self.container_name}:{restore_container_dir}",
             )
             if rc != 0:
@@ -326,8 +382,11 @@ class MinioService(InfraService):
         try:
             # Read manifest to get bucket list
             stdout, stderr, rc = await run_docker_command(
-                "docker", "exec", self.container_name,
-                "cat", f"{restore_container_dir}/manifest.json",
+                "docker",
+                "exec",
+                self.container_name,
+                "cat",
+                f"{restore_container_dir}/manifest.json",
             )
 
             buckets = []
@@ -341,8 +400,12 @@ class MinioService(InfraService):
             if not buckets:
                 # Fallback: list directories in the restore dir
                 stdout, stderr, rc = await run_docker_command(
-                    "docker", "exec", self.container_name,
-                    "ls", "-d", f"{restore_container_dir}/*/",
+                    "docker",
+                    "exec",
+                    self.container_name,
+                    "ls",
+                    "-d",
+                    f"{restore_container_dir}/*/",
                 )
                 if rc == 0:
                     for line in stdout.strip().split("\n"):
@@ -354,14 +417,23 @@ class MinioService(InfraService):
             for bucket in buckets:
                 # Create bucket if it doesn't exist
                 await run_docker_command(
-                    "docker", "exec", self.container_name,
-                    "mc", "mb", "--ignore-existing", f"local/{bucket}",
+                    "docker",
+                    "exec",
+                    self.container_name,
+                    "mc",
+                    "mb",
+                    "--ignore-existing",
+                    f"local/{bucket}",
                 )
 
                 # Mirror data back
                 stdout, stderr, rc = await run_docker_command(
-                    "docker", "exec", self.container_name,
-                    "mc", "mirror", "--overwrite",
+                    "docker",
+                    "exec",
+                    self.container_name,
+                    "mc",
+                    "mirror",
+                    "--overwrite",
                     f"{restore_container_dir}/{bucket}",
                     f"local/{bucket}",
                 )
@@ -370,8 +442,13 @@ class MinioService(InfraService):
 
             # Cleanup
             await run_docker_command(
-                "docker", "exec", self.container_name,
-                "rm", "-rf", restore_container_dir, "/tmp/minio-restore.tar.gz",
+                "docker",
+                "exec",
+                self.container_name,
+                "rm",
+                "-rf",
+                restore_container_dir,
+                "/tmp/minio-restore.tar.gz",
             )
 
             logger.info("MinIO restore completed")
@@ -383,7 +460,12 @@ class MinioService(InfraService):
         except Exception:
             # Cleanup on failure
             await run_docker_command(
-                "docker", "exec", self.container_name,
-                "rm", "-rf", restore_container_dir, "/tmp/minio-restore.tar.gz",
+                "docker",
+                "exec",
+                self.container_name,
+                "rm",
+                "-rf",
+                restore_container_dir,
+                "/tmp/minio-restore.tar.gz",
             )
             raise
