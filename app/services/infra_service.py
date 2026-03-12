@@ -102,7 +102,7 @@ class InfraService(ABC):
 
     def caddy_hostname(self) -> str:
         """Return the Caddy hostname for this service."""
-        return f"{self.workspace_name}--{self.service_type}{self.service_suffix}.{self.gitops_domain}"
+        return f"{self.workspace_name}-{self.service_type}{self.service_suffix}.{self.gitops_domain}"
 
     @property
     def secrets_file_path(self) -> str:
@@ -275,6 +275,82 @@ class InfraService(ABC):
         """Hook for extra cleanup during disable. Override in subclasses."""
         pass
 
+    async def _start_oauth2_proxy_in_container(self, container_name: str) -> bool:
+        """Start oauth2-proxy inside a container via docker exec.
+
+        Uses the same pattern as AutomationService.start_oauth2_proxy_in_container:
+        checks labels for gitops.oauth2.enabled, then starts oauth2-proxy in the
+        background if not already running.
+        """
+        from app.async_docker import get_async_docker_client
+
+        docker_client = get_async_docker_client()
+
+        try:
+            # Find the container by name
+            containers = await docker_client.list_containers(
+                filters={"name": [f"^/{container_name}$"]}
+            )
+            if not containers:
+                logger.warning(f"Container {container_name} not found")
+                return False
+
+            container = containers[0]
+            container_id = container.get("Id")
+            labels = container.get("Labels", {})
+
+            if labels.get("gitops.oauth2.enabled") != "true":
+                logger.debug(f"oauth2 not enabled for {container_name}")
+                return True
+
+            state = container.get("State", "")
+            if state != "running":
+                logger.warning(
+                    f"Container {container_name} is not running (state: {state})"
+                )
+                return False
+
+            upstream_url = labels.get("gitops.oauth2.upstream")
+            if not upstream_url:
+                logger.warning(f"No oauth2 upstream URL label on {container_name}")
+                return False
+
+            # Check if already running
+            exec_id = await docker_client.exec_create(
+                container_id, ["sh", "-c", "pgrep -f oauth2-proxy || true"]
+            )
+            output = await docker_client.exec_start(exec_id)
+            exec_info = await docker_client.exec_inspect(exec_id)
+
+            if exec_info.get("ExitCode") == 0 and output.strip():
+                logger.info(f"oauth2-proxy already running in {container_name}")
+                return True
+
+            # Start oauth2-proxy in background
+            logger.info(
+                f"Starting oauth2-proxy in {container_name} (upstream: {upstream_url})"
+            )
+            cmd = [
+                "sh", "-c",
+                f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &",
+            ]
+            exec_id = await docker_client.exec_create(container_id, cmd)
+            await docker_client.exec_start(exec_id)
+            exec_info = await docker_client.exec_inspect(exec_id)
+
+            if exec_info.get("ExitCode", 0) == 0:
+                logger.info(f"oauth2-proxy started in {container_name}")
+                return True
+            else:
+                logger.error(f"Failed to start oauth2-proxy in {container_name}")
+                return False
+
+        except Exception as e:
+            logger.error(
+                f"Exception starting oauth2-proxy in {container_name}: {e}"
+            )
+            return False
+
     async def start(self) -> dict:
         """Start the service container via docker start."""
         logger.info(
@@ -360,7 +436,16 @@ def get_service(
             kafka_image=kwargs.get("kafka_image", ""),
             ui_image=kwargs.get("ui_image", ""),
         )
+    elif service_type == "postgres":
+        from app.services.postgres_service import PostgresService
+
+        return PostgresService(
+            workspace_name,
+            stage,
+            postgres_image=kwargs.get("postgres_image", ""),
+            pgadmin_image=kwargs.get("pgadmin_image", ""),
+        )
     else:
         raise ValueError(
-            f"Unknown service type: {service_type}. Supported: couchdb, kafka"
+            f"Unknown service type: {service_type}. Supported: couchdb, kafka, postgres"
         )

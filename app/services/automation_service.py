@@ -640,6 +640,90 @@ class AutomationService:
 
         return success
 
+    async def start_oauth2_proxy_in_infra_services(
+        self, infra_service_names: list[str]
+    ):
+        """Start oauth2-proxy in infra service containers that have oauth2 labels.
+
+        Uses the same docker exec pattern as start_oauth2_proxy_in_container
+        but operates on infra service containers (e.g., pgAdmin) identified by
+        their compose service names.
+        """
+        from app.async_docker import get_async_docker_client
+
+        if not infra_service_names:
+            return
+
+        docker_client = get_async_docker_client()
+
+        for svc_name in infra_service_names:
+            try:
+                containers = await docker_client.list_containers(
+                    filters={"label": [f"com.docker.compose.service={svc_name}"]}
+                )
+                for container in containers:
+                    container_id = container.get("Id")
+                    labels = container.get("Labels", {})
+                    container_name = container.get("Names", [svc_name])[0].lstrip("/")
+
+                    if labels.get("gitops.oauth2.enabled") != "true":
+                        continue
+
+                    state = container.get("State", "")
+                    if state != "running":
+                        logger.warning(
+                            f"Container {container_name} not running, "
+                            f"cannot start oauth2-proxy"
+                        )
+                        continue
+
+                    upstream_url = labels.get("gitops.oauth2.upstream")
+                    if not upstream_url:
+                        continue
+
+                    # Check if already running
+                    exec_id = await docker_client.exec_create(
+                        container_id,
+                        ["sh", "-c", "pgrep -f oauth2-proxy || true"],
+                    )
+                    output = await docker_client.exec_start(exec_id)
+                    exec_info = await docker_client.exec_inspect(exec_id)
+
+                    if exec_info.get("ExitCode") == 0 and output.strip():
+                        logger.info(
+                            f"oauth2-proxy already running in {container_name}"
+                        )
+                        continue
+
+                    logger.info(
+                        f"Starting oauth2-proxy in {container_name} "
+                        f"(upstream: {upstream_url})"
+                    )
+                    cmd = [
+                        "sh",
+                        "-c",
+                        f"oauth2-proxy --upstream={upstream_url} "
+                        f"> /tmp/oauth2-proxy.log 2>&1 &",
+                    ]
+                    exec_id = await docker_client.exec_create(container_id, cmd)
+                    await docker_client.exec_start(exec_id)
+
+                    exec_info = await docker_client.exec_inspect(exec_id)
+                    if exec_info.get("ExitCode", 0) == 0:
+                        logger.info(
+                            f"oauth2-proxy started in {container_name}"
+                        )
+                    else:
+                        logger.error(
+                            f"Failed to start oauth2-proxy in {container_name}"
+                        )
+
+            except Exception as e:
+                logger.error(
+                    f"Exception starting oauth2-proxy for infra service "
+                    f"{svc_name}: {e}"
+                )
+
     async def install_certificates_in_container(self, deployment_id: str):
         """Install CA certificates in all running containers for a deployment"""
         containers = await self.get_container(deployment_id)
@@ -914,6 +998,7 @@ fi
         await self.install_certificates_in_container(deployment_id)
         await _report("starting_oauth2_proxy", "Starting OAuth2 proxy...")
         await self.start_oauth2_proxy_in_container(deployment_id)
+        await self.start_oauth2_proxy_in_infra_services(infra_service_names)
 
         if image_tag:
             await _report("storing_tags", "Recording image tag...")
@@ -980,7 +1065,7 @@ fi
             if dep_services:
                 await self.enable_services(dep_services, dep_stage)
 
-        dc_yaml, _infra_names = self.generate_docker_compose(filtered_bs_yaml)
+        dc_yaml, infra_names = self.generate_docker_compose(filtered_bs_yaml)
         self._save_docker_compose(dc_yaml)
         deployments = active_deployments
 
@@ -1000,6 +1085,7 @@ fi
         for deployment_id in deployments.keys():
             await self.install_certificates_in_container(deployment_id)
             await self.start_oauth2_proxy_in_container(deployment_id)
+        await self.start_oauth2_proxy_in_infra_services(infra_names)
 
         return {
             "message": "Deployed services successfully",
@@ -1088,6 +1174,7 @@ fi
         # Run post-deploy hooks on all containers
         await self.install_certificates_in_container(deployment_id)
         await self.start_oauth2_proxy_in_container(deployment_id)
+        await self.start_oauth2_proxy_in_infra_services(infra_service_names)
 
         return {
             "status": "success",
