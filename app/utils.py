@@ -93,8 +93,12 @@ class AutomationConfig:
     auth: bool = False  # Enable Keycloak authentication
     image: str = "bitswan/pipeline-runtime-environment:latest"
     expose: bool = False
-    expose_to: list[str] | None = None
     port: int = 8080
+    # Per-stage expose_to groups (from [expose_to] section in automation.toml)
+    live_dev_expose_to: list[str] | None = None
+    dev_expose_to: list[str] | None = None
+    staging_expose_to: list[str] | None = None
+    production_expose_to: list[str] | None = None
     config_format: str = "ini"  # "toml" or "ini"
     mount_path: str = "/opt/pipelines"  # "/app/" for TOML, "/opt/pipelines" for INI
     # Stage-specific secret groups (only for automation.toml - no general fallback)
@@ -106,6 +110,21 @@ class AutomationConfig:
     allowed_domains: list[str] | None = None
     # Infrastructure service dependencies
     services: dict[str, ServiceDependency] | None = None
+
+
+def get_expose_to_for_stage(config: AutomationConfig, stage: str) -> list[str]:
+    """Resolve expose_to groups for a given stage."""
+    if stage == "live-dev":
+        groups = config.live_dev_expose_to
+    elif stage == "dev":
+        groups = config.dev_expose_to
+    elif stage == "staging":
+        groups = config.staging_expose_to
+    elif stage == "production":
+        groups = config.production_expose_to
+    else:
+        groups = None
+    return groups or []
 
 
 def _parse_string_or_list(value) -> list[str] | None:
@@ -127,11 +146,7 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
         data = toml.loads(content)
         deployment = data.get("deployment", {})
         secrets = data.get("secrets", {})
-
-        # Parse expose_to as a list
-        expose_to = deployment.get("expose_to")
-        if isinstance(expose_to, str):
-            expose_to = [g.strip() for g in expose_to.split(",") if g.strip()]
+        expose_to_section = data.get("expose_to", {})
 
         # Parse allowed_domains as a list (for CORS in Keycloak client)
         allowed_domains = deployment.get("allowed_domains")
@@ -161,7 +176,6 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
                 "image", "bitswan/pipeline-runtime-environment:latest"
             ),
             expose=deployment.get("expose", False),
-            expose_to=expose_to,
             port=deployment.get("port", 8080),
             config_format="toml",
             mount_path="/app/",
@@ -169,6 +183,13 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
             dev_groups=_parse_string_or_list(secrets.get("dev")),
             staging_groups=_parse_string_or_list(secrets.get("staging")),
             production_groups=_parse_string_or_list(secrets.get("production")),
+            # Per-stage expose_to from [expose_to] section
+            live_dev_expose_to=_parse_string_or_list(expose_to_section.get("live-dev")),
+            dev_expose_to=_parse_string_or_list(expose_to_section.get("dev")),
+            staging_expose_to=_parse_string_or_list(expose_to_section.get("staging")),
+            production_expose_to=_parse_string_or_list(
+                expose_to_section.get("production")
+            ),
             allowed_domains=allowed_domains,
             services=services,
         )
@@ -199,12 +220,6 @@ def read_automation_config(source_dir: str) -> AutomationConfig:
     # Fall back to pipelines.conf
     pipeline_conf = read_pipeline_conf(source_dir)
     if pipeline_conf:
-        # Parse expose_to as a list
-        expose_to = None
-        if pipeline_conf.has_option("deployment", "expose_to"):
-            expose_to_value = pipeline_conf.get("deployment", "expose_to")
-            expose_to = [g.strip() for g in expose_to_value.split(",") if g.strip()]
-
         # Parse id and auth for Keycloak
         automation_id = None
         if pipeline_conf.has_option("deployment", "id"):
@@ -220,7 +235,6 @@ def read_automation_config(source_dir: str) -> AutomationConfig:
                 fallback="bitswan/pipeline-runtime-environment:latest",
             ),
             expose=pipeline_conf.getboolean("deployment", "expose", fallback=False),
-            expose_to=expose_to,
             port=int(pipeline_conf.get("deployment", "port", fallback="8080")),
             config_format="ini",
             mount_path="/opt/pipelines",
