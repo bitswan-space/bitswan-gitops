@@ -13,6 +13,7 @@ from app.utils import (
     add_workspace_route_to_caddy,
     AutomationConfig,
     ServiceDependency,
+    get_expose_to_for_stage,
     calculate_git_tree_hash,
     docker_compose_up,
     generate_workspace_url,
@@ -1752,7 +1753,9 @@ fi
                 # This avoids needing filesystem access to the workspace
                 stored_image = conf.get("image")
                 stored_expose = conf.get("expose", False)
-                stored_expose_to = conf.get("expose_to")
+                stored_expose_to = conf.get(
+                    "expose_to"
+                )  # stage-specific, sent by editor
                 stored_port = conf.get("port", 8080)
                 stored_mount_path = conf.get("mount_path", "/app/")
                 stored_secret_groups = conf.get("secret_groups")
@@ -1770,8 +1773,8 @@ fi
                     auth=stored_auth,
                     image=stored_image,
                     expose=stored_expose,
-                    expose_to=stored_expose_to,
                     port=stored_port,
+                    live_dev_expose_to=stored_expose_to,
                     config_format="toml",
                     mount_path=stored_mount_path,
                     live_dev_groups=stored_secret_groups,
@@ -1976,7 +1979,7 @@ fi
             entry["image"] = automation_config.image
             expose = automation_config.expose
             port = automation_config.port
-            expose_to_groups = automation_config.expose_to or []
+            expose_to_groups = get_expose_to_for_stage(automation_config, stage)
 
             # Error if both expose and expose_to_groups are set
             if expose and expose_to_groups:
