@@ -377,6 +377,19 @@ async def upload_asset_stream(
             os.unlink(temp_path)
 
 
+@router.get("/assets/{checksum}/download")
+async def download_asset(
+    checksum: str,
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    zip_bytes = automation_service.download_asset(checksum)
+    return StreamingResponse(
+        iter([zip_bytes]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{checksum}.zip"'},
+    )
+
+
 @router.get("/assets/diff")
 async def get_asset_diff(
     from_checksum: str = Query(...),
