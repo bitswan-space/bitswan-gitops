@@ -469,10 +469,8 @@ def _calculate_git_tree_hash_recursive(
 
     # Get all entries and sort them (directories first, then alphabetical)
     items = []
-    # Directories that may be generated at runtime and should not affect checksums
-    _ignore_dirs = {".git", "dist", "__pycache__"}
     for item in os.listdir(dir_path):
-        if item in _ignore_dirs:
+        if item == ".git":
             continue
         item_path = os.path.join(dir_path, item)
         # Skip symlinks - they should not be included in deployments
@@ -482,6 +480,14 @@ def _calculate_git_tree_hash_recursive(
                     f"{relative_path}/{item}" if relative_path else item
                 )
                 logger.info(f"Skipping symlink: {entry_relative_path}")
+            continue
+        # Skip unreadable files/directories (e.g. root-owned __pycache__ from containers)
+        if not os.access(item_path, os.R_OK):
+            if logger:
+                entry_relative_path = (
+                    f"{relative_path}/{item}" if relative_path else item
+                )
+                logger.info(f"Skipping unreadable: {entry_relative_path}")
             continue
         is_dir = os.path.isdir(item_path)
         # Skip anything that's not a regular file or directory
