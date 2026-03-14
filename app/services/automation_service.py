@@ -389,6 +389,103 @@ class AutomationService:
             "checksum": checksum,
         }
 
+    async def get_asset_diff(
+        self, from_checksum: str, to_checksum: str, word_diff: bool = False
+    ):
+        """
+        Compute a diff between two asset directories identified by checksum.
+        Uses `git diff --no-index` which is read-only and requires no git lock.
+        """
+        import re
+
+        # Validate checksums are hex strings of expected length
+        hex_pattern = re.compile(r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
+        if not hex_pattern.match(from_checksum):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid from_checksum: must be a 40 or 64 character hex string",
+            )
+        if not hex_pattern.match(to_checksum):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid to_checksum: must be a 40 or 64 character hex string",
+            )
+
+        # Early return if checksums are identical
+        if from_checksum == to_checksum:
+            return {
+                "diff": "",
+                "identical": True,
+                "from_checksum": from_checksum,
+                "to_checksum": to_checksum,
+                "truncated": False,
+            }
+
+        # Determine paths based on HOST_PATH
+        host_path = os.environ.get("HOST_PATH")
+        if host_path:
+            base_dir = self.gitops_dir_host
+        else:
+            base_dir = self.gitops_dir
+
+        from_dir = os.path.join(base_dir, from_checksum)
+        to_dir = os.path.join(base_dir, to_checksum)
+
+        # Check directories exist (use local paths for existence check)
+        from_dir_local = os.path.join(self.gitops_dir, from_checksum)
+        to_dir_local = os.path.join(self.gitops_dir, to_checksum)
+
+        if not os.path.isdir(from_dir_local):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Asset directory not found for checksum: {from_checksum}",
+            )
+        if not os.path.isdir(to_dir_local):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Asset directory not found for checksum: {to_checksum}",
+            )
+
+        # Build git diff command
+        diff_args = ["git", "diff", "--no-index"]
+        if word_diff:
+            diff_args.append("--word-diff")
+        diff_args.extend([from_dir, to_dir])
+
+        stdout, stderr, return_code = await call_git_command_with_output(
+            *diff_args, cwd=base_dir
+        )
+
+        # Exit codes: 0=identical, 1=diffs found, >1=error
+        if return_code > 1:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error computing diff: {stderr}",
+            )
+
+        identical = return_code == 0
+
+        # Post-process: replace full directory paths with a/ and b/ prefixes
+        diff_output = stdout
+        diff_output = diff_output.replace(from_dir + "/", "a/")
+        diff_output = diff_output.replace(to_dir + "/", "b/")
+        diff_output = diff_output.replace(from_dir, "a")
+        diff_output = diff_output.replace(to_dir, "b")
+
+        # Truncate at 1MB
+        max_size = 1 * 1024 * 1024
+        truncated = len(diff_output) > max_size
+        if truncated:
+            diff_output = diff_output[:max_size]
+
+        return {
+            "diff": diff_output,
+            "identical": identical,
+            "from_checksum": from_checksum,
+            "to_checksum": to_checksum,
+            "truncated": truncated,
+        }
+
     def list_assets(self):
         """
         List all assets (checksum directories) in the gitops directory.
