@@ -301,6 +301,14 @@ async def stream_automation_logs(
     )
 
 
+@router.get("/{deployment_id}/inspect")
+async def inspect_automation(
+    deployment_id: str,
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    return await automation_service.inspect_automation(deployment_id)
+
+
 @router.post("/{deployment_id}")
 async def create_automation(
     deployment_id: str,

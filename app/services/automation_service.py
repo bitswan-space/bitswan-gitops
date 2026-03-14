@@ -100,6 +100,23 @@ class AutomationService:
         )
         return containers
 
+    async def inspect_automation(self, deployment_id: str) -> list[dict]:
+        """Get full docker inspect for all containers of a deployment."""
+        containers = await self.get_container(deployment_id)
+        if not containers:
+            return []
+        docker_client = get_async_docker_client()
+        results = []
+        for container in containers:
+            container_id = container.get("Id") or container.get("id")
+            if container_id:
+                try:
+                    inspect_data = await docker_client.get_container(container_id)
+                    results.append(inspect_data)
+                except Exception:
+                    pass  # container may have been removed
+        return results
+
     async def get_containers(self) -> list[dict]:
         """Get all gitops containers using async Docker client."""
         docker_client = get_async_docker_client()
