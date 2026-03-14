@@ -377,6 +377,16 @@ async def upload_asset_stream(
             os.unlink(temp_path)
 
 
+@router.get("/assets/diff")
+async def get_asset_diff(
+    from_checksum: str = Query(...),
+    to_checksum: str = Query(...),
+    word_diff: bool = Query(False),
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    return await automation_service.get_asset_diff(from_checksum, to_checksum, word_diff)
+
+
 @router.get("/assets")
 async def list_assets(
     automation_service: AutomationService = Depends(get_automation_service),
