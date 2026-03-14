@@ -137,6 +137,7 @@ async def deploy_automation(
     expose_to: str | None = Form(None),  # JSON list: ["/Example Org/admin"]
     services: str | None = Form(None),  # JSON: {"kafka": {"enabled": true}, ...}
     replicas: str | None = Form(None),  # replicas as string from form
+    deployed_by: str | None = Form(None),  # email of the user who triggered the deploy
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     # Guard: reject if already deploying
@@ -206,6 +207,7 @@ async def deploy_automation(
         allowed_domains=allowed_domains_list,
         services=services_dict,
         replicas=replicas_int,
+        deployed_by=deployed_by,
     )
 
     # Spawn background task — returns 202 immediately
