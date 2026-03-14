@@ -638,9 +638,7 @@ class AutomationService:
             # Fetch bitswan.yaml for each commit AND its parent in parallel
             fetch_tasks = []
             for c in batch:
-                fetch_tasks.append(
-                    self._fetch_yaml_at_commit(c["commit"], bitswan_dir)
-                )
+                fetch_tasks.append(self._fetch_yaml_at_commit(c["commit"], bitswan_dir))
                 fetch_tasks.append(
                     self._fetch_yaml_at_commit(c["commit"] + "^", bitswan_dir)
                 )
@@ -677,9 +675,9 @@ class AutomationService:
                         try:
                             parent_yaml = yaml.safe_load(parent_content)
                             if parent_yaml and "deployments" in parent_yaml:
-                                parent_config = parent_yaml.get(
-                                    "deployments", {}
-                                ).get(deployment_id)
+                                parent_config = parent_yaml.get("deployments", {}).get(
+                                    deployment_id
+                                )
                                 if parent_config:
                                     parent_checksum = parent_config.get("checksum")
                                     parent_replicas = parent_config.get("replicas", 1)
