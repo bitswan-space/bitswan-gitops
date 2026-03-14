@@ -596,7 +596,7 @@ class AutomationService:
                 self._history_cache.clear()
 
         # Get commits that modified bitswan.yaml
-        log_format = '{"commit": "%H", "author": "%an", "date": "%ai", "message": "%s"}'
+        log_format = '{"commit": "%H", "author": "%an", "author_email": "%ae", "date": "%ai", "message": "%s"}'
         stdout, stderr, return_code = await call_git_command_with_output(
             "git",
             "log",
@@ -624,26 +624,32 @@ class AutomationService:
 
         # Process commits in batches — stop early when we have enough entries.
         # Only cache the result if we processed ALL commits (complete history).
+        # For each commit, compare this deployment's config with the parent commit
+        # to determine if THIS commit actually modified the deployment.
         entries_needed = page * page_size
         BATCH_SIZE = 20
 
         history_entries = []
-        previous_checksum = None
-        previous_replicas = None
         processed_all = True
 
         for batch_start in range(0, len(commits), BATCH_SIZE):
             batch = commits[batch_start : batch_start + BATCH_SIZE]
 
-            # Fetch bitswan.yaml content for this batch in parallel
-            results = await asyncio.gather(
-                *[self._fetch_yaml_at_commit(c["commit"], bitswan_dir) for c in batch]
-            )
-            content_by_hash = dict(results)
+            # Fetch bitswan.yaml for each commit AND its parent in parallel
+            fetch_tasks = []
+            for c in batch:
+                fetch_tasks.append(
+                    self._fetch_yaml_at_commit(c["commit"], bitswan_dir)
+                )
+                fetch_tasks.append(
+                    self._fetch_yaml_at_commit(c["commit"] + "^", bitswan_dir)
+                )
+            results = await asyncio.gather(*fetch_tasks)
+            content_by_key = dict(results)
 
             for commit in batch:
                 commit_hash = commit["commit"]
-                content = content_by_hash.get(commit_hash)
+                content = content_by_key.get(commit_hash)
                 if content is None:
                     continue
 
@@ -662,15 +668,32 @@ class AutomationService:
                     current_checksum = deployment_config.get("checksum")
                     current_replicas = deployment_config.get("replicas", 1)
 
-                    checksum_changed = (
-                        current_checksum and current_checksum != previous_checksum
-                    )
-                    replicas_changed = current_replicas != previous_replicas
+                    # Compare with parent commit to see if THIS commit
+                    # actually changed this deployment
+                    parent_content = content_by_key.get(commit_hash + "^")
+                    parent_checksum = None
+                    parent_replicas = None
+                    if parent_content:
+                        try:
+                            parent_yaml = yaml.safe_load(parent_content)
+                            if parent_yaml and "deployments" in parent_yaml:
+                                parent_config = parent_yaml.get(
+                                    "deployments", {}
+                                ).get(deployment_id)
+                                if parent_config:
+                                    parent_checksum = parent_config.get("checksum")
+                                    parent_replicas = parent_config.get("replicas", 1)
+                        except yaml.YAMLError:
+                            pass
+
+                    checksum_changed = current_checksum != parent_checksum
+                    replicas_changed = current_replicas != parent_replicas
 
                     if checksum_changed or replicas_changed:
                         entry = {
                             "commit": commit_hash,
                             "author": commit["author"],
+                            "author_email": commit.get("author_email"),
                             "date": commit["date"],
                             "message": commit["message"],
                             "checksum": current_checksum,
@@ -681,8 +704,6 @@ class AutomationService:
                             "replicas": current_replicas,
                         }
                         history_entries.append(entry)
-                        previous_checksum = current_checksum
-                        previous_replicas = current_replicas
 
                 except yaml.YAMLError:
                     continue
@@ -1000,6 +1021,7 @@ fi
         allowed_domains: list[str] | None = None,
         services: dict | None = None,
         replicas: int | None = None,
+        deployed_by: str | None = None,
         progress_callback: Callable[..., Any] | None = None,
     ):
         async def _report(step: str, message: str):
@@ -1016,7 +1038,11 @@ fi
             with open(bitswan_yaml_path, "w") as f:
                 yaml.dump(bs_yaml, f)
             await update_git(
-                self.gitops_dir, self.gitops_dir_host, deployment_id, "initialize"
+                self.gitops_dir,
+                self.gitops_dir_host,
+                deployment_id,
+                "initialize",
+                deployed_by=deployed_by,
             )
 
         await _report("updating_config", "Updating deployment configuration...")
@@ -1090,7 +1116,11 @@ fi
                 yaml.dump(bs_yaml, f)
 
             await update_git(
-                self.gitops_dir, self.gitops_dir_host, deployment_id, "deploy"
+                self.gitops_dir,
+                self.gitops_dir_host,
+                deployment_id,
+                "deploy",
+                deployed_by=deployed_by,
             )
 
             # Re-read to get updated config
@@ -1179,7 +1209,11 @@ fi
                     yaml.dump(bs_yaml, f)
 
                 await update_git(
-                    self.gitops_dir, self.gitops_dir_host, deployment_id, "deploy"
+                    self.gitops_dir,
+                    self.gitops_dir_host,
+                    deployment_id,
+                    "deploy",
+                    deployed_by=deployed_by,
                 )
 
         return {

@@ -559,7 +559,11 @@ async def calculate_git_tree_hash(dir_path: str) -> str:
 
 
 async def update_git(
-    bitswan_home: str, bitswan_home_host: str, deployment_id: str, action: str
+    bitswan_home: str,
+    bitswan_home_host: str,
+    deployment_id: str,
+    action: str,
+    deployed_by: str | None = None,
 ):
     """
     Update git repository with changes to bitswan.yaml.
@@ -607,11 +611,16 @@ async def update_git(
             dc_git_path = os.path.join(bitswan_dir, "docker-compose.yaml")
             await call_git_command("git", "add", dc_git_path, cwd=bitswan_dir)
 
+        author = (
+            f"{deployed_by} <{deployed_by}>"
+            if deployed_by
+            else "gitops <info@bitswan.space>"
+        )
         await call_git_command(
             "git",
             "commit",
             "--author",
-            "gitops <info@bitswan.space>",
+            author,
             "-m",
             f"{action} deployment {deployment_id}",
             cwd=bitswan_dir,
