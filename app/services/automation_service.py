@@ -403,12 +403,12 @@ class AutomationService:
         if not hex_pattern.match(from_checksum):
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid from_checksum: must be a 40 or 64 character hex string",
+                detail="Invalid from_checksum: must be a 40 or 64 character hex string",
             )
         if not hex_pattern.match(to_checksum):
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid to_checksum: must be a 40 or 64 character hex string",
+                detail="Invalid to_checksum: must be a 40 or 64 character hex string",
             )
 
         # Early return if checksums are identical
