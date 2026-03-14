@@ -486,6 +486,38 @@ class AutomationService:
             "truncated": truncated,
         }
 
+    def download_asset(self, checksum: str) -> bytes:
+        """
+        Create a zip archive of the asset directory identified by checksum.
+        Returns the zip bytes for streaming to the client.
+        """
+        import re
+        import io
+
+        hex_pattern = re.compile(r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
+        if not hex_pattern.match(checksum):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid checksum: must be a 40 or 64 character hex string",
+            )
+
+        asset_dir = os.path.join(self.gitops_dir, checksum)
+        if not os.path.isdir(asset_dir):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Asset directory not found for checksum: {checksum}",
+            )
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, _dirs, files in os.walk(asset_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, asset_dir)
+                    zf.write(file_path, arcname)
+
+        return buf.getvalue()
+
     def list_assets(self):
         """
         List all assets (checksum directories) in the gitops directory.
