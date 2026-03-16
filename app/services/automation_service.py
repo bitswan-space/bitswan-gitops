@@ -1952,7 +1952,7 @@ fi
                     image=stored_image,
                     expose=stored_expose,
                     port=stored_port,
-                    live_dev_expose_to=stored_expose_to,
+                    dev_expose_to=stored_expose_to,
                     config_format="toml",
                     mount_path=stored_mount_path,
                     live_dev_groups=stored_secret_groups,
