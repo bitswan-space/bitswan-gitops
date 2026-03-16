@@ -147,6 +147,27 @@ async def update_service(service_type: str, request: ServiceActionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/couchdb/initialize")
+async def initialize_couchdb(request: ServiceActionRequest):
+    """Create CouchDB system databases (_users, _replicator, _global_changes).
+
+    Call this once after a fresh CouchDB container starts for the first time.
+    Safe to call multiple times — skips databases that already exist.
+    """
+    workspace = _get_workspace_name()
+
+    try:
+        from app.services.couchdb_service import CouchDBService
+
+        svc = CouchDBService(workspace, stage=request.stage)
+        result = await svc.initialize()
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/couchdb/backup")
 async def backup_couchdb(request: ServiceBackupRequest):
     """Backup CouchDB databases to a tarball."""
