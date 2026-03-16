@@ -83,6 +83,105 @@ class CouchDBService(InfraService):
             info["admin_ui"] = f"https://{self.caddy_hostname()}/_utils/"
         return info
 
+    async def _wait_until_ready(self, timeout_seconds: int = 60) -> bool:
+        """Poll CouchDB /_up until it responds 200 or timeout."""
+        import time
+
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            stdout, _, rc = await run_docker_command(
+                "docker",
+                "exec",
+                self.container_name,
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "http://localhost:5984/_up",
+            )
+            if rc == 0 and stdout.strip() == "200":
+                return True
+            await asyncio.sleep(2)
+        return False
+
+    async def initialize(self) -> dict:
+        """Create CouchDB system databases (_users, _replicator, _global_changes).
+
+        Must be called after the container first starts. Safe to call multiple times.
+        """
+        if not self.is_enabled():
+            raise ValueError(f"{self.display_name} is not enabled")
+        if not await self.is_running():
+            raise ValueError(f"{self.display_name} is not running")
+
+        info = self._get_connection_info()
+        user = info.get("username", "admin")
+        password = info.get("password", "")
+
+        if not await self._wait_until_ready():
+            raise RuntimeError(
+                f"{self.display_name} did not become ready within 60 seconds"
+            )
+
+        system_dbs = ["_users", "_replicator", "_global_changes"]
+        created = []
+        existed = []
+
+        for db in system_dbs:
+            stdout, _, _ = await run_docker_command(
+                "docker",
+                "exec",
+                self.container_name,
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "-u",
+                f"{user}:{password}",
+                f"http://localhost:5984/{db}",
+            )
+            if stdout.strip() == "200":
+                existed.append(db)
+                continue
+
+            stdout, stderr, rc = await run_docker_command(
+                "docker",
+                "exec",
+                self.container_name,
+                "curl",
+                "-s",
+                "-X",
+                "PUT",
+                "-u",
+                f"{user}:{password}",
+                f"http://localhost:5984/{db}",
+            )
+            if rc != 0:
+                raise RuntimeError(f"Failed to create system database '{db}': {stderr}")
+            created.append(db)
+            logger.info(f"Created system database '{db}'")
+
+        return {
+            "status": "ok",
+            "created": created,
+            "existed": existed,
+        }
+
+    async def start(self) -> dict:
+        """Start the CouchDB container and initialize system databases."""
+        result = await super().start()
+        try:
+            await self.initialize()
+        except Exception as e:
+            logger.warning(
+                f"System DB initialization after start failed (may need manual /initialize): {e}"
+            )
+        return result
+
     async def backup(self, backup_path: str) -> dict:
         """Backup CouchDB databases to a tarball.
 

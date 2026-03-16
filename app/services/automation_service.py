@@ -996,6 +996,7 @@ fi
             deployment_id,
             extra_services=infra_service_names,
         )
+        await self._post_deploy_infra_services(bs_yaml)
 
         # record deployment in bitswan.yaml
 
@@ -1089,6 +1090,7 @@ fi
         # deploy_automations starts all services (no filter), so infra services
         # are included automatically via --remove-orphans
         deployment_result = await docker_compose_up(self.gitops_dir, dc_yaml)
+        await self._post_deploy_infra_services(filtered_bs_yaml)
 
         for result in deployment_result.values():
             if result["return_code"] != 0:
@@ -1180,6 +1182,7 @@ fi
             deployment_id,
             extra_services=infra_service_names,
         )
+        await self._post_deploy_infra_services(bs_yaml)
 
         for result in deployment_result.values():
             if result["return_code"] != 0:
@@ -1629,6 +1632,36 @@ fi
         except Exception as e:
             print(f"Warning: Exception while getting/creating public client: {str(e)}")
             return None
+
+    async def _post_deploy_infra_services(self, bs_yaml: dict) -> None:
+        """Call post-start init hooks for infra services after docker-compose up."""
+        from app.services.infra_service import get_service, stage_for_deployment
+
+        seen: set[tuple[str, str]] = set()
+        for dep_conf in bs_yaml.get("deployments", {}).values():
+            dep_conf = dep_conf or {}
+            dep_stage = dep_conf.get("stage") or "production"
+            mapped_stage = stage_for_deployment(dep_stage)
+            for svc_type, svc_conf in (dep_conf.get("services") or {}).items():
+                enabled = (
+                    svc_conf.get("enabled", True)
+                    if isinstance(svc_conf, dict)
+                    else bool(svc_conf)
+                )
+                if not enabled or (svc_type, mapped_stage) in seen:
+                    continue
+                seen.add((svc_type, mapped_stage))
+                try:
+                    svc = get_service(svc_type, self.workspace_name, stage=mapped_stage)
+                except ValueError:
+                    continue
+                if hasattr(svc, "initialize"):
+                    try:
+                        await svc.initialize()
+                    except Exception as e:
+                        logger.warning(
+                            f"Post-deploy init for {svc.display_name} failed: {e}"
+                        )
 
     async def enable_services(self, services: dict, stage: str) -> None:
         """Auto-enable infrastructure services for a specific deployment.
