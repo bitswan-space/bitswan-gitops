@@ -95,7 +95,6 @@ class AutomationConfig:
     expose: bool = False
     port: int = 8080
     # Per-stage expose_to groups (from [expose_to] section in automation.toml)
-    live_dev_expose_to: list[str] | None = None
     dev_expose_to: list[str] | None = None
     staging_expose_to: list[str] | None = None
     production_expose_to: list[str] | None = None
@@ -114,9 +113,7 @@ class AutomationConfig:
 
 def get_expose_to_for_stage(config: AutomationConfig, stage: str) -> list[str]:
     """Resolve expose_to groups for a given stage."""
-    if stage == "live-dev":
-        groups = config.live_dev_expose_to
-    elif stage == "dev":
+    if stage == "live-dev" or stage == "dev":
         groups = config.dev_expose_to
     elif stage == "staging":
         groups = config.staging_expose_to
@@ -184,7 +181,6 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
             staging_groups=_parse_string_or_list(secrets.get("staging")),
             production_groups=_parse_string_or_list(secrets.get("production")),
             # Per-stage expose_to from [expose_to] section
-            live_dev_expose_to=_parse_string_or_list(expose_to_section.get("live-dev")),
             dev_expose_to=_parse_string_or_list(expose_to_section.get("dev")),
             staging_expose_to=_parse_string_or_list(expose_to_section.get("staging")),
             production_expose_to=_parse_string_or_list(
