@@ -62,7 +62,7 @@ class PostgresService(InfraService):
         )
 
     def _generate_compose_dict(self) -> dict:
-        oauth2_proxy_path = os.environ.get("OAUTH2_PROXY_PATH", "")
+        pgadmin_upstream = "http://127.0.0.1:80"
 
         pgadmin_entry = {
             "container_name": self.pgadmin_container_name,
@@ -76,33 +76,14 @@ class PostgresService(InfraService):
             "labels": {},
         }
 
-        # OAuth2-proxy injection for pgAdmin (same docker exec pattern as expose_to)
-        # The oauth2-proxy binary is mounted and env vars set at compose time,
-        # then oauth2-proxy is started via docker exec after the container boots
-        if oauth2_proxy_path:
-            oauth2_envs = {
-                k: v for k, v in os.environ.items() if k.startswith("OAUTH2")
-            }
-            oauth2_envs["OAUTH_ENABLED"] = "true"
-            oauth2_envs["OAUTH2_PROXY_UPSTREAMS"] = "http://127.0.0.1:80"
-            oauth2_envs["OAUTH2_PROXY_HTTP_ADDRESS"] = "0.0.0.0:9999"
-
-            # Use same MQTT groups topic as the editor for consistent permissions
-            if "OAUTH2_PROXY_MQTT_ALLOWED_GROUPS_TOPIC" not in oauth2_envs:
-                oauth2_envs["OAUTH2_PROXY_MQTT_ALLOWED_GROUPS_TOPIC"] = "/groups"
-
-            if self.gitops_domain:
-                endpoint = f"https://{self.caddy_hostname()}"
-                redirect_uri = f"{endpoint}/oauth2/callback"
-                oauth2_envs["OAUTH2_PROXY_REDIRECT_URL"] = redirect_uri
-                oauth2_envs["BITSWAN_AUTOMATION_URL"] = endpoint
-
-            pgadmin_entry["environment"] = oauth2_envs
-            pgadmin_entry["volumes"].append(
-                f"{oauth2_proxy_path}:/usr/local/bin/oauth2-proxy:ro"
-            )
+        # OAuth2-proxy injection for pgAdmin
+        # Env vars are set at compose time; the oauth2-proxy binary is copied
+        # into the container and started via docker exec after boot.
+        # Desktop mode disables pgAdmin's own login since OAuth handles auth.
+        if self.oauth2_enabled:
+            pgadmin_entry["environment"] = self._get_oauth2_env_vars(pgadmin_upstream)
             pgadmin_entry["labels"]["gitops.oauth2.enabled"] = "true"
-            pgadmin_entry["labels"]["gitops.oauth2.upstream"] = "http://127.0.0.1:80"
+            pgadmin_entry["labels"]["gitops.oauth2.upstream"] = pgadmin_upstream
 
         return {
             "services": {
@@ -124,8 +105,7 @@ class PostgresService(InfraService):
 
     def _get_caddy_upstream(self) -> str:
         # When oauth2-proxy is active, route through it (port 9999)
-        oauth2_proxy_path = os.environ.get("OAUTH2_PROXY_PATH", "")
-        if oauth2_proxy_path:
+        if self.oauth2_enabled:
             return f"{self.pgadmin_container_name}:9999"
         return f"{self.pgadmin_container_name}:80"
 

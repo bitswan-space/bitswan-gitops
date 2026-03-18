@@ -48,7 +48,7 @@ class MinioService(InfraService):
         )
 
     def _generate_compose_dict(self) -> dict:
-        oauth2_proxy_path = os.environ.get("OAUTH2_PROXY_PATH", "")
+        console_upstream = "http://127.0.0.1:9001"
 
         minio_entry = {
             "image": self.minio_image,
@@ -62,29 +62,10 @@ class MinioService(InfraService):
         }
 
         # OAuth2-proxy injection for MinIO Console
-        if oauth2_proxy_path:
-            oauth2_envs = {
-                k: v for k, v in os.environ.items() if k.startswith("OAUTH2")
-            }
-            oauth2_envs["OAUTH_ENABLED"] = "true"
-            oauth2_envs["OAUTH2_PROXY_UPSTREAMS"] = "http://127.0.0.1:9001"
-            oauth2_envs["OAUTH2_PROXY_HTTP_ADDRESS"] = "0.0.0.0:9999"
-
-            if "OAUTH2_PROXY_MQTT_ALLOWED_GROUPS_TOPIC" not in oauth2_envs:
-                oauth2_envs["OAUTH2_PROXY_MQTT_ALLOWED_GROUPS_TOPIC"] = "/groups"
-
-            if self.gitops_domain:
-                endpoint = f"https://{self.caddy_hostname()}"
-                redirect_uri = f"{endpoint}/oauth2/callback"
-                oauth2_envs["OAUTH2_PROXY_REDIRECT_URL"] = redirect_uri
-                oauth2_envs["BITSWAN_AUTOMATION_URL"] = endpoint
-
-            minio_entry["environment"] = oauth2_envs
-            minio_entry["volumes"].append(
-                f"{oauth2_proxy_path}:/usr/local/bin/oauth2-proxy:ro"
-            )
+        if self.oauth2_enabled:
+            minio_entry["environment"] = self._get_oauth2_env_vars(console_upstream)
             minio_entry["labels"]["gitops.oauth2.enabled"] = "true"
-            minio_entry["labels"]["gitops.oauth2.upstream"] = "http://127.0.0.1:9001"
+            minio_entry["labels"]["gitops.oauth2.upstream"] = console_upstream
 
         return {
             "services": {
@@ -98,8 +79,7 @@ class MinioService(InfraService):
 
     def _get_caddy_upstream(self) -> str:
         # When oauth2-proxy is active, route through it (port 9999)
-        oauth2_proxy_path = os.environ.get("OAUTH2_PROXY_PATH", "")
-        if oauth2_proxy_path:
+        if self.oauth2_enabled:
             return f"{self.container_name}:9999"
         # MinIO Console runs on port 9001
         return f"{self.container_name}:9001"
