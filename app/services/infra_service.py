@@ -12,6 +12,8 @@ import secrets
 import string
 from abc import ABC, abstractmethod
 
+import requests
+
 from app.utils import SERVICE_REALMS
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,19 @@ async def run_docker_command(
     )
     stdout, stderr = await proc.communicate()
     return stdout.decode(), stderr.decode(), proc.returncode
+
+
+OAUTH2_PROXY_PATH = "/usr/local/bin/oauth2-proxy"
+
+# Shell command to check if oauth2-proxy is running inside a container.
+# Uses /proc/*/comm instead of pgrep/grep which may not exist in minimal images.
+OAUTH2_PROXY_CHECK_CMD = [
+    "sh",
+    "-c",
+    "for f in /proc/[0-9]*/comm; do "
+    "if [ \"$(cat $f 2>/dev/null)\" = 'oauth2-proxy' ]; then exit 0; fi; "
+    "done; exit 1",
+]
 
 
 class InfraService(ABC):
@@ -111,6 +126,32 @@ class InfraService(ABC):
     @property
     def secrets_file_path_host(self) -> str:
         return os.path.join(self.secrets_dir_host, self.secrets_file_name)
+
+    @property
+    def oauth2_enabled(self) -> bool:
+        """Check if OAuth2 proxy is configured in the environment."""
+        return any(k.startswith("OAUTH2") for k in os.environ)
+
+    def _get_oauth2_env_vars(self, upstream: str) -> dict:
+        """Build OAuth2 proxy environment variables for a container.
+
+        Args:
+            upstream: The upstream URL oauth2-proxy forwards to (e.g. http://127.0.0.1:80).
+        """
+        oauth2_envs = {k: v for k, v in os.environ.items() if k.startswith("OAUTH2")}
+        oauth2_envs["OAUTH_ENABLED"] = "true"
+        oauth2_envs["OAUTH2_PROXY_UPSTREAMS"] = upstream
+        oauth2_envs["OAUTH2_PROXY_HTTP_ADDRESS"] = "0.0.0.0:9999"
+
+        if "OAUTH2_PROXY_MQTT_ALLOWED_GROUPS_TOPIC" not in oauth2_envs:
+            oauth2_envs["OAUTH2_PROXY_MQTT_ALLOWED_GROUPS_TOPIC"] = "/groups"
+
+        if self.gitops_domain:
+            endpoint = f"https://{self.caddy_hostname()}"
+            oauth2_envs["OAUTH2_PROXY_REDIRECT_URL"] = f"{endpoint}/oauth2/callback"
+            oauth2_envs["BITSWAN_AUTOMATION_URL"] = endpoint
+
+        return oauth2_envs
 
     def is_enabled(self) -> bool:
         """Check if the service is enabled (secrets file exists)."""
@@ -183,16 +224,61 @@ class InfraService(ABC):
         caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
         caddy_id = f"svc-{self.service_type}{self.service_suffix}.{self.workspace_name}"
 
-        import requests as req
-
         try:
-            response = req.delete(f"{caddy_url}/id/{caddy_id}")
+            response = requests.delete(f"{caddy_url}/id/{caddy_id}")
             if response.status_code == 200:
                 logger.info(f"Unregistered {self.display_name} from Caddy")
                 return True
         except Exception as e:
             logger.warning(f"Failed to unregister {self.display_name} from Caddy: {e}")
         return False
+
+    async def _register_oauth2_redirect_uri(self) -> None:
+        """Register this service's OAuth2 redirect URI with AOC/Keycloak.
+
+        Adds the service's callback URL to the workspace Keycloak client so
+        that OAuth2 login redirects are accepted.
+        """
+        if not self.oauth2_enabled or not self.gitops_domain:
+            return
+
+        aoc_url = os.environ.get("BITSWAN_AOC_URL")
+        aoc_token = os.environ.get("BITSWAN_AOC_TOKEN")
+        workspace_id = os.environ.get("BITSWAN_WORKSPACE_ID")
+
+        if not aoc_url or not aoc_token or not workspace_id:
+            logger.warning(
+                f"AOC not configured, skipping OAuth2 redirect URI registration for {self.display_name}"
+            )
+            return
+
+        redirect_uri = f"https://{self.caddy_hostname()}/oauth2/callback"
+        url = f"{aoc_url}/api/automation_server/workspaces/{workspace_id}/keycloak/add-redirect-uri/"
+
+        try:
+            response = await asyncio.to_thread(
+                requests.post,
+                url,
+                headers={
+                    "Authorization": f"Bearer {aoc_token}",
+                    "Content-Type": "application/json",
+                },
+                json={"redirect_uri": redirect_uri},
+                timeout=30,
+            )
+            if response.status_code == 200:
+                logger.info(
+                    f"Registered OAuth2 redirect URI for {self.display_name}: {redirect_uri}"
+                )
+            else:
+                logger.warning(
+                    f"Failed to register OAuth2 redirect URI for {self.display_name}: "
+                    f"{response.status_code} - {response.text}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"Exception registering OAuth2 redirect URI for {self.display_name}: {e}"
+            )
 
     async def enable(self) -> dict:
         """Enable the service: generate secrets, extra setup, register Caddy.
@@ -218,6 +304,9 @@ class InfraService(ABC):
 
         # Register with Caddy
         await self._register_with_caddy()
+
+        # Register OAuth2 redirect URI with AOC/Keycloak
+        await self._register_oauth2_redirect_uri()
 
         logger.info(f"{self.display_name} enabled successfully!")
         return {
@@ -275,12 +364,42 @@ class InfraService(ABC):
         """Hook for extra cleanup during disable. Override in subclasses."""
         pass
 
+    @staticmethod
+    async def _is_oauth2_proxy_running(docker_client, container_id: str) -> bool:
+        """Check if oauth2-proxy is already running inside a container."""
+        exec_id = await docker_client.exec_create(container_id, OAUTH2_PROXY_CHECK_CMD)
+        await docker_client.exec_start(exec_id)
+        exec_info = await docker_client.exec_inspect(exec_id)
+        return exec_info.get("ExitCode") == 0
+
+    @staticmethod
+    async def _copy_oauth2_proxy_to_container(
+        container_id: str, container_name: str
+    ) -> bool:
+        """Copy the oauth2-proxy binary into a container. Returns True on success."""
+        logger.info(f"Copying oauth2-proxy into {container_name}")
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "cp",
+            OAUTH2_PROXY_PATH,
+            f"{container_id}:/usr/local/bin/oauth2-proxy",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.error(
+                f"Failed to copy oauth2-proxy into {container_name}: {stderr.decode()}"
+            )
+            return False
+        return True
+
     async def _start_oauth2_proxy_in_container(self, container_name: str) -> bool:
         """Start oauth2-proxy inside a container via docker exec.
 
-        Uses the same pattern as AutomationService.start_oauth2_proxy_in_container:
-        checks labels for gitops.oauth2.enabled, then starts oauth2-proxy in the
-        background if not already running.
+        Copies the oauth2-proxy binary from the gitops container into the target
+        container, then starts it in the background. Same pattern as
+        AutomationService.start_oauth2_proxy_in_container.
         """
         from app.async_docker import get_async_docker_client
 
@@ -315,16 +434,14 @@ class InfraService(ABC):
                 logger.warning(f"No oauth2 upstream URL label on {container_name}")
                 return False
 
-            # Check if already running
-            exec_id = await docker_client.exec_create(
-                container_id, ["sh", "-c", "pgrep -f oauth2-proxy || true"]
-            )
-            output = await docker_client.exec_start(exec_id)
-            exec_info = await docker_client.exec_inspect(exec_id)
-
-            if exec_info.get("ExitCode") == 0 and output.strip():
+            if await self._is_oauth2_proxy_running(docker_client, container_id):
                 logger.info(f"oauth2-proxy already running in {container_name}")
                 return True
+
+            if not await self._copy_oauth2_proxy_to_container(
+                container_id, container_name
+            ):
+                return False
 
             # Start oauth2-proxy in background
             logger.info(

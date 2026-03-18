@@ -30,6 +30,7 @@ from app.utils import (
 )
 from app.async_docker import get_async_docker_client, DockerError
 from app.services.image_service import ImageService
+from app.services.infra_service import OAUTH2_PROXY_PATH, InfraService
 from fastapi import UploadFile, HTTPException
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ class AutomationService:
         self.aoc_token = os.environ.get("BITSWAN_AOC_TOKEN")
         self.gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN")
         self.workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME")
-        self.oauth2_proxy_path = "/usr/local/bin/oauth2-proxy"
+        self.oauth2_proxy_path = OAUTH2_PROXY_PATH
         self.oauth2_proxy_port = 9999
         self.certs_dir_host = os.environ.get("BITSWAN_CERTS_DIR")
         self.gitops_dir = os.path.join(self.bs_home, "gitops")
@@ -779,30 +780,16 @@ class AutomationService:
                 docker_client = get_async_docker_client()
 
                 # Check if oauth2-proxy is already running to avoid duplicates
-                exec_id = await docker_client.exec_create(
-                    container_id, ["sh", "-c", "pgrep -x oauth2-proxy || true"]
-                )
-                output = await docker_client.exec_start(exec_id)
-                exec_info = await docker_client.exec_inspect(exec_id)
-
-                if exec_info.get("ExitCode") == 0 and output.strip():
+                if await InfraService._is_oauth2_proxy_running(
+                    docker_client, container_id
+                ):
                     print(f"oauth2-proxy already running in container {container_name}")
                     continue
 
                 # Copy oauth2-proxy binary into the container
-                proc = await asyncio.create_subprocess_exec(
-                    "docker",
-                    "cp",
-                    self.oauth2_proxy_path,
-                    f"{container_id}:/usr/local/bin/oauth2-proxy",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                _, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                    print(
-                        f"Failed to copy oauth2-proxy into container {container_name}: {stderr.decode()}"
-                    )
+                if not await InfraService._copy_oauth2_proxy_to_container(
+                    container_id, container_name
+                ):
                     success = False
                     continue
 
@@ -882,15 +869,16 @@ class AutomationService:
                         continue
 
                     # Check if already running
-                    exec_id = await docker_client.exec_create(
-                        container_id,
-                        ["sh", "-c", "pgrep -f oauth2-proxy || true"],
-                    )
-                    output = await docker_client.exec_start(exec_id)
-                    exec_info = await docker_client.exec_inspect(exec_id)
-
-                    if exec_info.get("ExitCode") == 0 and output.strip():
+                    if await InfraService._is_oauth2_proxy_running(
+                        docker_client, container_id
+                    ):
                         logger.info(f"oauth2-proxy already running in {container_name}")
+                        continue
+
+                    # Copy oauth2-proxy binary into the container
+                    if not await InfraService._copy_oauth2_proxy_to_container(
+                        container_id, container_name
+                    ):
                         continue
 
                     logger.info(
