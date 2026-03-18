@@ -29,7 +29,11 @@ from app.utils import (
 )
 from app.async_docker import get_async_docker_client, DockerError
 from app.services.image_service import ImageService
-from app.services.infra_service import OAUTH2_PROXY_PATH, InfraService
+from app.services.oauth2_helpers import (
+    OAUTH2_PROXY_PATH,
+    copy_oauth2_proxy_to_container,
+    is_oauth2_proxy_running,
+)
 from fastapi import UploadFile, HTTPException
 
 logger = logging.getLogger(__name__)
@@ -764,14 +768,14 @@ class AutomationService:
                 docker_client = get_async_docker_client()
 
                 # Check if oauth2-proxy is already running to avoid duplicates
-                if await InfraService._is_oauth2_proxy_running(
+                if await is_oauth2_proxy_running(
                     docker_client, container_id
                 ):
                     print(f"oauth2-proxy already running in container {container_name}")
                     continue
 
                 # Copy oauth2-proxy binary into the container
-                if not await InfraService._copy_oauth2_proxy_to_container(
+                if not await copy_oauth2_proxy_to_container(
                     container_id, container_name
                 ):
                     success = False
@@ -853,14 +857,14 @@ class AutomationService:
                         continue
 
                     # Check if already running
-                    if await InfraService._is_oauth2_proxy_running(
+                    if await is_oauth2_proxy_running(
                         docker_client, container_id
                     ):
                         logger.info(f"oauth2-proxy already running in {container_name}")
                         continue
 
                     # Copy oauth2-proxy binary into the container
-                    if not await InfraService._copy_oauth2_proxy_to_container(
+                    if not await copy_oauth2_proxy_to_container(
                         container_id, container_name
                     ):
                         continue
