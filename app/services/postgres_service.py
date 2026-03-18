@@ -79,7 +79,6 @@ class PostgresService(InfraService):
         # OAuth2-proxy injection for pgAdmin
         # Env vars are set at compose time; the oauth2-proxy binary is copied
         # into the container and started via docker exec after boot.
-        # Desktop mode disables pgAdmin's own login since OAuth handles auth.
         if self.oauth2_enabled:
             pgadmin_entry["environment"] = self._get_oauth2_env_vars(pgadmin_upstream)
             pgadmin_entry["labels"]["gitops.oauth2.enabled"] = "true"

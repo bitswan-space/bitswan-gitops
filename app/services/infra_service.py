@@ -54,9 +54,7 @@ OAUTH2_PROXY_PATH = "/usr/local/bin/oauth2-proxy"
 OAUTH2_PROXY_CHECK_CMD = [
     "sh",
     "-c",
-    "for f in /proc/[0-9]*/comm; do "
-    "if [ \"$(cat $f 2>/dev/null)\" = 'oauth2-proxy' ]; then exit 0; fi; "
-    "done; exit 1",
+    'for f in /proc/[0-9]*/comm; do if [ "$(cat $f 2>/dev/null)" = "oauth2-proxy" ]; then exit 0; fi; done; exit 1',
 ]
 
 
