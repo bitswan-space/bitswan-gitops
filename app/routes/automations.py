@@ -368,13 +368,17 @@ async def upload_asset_stream(
             temp_file.write(chunk)
 
     try:
-        # Create a file-like object for the service
         result = await automation_service.upload_asset_from_path(
             temp_path, checksum=checksum
         )
         return JSONResponse(content=result)
+    except HTTPException as exc:
+        logger.error("upload_asset_stream failed [%s]: %s", exc.status_code, exc.detail)
+        raise
+    except Exception as exc:
+        logger.exception("upload_asset_stream unexpected error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
     finally:
-        # Clean up temp file
         if os.path.exists(temp_path):
             os.unlink(temp_path)
 
