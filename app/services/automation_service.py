@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import json
+import shutil
 from tempfile import NamedTemporaryFile
 import zipfile
 import yaml
@@ -342,12 +343,22 @@ class AutomationService:
         output_dir = os.path.join(self.gitops_dir, checksum)
         os.makedirs(output_dir, exist_ok=True)
 
-        with zipfile.ZipFile(file_path, "r") as zip_ref:
-            zip_ref.extractall(output_dir)
+        try:
+            with zipfile.ZipFile(file_path, "r") as zip_ref:
+                zip_ref.extractall(output_dir)
+        except zipfile.BadZipFile as e:
+            shutil.rmtree(output_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=f"Invalid zip file: {e}")
 
         # Verify the checksum using git tree hash algorithm
         calculated_hash = await calculate_git_tree_hash(output_dir)
         if calculated_hash != checksum:
+            shutil.rmtree(output_dir, ignore_errors=True)
+            logger.error(
+                "Checksum mismatch: expected=%s got=%s — extracted dir removed",
+                checksum,
+                calculated_hash,
+            )
             raise HTTPException(
                 status_code=400,
                 detail=f"Checksum verification failed. Expected {checksum}, got {calculated_hash}",
