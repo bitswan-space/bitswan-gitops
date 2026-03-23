@@ -1858,6 +1858,45 @@ fi
                             f"Post-deploy init for {svc.display_name} failed: {e}"
                         )
 
+    def get_org_group_path(self):
+        """Fetch the Keycloak org group path for this workspace from AOC.
+
+        Returns the group path string (e.g. "/Example Org").
+        Raises HTTPException if the group path cannot be resolved.
+        """
+        if not self.workspace_id or not self.aoc_url or not self.aoc_token:
+            raise HTTPException(
+                status_code=500,
+                detail="AOC not configured, cannot fetch org group path",
+            )
+
+        url = f"{self.aoc_url}/api/automation_server/workspaces/{self.workspace_id}/keycloak/org-group-path/"
+        headers = {"Authorization": f"Bearer {self.aoc_token}"}
+
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code == 200:
+                group_path = response.json().get("group_path")
+                if not group_path:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="AOC returned empty org group path",
+                    )
+                print(f"Got org group path: {group_path}")
+                return group_path
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to get org group path: {response.status_code} - {response.text}",
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Exception fetching org group path: {e}",
+            )
+
     async def enable_services(self, services: dict, stage: str) -> None:
         """Auto-enable infrastructure services for a specific deployment.
 
@@ -2212,6 +2251,19 @@ fi
             port = automation_config.port
             expose_to_groups = get_expose_to_for_stage(automation_config, stage)
 
+            # resolve groups to inject them for group validation
+            org_group_path = self.get_org_group_path()
+
+            # "*" means the org group itself, "/admin" becomes "/Example Org/admin".
+            if expose_to_groups:
+                resolved = []
+                for g in expose_to_groups:
+                    if g == "*":
+                        resolved.append(org_group_path)
+                    else:
+                        resolved.append(f"{org_group_path}{g}")
+                expose_to_groups = resolved
+
             # Error if both expose and expose_to_groups are set
             if expose and expose_to_groups:
                 raise HTTPException(
@@ -2317,50 +2369,9 @@ fi
                 )
                 entry["environment"]["KEYCLOAK_ISSUER_URL"] = keycloak_url
 
-            # Handle Keycloak public client for frontend apps
-            # Uses auth + id approach: when auth=true, id is used as Keycloak client_id
-            if automation_config.auth and automation_config.id:
-                # Build the redirect URI for this deployment
-                automation_url = f"https://{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
-                redirect_uri = f"{automation_url}/*"
-
-                # Build web_origins for CORS: automation URL + any allowed_domains from config
-                web_origins = [automation_url]
-                if automation_config.allowed_domains:
-                    web_origins.extend(automation_config.allowed_domains)
-
-                # Get or create the public client via AOC
-                client_result = self.get_or_create_public_client(
-                    client_id=automation_config.id,
-                    redirect_uri=redirect_uri,
-                    web_origins=web_origins,
-                )
-
-                if client_result:
-                    # Inject Keycloak client ID and override URL if available from client result
-                    entry["environment"]["KEYCLOAK_CLIENT_ID"] = client_result.get(
-                        "client_id", automation_config.id
-                    )
-                    if client_result.get("issuer_url"):
-                        issuer_url = client_result.get("issuer_url")
-                        entry["environment"]["KEYCLOAK_URL"] = (
-                            issuer_url.rsplit("/realms/", 1)[0]
-                            if "/realms/" in issuer_url
-                            else issuer_url
-                        )
-                        entry["environment"]["KEYCLOAK_REALM"] = (
-                            issuer_url.rsplit("/realms/", 1)[-1]
-                            if "/realms/" in issuer_url
-                            else ""
-                        )
-                        entry["environment"]["KEYCLOAK_ISSUER_URL"] = issuer_url
-                    print(
-                        f"Injected Keycloak config for client {automation_config.id} into deployment {deployment_id}"
-                    )
-                else:
-                    print(
-                        f"Warning: Failed to get/create public client {automation_config.id} for deployment {deployment_id}"
-                    )
+            # Always inject the org group path so any automation can verify
+            # group membership in JWT tokens (group_membership claim).
+            entry["environment"]["BITSWAN_ALLOWED_GROUP"] = org_group_path
 
             if "volumes" not in entry:
                 entry["volumes"] = []
