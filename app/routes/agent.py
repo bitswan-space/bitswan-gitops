@@ -117,13 +117,20 @@ def _scan_worktree_automations(worktree: str) -> list[dict]:
     if not os.path.isdir(worktree_path):
         return []
 
+    skip_dirs = {"templates", "worktrees", ".git"}
     results = []
+    seen_ids: set[str] = set()
     for root, dirs, files in os.walk(worktree_path):
+        # Prune directories we should never recurse into
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
         if "automation.toml" in files:
             rel_path = os.path.relpath(root, worktree_path)
             source_name = os.path.basename(root)
             sanitized = _sanitize_name(source_name)
             deployment_id = f"{sanitized}-wt-{worktree}-live-dev"
+            if deployment_id in seen_ids:
+                continue
+            seen_ids.add(deployment_id)
             results.append({
                 "deployment_id": deployment_id,
                 "automation_name": source_name,
