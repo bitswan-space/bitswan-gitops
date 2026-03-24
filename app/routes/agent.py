@@ -423,6 +423,65 @@ async def commit_worktree(
     return {"status": "success", "commit_hash": commit_hash}
 
 
+# --- VCS query endpoints ---
+
+
+@router.get("/worktrees/{worktree_name}/status")
+async def worktree_status(
+    worktree_name: str,
+    _token=Depends(verify_agent_token),
+):
+    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+    if not os.path.exists(worktree_path):
+        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+
+    stdout, stderr, rc = await call_git_command_with_output(
+        "git", "status", cwd=worktree_path
+    )
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"git status failed: {stderr.strip()}")
+    return {"output": stdout}
+
+
+@router.get("/worktrees/{worktree_name}/log")
+async def worktree_log(
+    worktree_name: str,
+    n: int = Query(20, ge=1, le=200),
+    _token=Depends(verify_agent_token),
+):
+    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+    if not os.path.exists(worktree_path):
+        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+
+    stdout, stderr, rc = await call_git_command_with_output(
+        "git", "log", f"--oneline", f"-{n}", cwd=worktree_path
+    )
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"git log failed: {stderr.strip()}")
+    return {"output": stdout}
+
+
+@router.get("/worktrees/{worktree_name}/diff")
+async def worktree_diff(
+    worktree_name: str,
+    path: str = Query(None),
+    _token=Depends(verify_agent_token),
+):
+    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+    if not os.path.exists(worktree_path):
+        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+
+    git_args = ["git", "diff", "HEAD"]
+    if path:
+        git_args += ["--", path]
+    stdout, stderr, rc = await call_git_command_with_output(
+        *git_args, cwd=worktree_path
+    )
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"git diff failed: {stderr.strip()}")
+    return {"output": stdout}
+
+
 # --- Docker exec endpoint ---
 
 
