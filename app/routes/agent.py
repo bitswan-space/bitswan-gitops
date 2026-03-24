@@ -13,7 +13,6 @@ from pydantic import BaseModel
 from app.async_docker import get_async_docker_client, DockerError
 from app.dependencies import get_automation_service
 from app.services.automation_service import AutomationService
-from app.services.requirements_service import RequirementsService
 from app.utils import (
     call_git_command,
     call_git_command_with_output,
@@ -97,10 +96,6 @@ def _get_workspace_dir() -> str:
 
 def _get_worktrees_base() -> str:
     return os.path.join(_get_workspace_dir(), "worktrees")
-
-
-def _get_requirements_service() -> RequirementsService:
-    return RequirementsService(_get_workspace_dir())
 
 
 # --- Deployment endpoints ---
@@ -535,99 +530,3 @@ async def exec_in_deployment(
     }
 
 
-# --- Requirements endpoints (per business process) ---
-
-
-@router.get("/requirements/{business_process:path}")
-async def get_requirements(
-    business_process: str,
-    _token=Depends(verify_agent_token),
-):
-    svc = _get_requirements_service()
-    try:
-        return svc.get_requirements(business_process)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.put("/requirements/{business_process:path}")
-async def update_requirements(
-    business_process: str,
-    requirements: list,
-    _token=Depends(verify_agent_token),
-):
-    svc = _get_requirements_service()
-    try:
-        return svc.save_requirements(business_process, requirements)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-class AddRequirementRequest(BaseModel):
-    text: str
-    parent: str = ""
-
-
-@router.post("/requirements-add/{business_process:path}")
-async def add_requirement(
-    business_process: str,
-    body: AddRequirementRequest,
-    _token=Depends(verify_agent_token),
-):
-    svc = _get_requirements_service()
-    try:
-        return svc.add_requirement(business_process, body.text, parent=body.parent)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-class UpdateRequirementRequest(BaseModel):
-    status: str = None
-    text: str = None
-    notes: str = None
-
-
-@router.put("/requirements-update/{business_process:path}/{req_id}")
-async def update_single_requirement(
-    business_process: str,
-    req_id: str,
-    body: UpdateRequirementRequest,
-    _token=Depends(verify_agent_token),
-):
-    svc = _get_requirements_service()
-    try:
-        return svc.update_requirement(
-            business_process, req_id,
-            status=body.status, text=body.text, notes=body.notes,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.delete("/requirements-delete/{business_process:path}/{req_id}")
-async def remove_requirement(
-    business_process: str,
-    req_id: str,
-    _token=Depends(verify_agent_token),
-):
-    svc = _get_requirements_service()
-    try:
-        svc.remove_requirement(business_process, req_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return {"status": "success", "message": f"Requirement '{req_id}' removed"}
-
-
-@router.get("/requirements-next/{business_process:path}")
-async def next_requirement(
-    business_process: str,
-    _token=Depends(verify_agent_token),
-):
-    svc = _get_requirements_service()
-    try:
-        req = svc.get_next_requirement(business_process)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    if req is None:
-        return {"status": "all_passing", "message": "All requirements passing!"}
-    return {"status": "found", "requirement": req}
