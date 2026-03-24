@@ -109,6 +109,8 @@ class AutomationConfig:
     allowed_domains: list[str] | None = None
     # Infrastructure service dependencies
     services: dict[str, ServiceDependency] | None = None
+    # Use host network for external access (Selenium testing)
+    external_testing_network: bool = False
 
 
 def get_expose_to_for_stage(config: AutomationConfig, stage: str) -> list[str]:
@@ -188,6 +190,7 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
             ),
             allowed_domains=allowed_domains,
             services=services,
+            external_testing_network=deployment.get("external-testing-network", False),
         )
     except Exception:
         return None

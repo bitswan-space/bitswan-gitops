@@ -2131,6 +2131,11 @@ fi
             if not network_mode:
                 network_mode = conf.get("network_mode")
 
+            # external-testing-network: use host network so the container
+            # routes traffic externally like a real client (for Selenium testing)
+            if not network_mode and automation_config.external_testing_network:
+                network_mode = "host"
+
             if network_mode:
                 entry["network_mode"] = network_mode
             elif "networks" in conf:
