@@ -10,6 +10,8 @@ from app.routes.jupyter import router as jupyter_router
 from app.routes.services import router as services_router
 from app.routes.docs import router as docs_router
 from app.routes.events import router as events_router
+from app.routes.worktrees import router as worktrees_router
+from app.routes.agent import router as agent_router
 from app.dependencies import verify_token
 
 
@@ -52,8 +54,11 @@ app.include_router(images_router, dependencies=[Depends(verify_token)])
 app.include_router(jupyter_router, dependencies=[Depends(verify_token)])
 app.include_router(services_router, dependencies=[Depends(verify_token)])
 app.include_router(events_router, dependencies=[Depends(verify_token)])
+app.include_router(worktrees_router, dependencies=[Depends(verify_token)])
 # Docs router is public - no auth required
 app.include_router(docs_router)
+# Agent router uses its own verify_agent_token dependency (per-route)
+app.include_router(agent_router)
 
 
 def custom_openapi():
