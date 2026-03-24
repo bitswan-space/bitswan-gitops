@@ -573,6 +573,7 @@ async def update_requirements(
 
 class AddRequirementRequest(BaseModel):
     text: str
+    parent: str = ""
 
 
 @router.post("/requirements-add/{business_process:path}")
@@ -583,7 +584,7 @@ async def add_requirement(
 ):
     svc = _get_requirements_service()
     try:
-        return svc.add_requirement(business_process, body.text)
+        return svc.add_requirement(business_process, body.text, parent=body.parent)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -623,3 +624,18 @@ async def remove_requirement(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"status": "success", "message": f"Requirement '{req_id}' removed"}
+
+
+@router.get("/requirements-next/{business_process:path}")
+async def next_requirement(
+    business_process: str,
+    _token=Depends(verify_agent_token),
+):
+    svc = _get_requirements_service()
+    try:
+        req = svc.get_next_requirement(business_process)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    if req is None:
+        return {"status": "all_passing", "message": "All requirements passing!"}
+    return {"status": "found", "requirement": req}
