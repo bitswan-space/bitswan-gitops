@@ -476,6 +476,108 @@ async def worktree_diff(
     return {"output": stdout}
 
 
+# --- Rebase and merge endpoint ---
+
+
+@router.post("/worktrees/{worktree_name}/rebase-and-merge")
+async def rebase_and_merge(
+    worktree_name: str,
+    _token=Depends(verify_agent_token),
+):
+    """Rebase worktree onto default branch, then fast-forward default branch."""
+    workspace_dir = _get_workspace_dir()
+    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+
+    if not os.path.exists(worktree_path):
+        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+
+    async with GitLockContext(timeout=30.0):
+        # 1. Detect the default branch in the workspace
+        stdout, stderr, rc = await call_git_command_with_output(
+            "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
+        )
+        if rc != 0:
+            raise HTTPException(status_code=500, detail=f"Failed to detect default branch: {stderr.strip()}")
+        default_branch = stdout.strip()
+
+        # 2. Stash any uncommitted changes on the default branch
+        # Check stash count before
+        stash_before, _, _ = await call_git_command_with_output(
+            "git", "stash", "list", cwd=workspace_dir
+        )
+        stash_count_before = len(stash_before.strip().splitlines()) if stash_before.strip() else 0
+
+        await call_git_command_with_output(
+            "git", "stash", "push", "-m", "rebase-merge-stash", cwd=workspace_dir
+        )
+
+        stash_after, _, _ = await call_git_command_with_output(
+            "git", "stash", "list", cwd=workspace_dir
+        )
+        stash_count_after = len(stash_after.strip().splitlines()) if stash_after.strip() else 0
+        stash_created = stash_count_after > stash_count_before
+
+        # 3. Rebase worktree onto the default branch
+        stdout, stderr, rc = await call_git_command_with_output(
+            "git", "rebase", default_branch, cwd=worktree_path
+        )
+        if rc != 0:
+            # Abort the failed rebase
+            await call_git_command_with_output(
+                "git", "rebase", "--abort", cwd=worktree_path
+            )
+            # Pop stash if we created one
+            if stash_created:
+                await call_git_command_with_output(
+                    "git", "stash", "pop", cwd=workspace_dir
+                )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Rebase failed (aborted). Conflicts:\n{stderr.strip()}\n{stdout.strip()}"
+            )
+
+        # 4. Get the worktree branch tip after rebase
+        tip_stdout, _, rc = await call_git_command_with_output(
+            "git", "rev-parse", "HEAD", cwd=worktree_path
+        )
+        if rc != 0:
+            if stash_created:
+                await call_git_command_with_output("git", "stash", "pop", cwd=workspace_dir)
+            raise HTTPException(status_code=500, detail="Failed to get worktree HEAD after rebase")
+        tip_sha = tip_stdout.strip()
+
+        # 5. Fast-forward the default branch to the rebased tip
+        stdout, stderr, rc = await call_git_command_with_output(
+            "git", "merge", "--ff-only", tip_sha, cwd=workspace_dir
+        )
+        if rc != 0:
+            if stash_created:
+                await call_git_command_with_output("git", "stash", "pop", cwd=workspace_dir)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Fast-forward merge failed: {stderr.strip()}"
+            )
+
+        # 6. Pop stash if we created one
+        stash_conflict = False
+        stash_message = ""
+        if stash_created:
+            _, pop_stderr, pop_rc = await call_git_command_with_output(
+                "git", "stash", "pop", cwd=workspace_dir
+            )
+            if pop_rc != 0:
+                stash_conflict = True
+                stash_message = pop_stderr.strip()
+
+    return {
+        "status": "success",
+        "merged_into": default_branch,
+        "tip": tip_sha[:12],
+        "stash_conflict": stash_conflict,
+        "stash_message": stash_message,
+    }
+
+
 # --- Docker exec endpoint ---
 
 
