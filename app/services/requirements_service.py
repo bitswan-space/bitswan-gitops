@@ -1,7 +1,8 @@
 import os
 import re
-from datetime import datetime, timezone
 from typing import Optional
+
+import toml
 
 
 REQUIREMENTS_FILENAME = "testable-requirements.toml"
@@ -9,52 +10,36 @@ REQUIREMENTS_FILENAME = "testable-requirements.toml"
 
 def _parse_requirements_toml(content: str) -> list:
     """Parse a testable-requirements.toml file into a list of requirement dicts."""
+    try:
+        data = toml.loads(content)
+    except Exception:
+        return []
+    raw = data.get("requirement", [])
     reqs = []
-    current = None
-
-    for line in content.split("\n"):
-        line = line.strip()
-        if line == "[[requirement]]":
-            if current and current.get("id"):
-                reqs.append(current)
-            current = {}
-            continue
-        if current is None:
-            continue
-
-        match = re.match(r'^(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"$', line)
-        if match:
-            key = match.group(1)
-            value = match.group(2).replace('\\"', '"').replace("\\\\", "\\")
-            current[key] = value
-
-    if current and current.get("id"):
-        reqs.append(current)
-
-    # Ensure all fields are present
-    for req in reqs:
-        req.setdefault("description", "")
-        req.setdefault("status", "pending")
-        req.setdefault("parent", "")
-
+    for r in raw:
+        reqs.append({
+            "id": str(r.get("id", "")),
+            "description": str(r.get("description", "")),
+            "status": str(r.get("status", "pending")),
+            "parent": str(r.get("parent", "")),
+        })
     return reqs
 
 
 def _serialize_requirements_toml(reqs: list) -> str:
     """Serialize a list of requirement dicts to testable-requirements.toml format."""
-    def esc(s: str) -> str:
-        return s.replace("\\", "\\\\").replace('"', '\\"')
-
-    blocks = []
-    for r in reqs:
-        blocks.append(
-            f'[[requirement]]\n'
-            f'id = "{esc(r.get("id", ""))}"\n'
-            f'parent = "{esc(r.get("parent", ""))}"\n'
-            f'description = "{esc(r.get("description", ""))}"\n'
-            f'status = "{esc(r.get("status", "pending"))}"'
-        )
-    return "\n\n".join(blocks) + "\n" if blocks else ""
+    data = {
+        "requirement": [
+            {
+                "id": r.get("id", ""),
+                "parent": r.get("parent", ""),
+                "description": r.get("description", ""),
+                "status": r.get("status", "pending"),
+            }
+            for r in reqs
+        ]
+    }
+    return toml.dumps(data)
 
 
 class RequirementsService:
