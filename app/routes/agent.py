@@ -29,11 +29,54 @@ security = HTTPBearer()
 # Pattern for valid live-dev deployment IDs
 LIVE_DEV_PATTERN = re.compile(r"^.+-wt-.+-live-dev$")
 
+# Cached agent secret — resolved lazily from the coding agent container
+_cached_agent_secret: str | None = None
+
+
+def _resolve_agent_secret() -> str:
+    """Get the agent secret, discovering it from the running coding agent container if needed."""
+    global _cached_agent_secret
+
+    # 1. Already cached
+    if _cached_agent_secret:
+        return _cached_agent_secret
+
+    # 2. Set in our environment (e.g. by ensure_coding_agent)
+    from_env = os.environ.get("BITSWAN_GITOPS_AGENT_SECRET", "")
+    if from_env:
+        _cached_agent_secret = from_env
+        return from_env
+
+    # 3. Discover from the running coding agent container
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace")
+    agent_container_name = f"{workspace_name}-coding-agent"
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["docker", "inspect", "--format",
+             '{{range .Config.Env}}{{println .}}{{end}}',
+             agent_container_name],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if line.startswith("BITSWAN_GITOPS_AGENT_SECRET="):
+                    secret = line.split("=", 1)[1]
+                    if secret:
+                        _cached_agent_secret = secret
+                        os.environ["BITSWAN_GITOPS_AGENT_SECRET"] = secret
+                        logger.info("Discovered agent secret from coding agent container")
+                        return secret
+    except Exception as e:
+        logger.debug("Failed to inspect coding agent container: %s", e)
+
+    return ""
+
 
 def verify_agent_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ):
-    agent_secret = os.environ.get("BITSWAN_GITOPS_AGENT_SECRET", "")
+    agent_secret = _resolve_agent_secret()
     if not agent_secret or credentials.credentials != agent_secret:
         raise HTTPException(status_code=401, detail="Invalid agent token")
 
