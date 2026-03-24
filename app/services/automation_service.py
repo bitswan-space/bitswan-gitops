@@ -2131,10 +2131,13 @@ fi
             if not network_mode:
                 network_mode = conf.get("network_mode")
 
-            # external-testing-network: use host network so the container
-            # routes traffic externally like a real client (for Selenium testing)
+            # external-testing-network: put the container on a separate bridge
+            # network with only outbound internet access (no access to internal
+            # services). This lets Selenium tests connect to public URLs like
+            # a real external client.
             if not network_mode and automation_config.external_testing_network:
-                network_mode = "host"
+                networks_list = ["bitswan_external_testing"]
+                external_networks.add("bitswan_external_testing")
 
             if network_mode:
                 entry["network_mode"] = network_mode
@@ -2360,7 +2363,12 @@ fi
 
         dc["networks"] = {}
         for network in external_networks:
-            dc["networks"][network] = {"external": True}
+            if network == "bitswan_external_testing":
+                # Created by docker-compose as a regular bridge with outbound
+                # internet access but no connectivity to internal services
+                dc["networks"][network] = {"driver": "bridge"}
+            else:
+                dc["networks"][network] = {"external": True}
         dc_yaml = yaml.dump(dc)
         return dc_yaml, infra_service_names
 
