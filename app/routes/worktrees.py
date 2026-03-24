@@ -267,15 +267,15 @@ async def delete_worktree(name: str):
 
 
 @router.get("/{name}/diff")
-async def get_worktree_diff(name: str, base_branch: str = "main"):
-    workspace_dir = _get_workspace_dir()
+async def get_worktree_diff(name: str):
     worktree_path = os.path.join(_get_worktrees_base(), name)
 
     if not os.path.exists(worktree_path):
         raise HTTPException(status_code=404, detail=f"Worktree '{name}' not found")
 
+    # Diff the worktree's working tree against its own HEAD
     stdout, stderr, rc = await call_git_command_with_output(
-        "git", "diff", f"{base_branch}...{name}", cwd=workspace_dir
+        "git", "diff", "HEAD", "--", ".", cwd=worktree_path
     )
     if rc != 0:
         raise HTTPException(
