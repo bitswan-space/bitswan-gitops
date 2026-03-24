@@ -215,16 +215,6 @@ async def start_agent_deployment(
             detail=f"No automation source found for deployment '{body.deployment_id}' in worktree '{worktree}'",
         )
 
-    # Read automation.toml for config
-    toml_path = os.path.join(source["source_path"], "automation.toml")
-    try:
-        config = toml.load(toml_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read automation.toml: {e}")
-
-    deployment_conf = config.get("deployment", {})
-    services_conf = config.get("services", {})
-
     # Guard: reject if already deploying
     from app.deploy_manager import deploy_manager
 
@@ -241,19 +231,13 @@ async def start_agent_deployment(
             detail=f"Deployment {body.deployment_id} is already in progress",
         )
 
+    # Only send minimal info — the gitops service reads automation.toml
+    # directly from the workspace filesystem for live-dev config
     deploy_kwargs = dict(
         deployment_id=body.deployment_id,
         checksum="live-dev",
         stage="live-dev",
         relative_path=source["relative_path"],
-        image=deployment_conf.get("image"),
-        expose=deployment_conf.get("expose"),
-        port=deployment_conf.get("port"),
-        mount_path=deployment_conf.get("mount_path", "/app/"),
-        secret_groups=deployment_conf.get("secret_groups"),
-        automation_id=deployment_conf.get("id"),
-        auth=deployment_conf.get("auth"),
-        services=services_conf if services_conf else None,
         deployed_by="agent@bitswan.local",
     )
 

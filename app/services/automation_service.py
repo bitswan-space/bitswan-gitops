@@ -63,6 +63,9 @@ class AutomationService:
         # Uses same path structure as jupyter_service for consistency
         self.workspace_dir = os.path.join(self.bs_home, "workspace")
         self.workspace_dir_host = os.path.join(self.bs_home_host, "workspace")
+        # Workspace repo directory (mounted at /workspace-repo in container)
+        # Used to read automation.toml for live-dev config
+        self.workspace_repo_dir = os.environ.get("BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo")
         # Cache full history per deployment_id: {deployment_id: (commit_hash, [entries])}
         self._history_cache: dict[str, tuple[str, list]] = {}
 
@@ -1971,49 +1974,13 @@ fi
             relative_path = conf.get("relative_path")
 
             if stage == "live-dev" and relative_path:
-                # For live-dev, use config values stored in bitswan.yaml (sent by extension)
-                # This avoids needing filesystem access to the workspace
-                stored_image = conf.get("image")
-                stored_expose = conf.get("expose", False)
-                stored_expose_to = conf.get(
-                    "expose_to"
-                )  # stage-specific, sent by editor
-                stored_port = conf.get("port", 8080)
-                stored_mount_path = conf.get("mount_path", "/app/")
-                stored_secret_groups = conf.get("secret_groups")
-                stored_id = conf.get("id")
-                stored_auth = conf.get("auth", False)
-                stored_allowed_domains = conf.get("allowed_domains")
-
-                if not stored_image:
-                    # Skip live-dev deployments without stored config
+                # For live-dev, read automation.toml directly from the workspace
+                live_dev_source_dir = os.path.join(self.workspace_repo_dir, relative_path)
+                if not os.path.isdir(live_dev_source_dir):
                     continue
-
-                # Create a minimal AutomationConfig from stored values
-                automation_config = AutomationConfig(
-                    id=stored_id,
-                    auth=stored_auth,
-                    image=stored_image,
-                    expose=stored_expose,
-                    port=stored_port,
-                    dev_expose_to=stored_expose_to,
-                    config_format="toml",
-                    mount_path=stored_mount_path,
-                    live_dev_groups=stored_secret_groups,
-                    allowed_domains=stored_allowed_domains,
-                )
-                # Read services from stored config (sent by extension)
-                stored_services = conf.get("services")
-                if stored_services:
-                    svc_deps = {}
-                    for svc_name, svc_conf in stored_services.items():
-                        enabled = (
-                            svc_conf.get("enabled", True)
-                            if isinstance(svc_conf, dict)
-                            else bool(svc_conf)
-                        )
-                        svc_deps[svc_name] = ServiceDependency(enabled=enabled)
-                    automation_config.services = svc_deps
+                automation_config = read_automation_config(live_dev_source_dir)
+                if not automation_config.image:
+                    continue
                 pipeline_conf = None
             elif not os.path.exists(source_dir):
                 raise HTTPException(
