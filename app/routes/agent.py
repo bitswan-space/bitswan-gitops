@@ -479,95 +479,57 @@ async def worktree_diff(
 # --- Rebase and merge endpoint ---
 
 
-@router.post("/worktrees/{worktree_name}/rebase-and-merge")
-async def rebase_and_merge(
-    worktree_name: str,
-    _token=Depends(verify_agent_token),
-):
-    """Rebase worktree onto default branch, then fast-forward default branch."""
-    workspace_dir = _get_workspace_dir()
-    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+async def _stash_workspace(workspace_dir: str) -> bool:
+    """Stash uncommitted changes. Returns True if a stash was created."""
+    before, _, _ = await call_git_command_with_output(
+        "git", "stash", "list", cwd=workspace_dir
+    )
+    count_before = len(before.strip().splitlines()) if before.strip() else 0
+    await call_git_command_with_output(
+        "git", "stash", "push", "-m", "rebase-merge-stash", cwd=workspace_dir
+    )
+    after, _, _ = await call_git_command_with_output(
+        "git", "stash", "list", cwd=workspace_dir
+    )
+    count_after = len(after.strip().splitlines()) if after.strip() else 0
+    return count_after > count_before
 
-    if not os.path.exists(worktree_path):
-        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
 
-    async with GitLockContext(timeout=30.0):
-        # 1. Detect the default branch in the workspace
-        stdout, stderr, rc = await call_git_command_with_output(
-            "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
-        )
-        if rc != 0:
-            raise HTTPException(status_code=500, detail=f"Failed to detect default branch: {stderr.strip()}")
-        default_branch = stdout.strip()
+async def _complete_merge(workspace_dir: str, worktree_path: str, stash_created: bool) -> dict:
+    """After a successful rebase, fast-forward the default branch and pop stash."""
+    # Get default branch
+    stdout, _, _ = await call_git_command_with_output(
+        "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
+    )
+    default_branch = stdout.strip()
 
-        # 2. Stash any uncommitted changes on the default branch
-        # Check stash count before
-        stash_before, _, _ = await call_git_command_with_output(
-            "git", "stash", "list", cwd=workspace_dir
-        )
-        stash_count_before = len(stash_before.strip().splitlines()) if stash_before.strip() else 0
+    # Get worktree tip
+    tip_stdout, _, rc = await call_git_command_with_output(
+        "git", "rev-parse", "HEAD", cwd=worktree_path
+    )
+    if rc != 0:
+        return {"status": "error", "detail": "Failed to get worktree HEAD after rebase"}
+    tip_sha = tip_stdout.strip()
 
-        await call_git_command_with_output(
-            "git", "stash", "push", "-m", "rebase-merge-stash", cwd=workspace_dir
-        )
-
-        stash_after, _, _ = await call_git_command_with_output(
-            "git", "stash", "list", cwd=workspace_dir
-        )
-        stash_count_after = len(stash_after.strip().splitlines()) if stash_after.strip() else 0
-        stash_created = stash_count_after > stash_count_before
-
-        # 3. Rebase worktree onto the default branch
-        stdout, stderr, rc = await call_git_command_with_output(
-            "git", "rebase", default_branch, cwd=worktree_path
-        )
-        if rc != 0:
-            # Abort the failed rebase
-            await call_git_command_with_output(
-                "git", "rebase", "--abort", cwd=worktree_path
-            )
-            # Pop stash if we created one
-            if stash_created:
-                await call_git_command_with_output(
-                    "git", "stash", "pop", cwd=workspace_dir
-                )
-            raise HTTPException(
-                status_code=409,
-                detail=f"Rebase failed (aborted). Conflicts:\n{stderr.strip()}\n{stdout.strip()}"
-            )
-
-        # 4. Get the worktree branch tip after rebase
-        tip_stdout, _, rc = await call_git_command_with_output(
-            "git", "rev-parse", "HEAD", cwd=worktree_path
-        )
-        if rc != 0:
-            if stash_created:
-                await call_git_command_with_output("git", "stash", "pop", cwd=workspace_dir)
-            raise HTTPException(status_code=500, detail="Failed to get worktree HEAD after rebase")
-        tip_sha = tip_stdout.strip()
-
-        # 5. Fast-forward the default branch to the rebased tip
-        stdout, stderr, rc = await call_git_command_with_output(
-            "git", "merge", "--ff-only", tip_sha, cwd=workspace_dir
-        )
-        if rc != 0:
-            if stash_created:
-                await call_git_command_with_output("git", "stash", "pop", cwd=workspace_dir)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Fast-forward merge failed: {stderr.strip()}"
-            )
-
-        # 6. Pop stash if we created one
-        stash_conflict = False
-        stash_message = ""
+    # Fast-forward
+    stdout, stderr, rc = await call_git_command_with_output(
+        "git", "merge", "--ff-only", tip_sha, cwd=workspace_dir
+    )
+    if rc != 0:
         if stash_created:
-            _, pop_stderr, pop_rc = await call_git_command_with_output(
-                "git", "stash", "pop", cwd=workspace_dir
-            )
-            if pop_rc != 0:
-                stash_conflict = True
-                stash_message = pop_stderr.strip()
+            await call_git_command_with_output("git", "stash", "pop", cwd=workspace_dir)
+        return {"status": "error", "detail": f"Fast-forward failed: {stderr.strip()}"}
+
+    # Pop stash
+    stash_conflict = False
+    stash_message = ""
+    if stash_created:
+        _, pop_stderr, pop_rc = await call_git_command_with_output(
+            "git", "stash", "pop", cwd=workspace_dir
+        )
+        if pop_rc != 0:
+            stash_conflict = True
+            stash_message = pop_stderr.strip()
 
     return {
         "status": "success",
@@ -576,6 +538,142 @@ async def rebase_and_merge(
         "stash_conflict": stash_conflict,
         "stash_message": stash_message,
     }
+
+
+@router.post("/worktrees/{worktree_name}/rebase-and-merge")
+async def rebase_and_merge(
+    worktree_name: str,
+    _token=Depends(verify_agent_token),
+):
+    """Start rebase of worktree onto default branch. If no conflicts, completes the merge.
+    If conflicts occur, returns status='conflicts' with conflict details — resolve the
+    files and call rebase-continue."""
+    workspace_dir = _get_workspace_dir()
+    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+
+    if not os.path.exists(worktree_path):
+        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+
+    async with GitLockContext(timeout=30.0):
+        # Detect default branch
+        stdout, stderr, rc = await call_git_command_with_output(
+            "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
+        )
+        if rc != 0:
+            raise HTTPException(status_code=500, detail=f"Failed to detect default branch: {stderr.strip()}")
+        default_branch = stdout.strip()
+
+        # Stash workspace changes
+        stash_created = await _stash_workspace(workspace_dir)
+
+        # Start rebase
+        stdout, stderr, rc = await call_git_command_with_output(
+            "git", "rebase", default_branch, cwd=worktree_path
+        )
+
+        if rc != 0:
+            # Rebase hit conflicts — DON'T abort, let the agent resolve them
+            # Get the list of conflicted files
+            conflict_stdout, _, _ = await call_git_command_with_output(
+                "git", "diff", "--name-only", "--diff-filter=U", cwd=worktree_path
+            )
+            conflicted_files = [f for f in conflict_stdout.strip().splitlines() if f]
+
+            return {
+                "status": "conflicts",
+                "message": "Rebase paused due to conflicts. Resolve the files and run rebase-continue.",
+                "conflicted_files": conflicted_files,
+                "rebase_output": f"{stdout.strip()}\n{stderr.strip()}".strip(),
+                "default_branch": default_branch,
+                "stash_created": stash_created,
+            }
+
+        # No conflicts — complete the merge
+        result = await _complete_merge(workspace_dir, worktree_path, stash_created)
+        if result["status"] == "error":
+            raise HTTPException(status_code=500, detail=result["detail"])
+        return result
+
+
+@router.post("/worktrees/{worktree_name}/rebase-continue")
+async def rebase_continue(
+    worktree_name: str,
+    _token=Depends(verify_agent_token),
+):
+    """After resolving conflicts, stage resolved files and continue the rebase.
+    If more conflicts arise, returns status='conflicts' again.
+    When rebase completes, fast-forwards the default branch."""
+    workspace_dir = _get_workspace_dir()
+    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+
+    if not os.path.exists(worktree_path):
+        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+
+    async with GitLockContext(timeout=30.0):
+        # Stage all resolved files
+        await call_git_command_with_output("git", "add", "-A", cwd=worktree_path)
+
+        # Continue rebase
+        stdout, stderr, rc = await call_git_command_with_output(
+            "git", "-c", "core.editor=true", "rebase", "--continue", cwd=worktree_path
+        )
+
+        if rc != 0:
+            # More conflicts
+            conflict_stdout, _, _ = await call_git_command_with_output(
+                "git", "diff", "--name-only", "--diff-filter=U", cwd=worktree_path
+            )
+            conflicted_files = [f for f in conflict_stdout.strip().splitlines() if f]
+
+            if conflicted_files:
+                return {
+                    "status": "conflicts",
+                    "message": "More conflicts encountered. Resolve and run rebase-continue again.",
+                    "conflicted_files": conflicted_files,
+                    "rebase_output": f"{stdout.strip()}\n{stderr.strip()}".strip(),
+                }
+
+            # rebase --continue failed but no conflict markers — something else went wrong
+            raise HTTPException(
+                status_code=500,
+                detail=f"Rebase continue failed: {stderr.strip()}\n{stdout.strip()}"
+            )
+
+        # Rebase complete — check if there was a stash
+        stash_list, _, _ = await call_git_command_with_output(
+            "git", "stash", "list", cwd=workspace_dir
+        )
+        stash_created = "rebase-merge-stash" in stash_list
+
+        result = await _complete_merge(workspace_dir, worktree_path, stash_created)
+        if result["status"] == "error":
+            raise HTTPException(status_code=500, detail=result["detail"])
+        return result
+
+
+@router.post("/worktrees/{worktree_name}/rebase-abort")
+async def rebase_abort(
+    worktree_name: str,
+    _token=Depends(verify_agent_token),
+):
+    """Abort an in-progress rebase and pop the stash if one was created."""
+    workspace_dir = _get_workspace_dir()
+    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+
+    if not os.path.exists(worktree_path):
+        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+
+    async with GitLockContext(timeout=15.0):
+        await call_git_command_with_output("git", "rebase", "--abort", cwd=worktree_path)
+
+        # Pop stash if we created one
+        stash_list, _, _ = await call_git_command_with_output(
+            "git", "stash", "list", cwd=workspace_dir
+        )
+        if "rebase-merge-stash" in stash_list:
+            await call_git_command_with_output("git", "stash", "pop", cwd=workspace_dir)
+
+    return {"status": "aborted", "message": "Rebase aborted and stash restored."}
 
 
 # --- Docker exec endpoint ---
