@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import json
+import re
 import shutil
 from tempfile import NamedTemporaryFile
 import zipfile
@@ -2038,16 +2039,38 @@ fi
                 entry["environment"]["BITSWAN_WORKSPACE_NAME"] = self.workspace_name
             if self.gitops_domain:
                 entry["environment"]["BITSWAN_GITOPS_DOMAIN"] = self.gitops_domain
-            # URL template for service discovery — automations can swap
-            # {name} to reach any other exposed automation in the same stage.
-            # Deployment IDs follow the convention: {name}-{stage} for
-            # non-production, and just {name} for production.
+            # Deployment context for service discovery.
+            # Context = {bp}-wt-{wt}-{stage} or {bp}-{stage} or {bp} (production)
+            # URL template lets automations find each other by substituting {name}.
+            # Deployment ID format: {automationName}-{context}
+            deployment_context = conf.get("deployment_context", "")
+            if not deployment_context:
+                # Derive context from relative_path and stage for backwards compat
+                bp_name = ""
+                if relative_path:
+                    # relative_path is like "Test/backend" or "worktrees/bar/Test/backend"
+                    parts = relative_path.replace("\\", "/").split("/")
+                    # Strip leading "worktrees/{name}/" if present
+                    if len(parts) >= 2 and parts[0] == "worktrees":
+                        parts = parts[2:]  # skip "worktrees/{name}"
+                    if len(parts) >= 2:
+                        bp_name = parts[0]  # first segment is BP name
+                if bp_name:
+                    bp_sanitized = re.sub(r"[^a-z0-9-]", "-", bp_name.lower()).strip("-")
+                    stage_suffix = f"-{stage}" if stage and stage != "production" else ""
+                    deployment_context = f"{bp_sanitized}{stage_suffix}"
+                else:
+                    # Fallback: just stage
+                    deployment_context = stage if stage and stage != "production" else ""
+
+            if deployment_context:
+                entry["environment"]["BITSWAN_DEPLOYMENT_CONTEXT"] = deployment_context
             if self.workspace_name and self.gitops_domain:
-                stage_suffix = f"-{stage}" if stage and stage != "production" else ""
+                ctx_suffix = f"-{deployment_context}" if deployment_context else ""
                 entry["environment"]["BITSWAN_URL_TEMPLATE"] = (
                     f"https://{self.workspace_name}-"
                     "{name}"
-                    f"{stage_suffix}.{self.gitops_domain}"
+                    f"{ctx_suffix}.{self.gitops_domain}"
                 )
 
             # Deployment and image checksums + deploy timestamp
