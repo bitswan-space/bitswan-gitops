@@ -154,6 +154,7 @@ async def list_agent_deployments(
 
     # Query running containers to get their state
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+    gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "")
     docker_client = get_async_docker_client()
     running_states: dict[str, str] = {}
 
@@ -170,6 +171,11 @@ async def list_agent_deployments(
     except DockerError:
         pass  # If Docker query fails, we still show sources as "not deployed"
 
+    def _make_url(dep_id):
+        if gitops_domain:
+            return f"https://{workspace_name}-{dep_id}.{gitops_domain}"
+        return ""
+
     # Merge: filesystem sources + running state
     result = []
     for src in sources:
@@ -179,6 +185,7 @@ async def list_agent_deployments(
             "deployment_id": dep_id,
             "state": state,
             "automation_name": src["automation_name"],
+            "url": _make_url(dep_id),
         })
 
     # Include any running containers not found on filesystem (orphaned)
@@ -187,6 +194,7 @@ async def list_agent_deployments(
             "deployment_id": dep_id,
             "state": state,
             "automation_name": dep_id,
+            "url": _make_url(dep_id),
         })
 
     return result
