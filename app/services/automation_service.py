@@ -2045,22 +2045,25 @@ fi
             # Deployment ID format: {automationName}-{context}
             deployment_context = conf.get("deployment_context", "")
             if not deployment_context:
-                # Derive context from relative_path and stage for backwards compat
+                # Derive context from relative_path and stage
+                # relative_path is like "Test/backend" or "worktrees/bar/Test/backend"
                 bp_name = ""
+                wt_name = ""
                 if relative_path:
-                    # relative_path is like "Test/backend" or "worktrees/bar/Test/backend"
                     parts = relative_path.replace("\\", "/").split("/")
-                    # Strip leading "worktrees/{name}/" if present
                     if len(parts) >= 2 and parts[0] == "worktrees":
-                        parts = parts[2:]  # skip "worktrees/{name}"
+                        wt_name = parts[1]  # extract worktree name
+                        parts = parts[2:]   # skip "worktrees/{name}"
                     if len(parts) >= 2:
-                        bp_name = parts[0]  # first segment is BP name
-                if bp_name:
-                    bp_sanitized = re.sub(r"[^a-z0-9-]", "-", bp_name.lower()).strip("-")
-                    stage_suffix = f"-{stage}" if stage and stage != "production" else ""
-                    deployment_context = f"{bp_sanitized}{stage_suffix}"
+                        bp_name = parts[0]
+                bp_sanitized = re.sub(r"[^a-z0-9-]", "-", bp_name.lower()).strip("-") if bp_name else ""
+                wt_part = f"-wt-{wt_name}" if wt_name else ""
+                stage_suffix = f"-{stage}" if stage and stage != "production" else ""
+                if bp_sanitized:
+                    deployment_context = f"{bp_sanitized}{wt_part}{stage_suffix}"
+                elif wt_name:
+                    deployment_context = f"wt-{wt_name}{stage_suffix}"
                 else:
-                    # Fallback: just stage
                     deployment_context = stage if stage and stage != "production" else ""
 
             if deployment_context:
