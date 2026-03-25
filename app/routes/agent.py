@@ -277,6 +277,89 @@ async def start_agent_deployment(
     }
 
 
+@router.get("/deployments/{deployment_id}/inspect")
+async def inspect_deployment(
+    deployment_id: str,
+    _token=Depends(verify_agent_token),
+):
+    """Full inspect of a deployment container."""
+    _validate_deployment_id(deployment_id)
+
+    docker_client = get_async_docker_client()
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+
+    try:
+        containers = await docker_client.list_containers(
+            all=True,
+            filters={
+                "label": [
+                    f"gitops.deployment_id={deployment_id}",
+                    f"gitops.workspace={workspace_name}",
+                ]
+            },
+        )
+    except DockerError as e:
+        raise HTTPException(status_code=500, detail=f"Docker error: {str(e)}")
+
+    if not containers:
+        raise HTTPException(status_code=404, detail=f"No container found for '{deployment_id}'")
+
+    container_id = containers[0].get("Id")
+    try:
+        info = await docker_client.inspect_container(container_id)
+    except DockerError as e:
+        raise HTTPException(status_code=500, detail=f"Docker inspect error: {str(e)}")
+
+    state = info.get("State", {})
+    config = info.get("Config", {})
+    host_config = info.get("HostConfig", {})
+    network_settings = info.get("NetworkSettings", {})
+
+    # Extract useful fields
+    networks = {}
+    for net_name, net_info in network_settings.get("Networks", {}).items():
+        networks[net_name] = {
+            "ip": net_info.get("IPAddress", ""),
+            "aliases": net_info.get("Aliases", []),
+        }
+
+    mounts = []
+    for m in info.get("Mounts", []):
+        mounts.append({
+            "source": m.get("Source", ""),
+            "destination": m.get("Destination", ""),
+            "mode": m.get("Mode", ""),
+            "rw": m.get("RW", True),
+        })
+
+    ports = {}
+    for port, bindings in (network_settings.get("Ports") or {}).items():
+        if bindings:
+            ports[port] = [{"host_ip": b.get("HostIp", ""), "host_port": b.get("HostPort", "")} for b in bindings]
+        else:
+            ports[port] = None
+
+    return {
+        "deployment_id": deployment_id,
+        "container_id": container_id[:12],
+        "container_name": info.get("Name", "").lstrip("/"),
+        "image": config.get("Image", ""),
+        "state": {
+            "status": state.get("Status", ""),
+            "running": state.get("Running", False),
+            "started_at": state.get("StartedAt", ""),
+            "finished_at": state.get("FinishedAt", ""),
+            "exit_code": state.get("ExitCode", 0),
+            "restarting": state.get("Restarting", False),
+        },
+        "networks": networks,
+        "ports": ports,
+        "mounts": mounts,
+        "labels": config.get("Labels", {}),
+        "restart_policy": host_config.get("RestartPolicy", {}).get("Name", ""),
+    }
+
+
 @router.get("/deployments/{deployment_id}/env")
 async def get_deployment_env(
     deployment_id: str,
