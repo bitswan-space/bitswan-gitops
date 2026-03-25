@@ -2157,22 +2157,21 @@ fi
             if not network_mode:
                 network_mode = conf.get("network_mode")
 
-            # external-testing-network: put the container on a separate bridge
-            # network with only outbound internet access (no access to internal
-            # services). This lets Selenium tests connect to public URLs like
-            # a real external client.
+            # external-testing-network: isolated bridge with only outbound internet.
+            # No access to internal services — tests must use public URLs.
             if not network_mode and automation_config.external_testing_network:
                 networks_list = ["bitswan_external_testing"]
                 external_networks.add("bitswan_external_testing")
 
             if network_mode:
                 entry["network_mode"] = network_mode
-            elif "networks" in conf:
-                networks_list = conf["networks"].copy()
-            elif "default-networks" in bs_yaml:
-                networks_list = bs_yaml["default-networks"].copy()
-            else:
-                networks_list = ["bitswan_network"]
+            elif not automation_config.external_testing_network:
+                if "networks" in conf:
+                    networks_list = conf["networks"].copy()
+                elif "default-networks" in bs_yaml:
+                    networks_list = bs_yaml["default-networks"].copy()
+                else:
+                    networks_list = ["bitswan_network"]
 
             if not network_mode:
                 if replicas > 1:
