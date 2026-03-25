@@ -277,6 +277,49 @@ async def start_agent_deployment(
     }
 
 
+@router.get("/deployments/{deployment_id}/env")
+async def get_deployment_env(
+    deployment_id: str,
+    _token=Depends(verify_agent_token),
+):
+    """Get environment variables for a deployment container (from docker inspect)."""
+    _validate_deployment_id(deployment_id)
+
+    docker_client = get_async_docker_client()
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+
+    try:
+        containers = await docker_client.list_containers(
+            all=True,
+            filters={
+                "label": [
+                    f"gitops.deployment_id={deployment_id}",
+                    f"gitops.workspace={workspace_name}",
+                ]
+            },
+        )
+    except DockerError as e:
+        raise HTTPException(status_code=500, detail=f"Docker error: {str(e)}")
+
+    if not containers:
+        raise HTTPException(status_code=404, detail=f"No container found for '{deployment_id}'")
+
+    container_id = containers[0].get("Id")
+    try:
+        info = await docker_client.inspect_container(container_id)
+        env_list = info.get("Config", {}).get("Env", [])
+    except DockerError as e:
+        raise HTTPException(status_code=500, detail=f"Docker inspect error: {str(e)}")
+
+    # Parse "KEY=VALUE" into dict
+    env_vars = {}
+    for entry in env_list:
+        key, _, value = entry.partition("=")
+        env_vars[key] = value
+
+    return {"deployment_id": deployment_id, "env": env_vars}
+
+
 @router.get("/deployments/{deployment_id}/logs")
 async def stream_deployment_logs(
     deployment_id: str,
