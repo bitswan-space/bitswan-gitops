@@ -74,10 +74,12 @@ async def _clone_postgres_db(worktree_name: str) -> str | None:
 
         containers = await docker_client.list_containers(
             all=False,
-            filters={"name": [container_name]},
+            filters={"name": [f"^/{container_name}$"]},
         )
         if not containers:
-            logger.warning("Postgres dev container not found, skipping DB clone")
+            logger.warning(
+                f"Postgres dev container '{container_name}' not found, skipping DB clone"
+            )
             return None
 
         cid = containers[0]["Id"]
@@ -129,7 +131,7 @@ async def _drop_postgres_db(worktree_name: str) -> None:
     try:
         containers = await docker_client.list_containers(
             all=False,
-            filters={"name": [container_name]},
+            filters={"name": [f"^/{container_name}$"]},
         )
         if not containers:
             return
