@@ -12,6 +12,7 @@ from app.routes.docs import router as docs_router
 from app.routes.events import router as events_router
 from app.routes.worktrees import router as worktrees_router
 from app.routes.agent import router as agent_router
+from app.routes.backups import router as backups_router
 from app.dependencies import verify_token
 
 
@@ -59,6 +60,8 @@ app.include_router(worktrees_router, dependencies=[Depends(verify_token)])
 app.include_router(docs_router)
 # Agent router uses its own verify_agent_token dependency (per-route)
 app.include_router(agent_router)
+# Backups router - protected by main auth
+app.include_router(backups_router, dependencies=[Depends(verify_token)])
 
 
 def custom_openapi():

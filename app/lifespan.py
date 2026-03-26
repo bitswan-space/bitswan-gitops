@@ -155,6 +155,31 @@ async def lifespan(app: FastAPI):
             name="cleanup_deploy_tasks",
         )
 
+        # Daily backup at 2 AM UTC (if configured)
+        async def _scheduled_backup():
+            from app.services.backup_service import (
+                get_backup_config,
+                get_restic_key,
+                run_backup,
+            )
+
+            config = get_backup_config()
+            if not config or not get_restic_key():
+                return  # Not configured, skip
+            try:
+                await run_backup(config)
+                print("Scheduled backup completed successfully")
+            except Exception as e:
+                print(f"Scheduled backup failed: {e}")
+
+        scheduler.add_job(
+            _scheduled_backup,
+            trigger="cron",
+            hour=2,
+            minute=0,
+            name="daily_backup",
+        )
+
         scheduler.start()
 
     # Warm the history cache in the background so first requests are fast

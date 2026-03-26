@@ -26,7 +26,7 @@ RUN git config --global user.email "gitops@gitops.com"
 USER root
 
 # Install Bitswan Automation Server CLI (latest)
-RUN apt-get update && apt-get install -y curl jq tar
+RUN apt-get update && apt-get install -y curl jq tar restic
 
 # Download oauth2-proxy
 RUN LATEST_VERSION=$(curl -s https://api.github.com/repos/bitswan-space/bitswan-aoc-oauth2/releases/latest | jq -r '.tag_name') \
