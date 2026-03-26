@@ -2078,6 +2078,12 @@ fi
 
             if deployment_context:
                 entry["environment"]["BITSWAN_DEPLOYMENT_CONTEXT"] = deployment_context
+
+            # For worktree live-devs, override POSTGRES_DB to use the cloned database
+            if wt_name and stage == "live-dev":
+                wt_db = "postgres_wt_" + re.sub(r"[^a-z0-9_]", "_", wt_name.lower())
+                entry["environment"]["POSTGRES_DB"] = wt_db
+
             if self.workspace_name and self.gitops_domain:
                 ctx_suffix = f"-{deployment_context}" if deployment_context else ""
                 entry["environment"]["BITSWAN_URL_TEMPLATE"] = (
