@@ -72,25 +72,32 @@ async def _clone_postgres_db(worktree_name: str) -> str | None:
         # Clone the database using CREATE DATABASE ... WITH TEMPLATE
         clone_sql = f'CREATE DATABASE "{new_db}" WITH TEMPLATE "{source_db}";'
 
-        for sql in [terminate_sql, clone_sql]:
-            containers = await docker_client.list_containers(
-                all=False,
-                filters={"name": [container_name]},
-            )
-            if not containers:
-                logger.warning("Postgres dev container not found, skipping DB clone")
-                return None
+        containers = await docker_client.list_containers(
+            all=False,
+            filters={"name": [container_name]},
+        )
+        if not containers:
+            logger.warning("Postgres dev container not found, skipping DB clone")
+            return None
 
-            cid = containers[0]["Id"]
+        cid = containers[0]["Id"]
+
+        for sql in [terminate_sql, clone_sql]:
+            # exec_create doesn't support environment, so pass PGPASSWORD via sh -c
             exec_id = await docker_client.exec_create(
                 cid,
-                ["psql", "-U", user, "-d", "postgres", "-c", sql],
-                environment=[f"PGPASSWORD={password}"],
+                [
+                    "sh",
+                    "-c",
+                    f"PGPASSWORD='{password}' psql -U {user} -d postgres -c \"{sql}\"",
+                ],
             )
             output = await docker_client.exec_start(exec_id)
             info = await docker_client.exec_inspect(exec_id)
             if info.get("ExitCode", 1) != 0 and "already exists" not in (output or ""):
-                logger.warning(f"Postgres command failed: {output}")
+                logger.warning(
+                    f"Postgres command failed (exit {info.get('ExitCode')}): {output}"
+                )
                 if "CREATE DATABASE" in sql:
                     return None
 
@@ -137,8 +144,11 @@ async def _drop_postgres_db(worktree_name: str) -> None:
         for sql in [terminate_sql, f'DROP DATABASE IF EXISTS "{new_db}";']:
             exec_id = await docker_client.exec_create(
                 cid,
-                ["psql", "-U", user, "-d", "postgres", "-c", sql],
-                environment=[f"PGPASSWORD={password}"],
+                [
+                    "sh",
+                    "-c",
+                    f"PGPASSWORD='{password}' psql -U {user} -d postgres -c \"{sql}\"",
+                ],
             )
             await docker_client.exec_start(exec_id)
 
