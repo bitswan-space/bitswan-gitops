@@ -51,61 +51,98 @@ async def save_config(body: S3ConfigRequest):
         },
     }
 
-    # Generate encryption key if none exists
+    backup_service.save_backup_config(config)
+
+    # Try to discover existing setup on S3
+    recovered = False
+    if not backup_service.get_restic_key():
+        # Check if there's a key on S3 (existing backups from another server)
+        if await backup_service.key_exists_on_s3(config):
+            key = await backup_service.download_key_from_s3(config)
+            if key:
+                backup_service._save_key(key)
+                recovered = True
+
+    # Generate new key if we still don't have one
     if not backup_service.get_restic_key():
         backup_service.generate_restic_key()
 
-    backup_service.save_backup_config(config)
-
-    # Initialize the restic repo
+    # Initialize the restic repo (idempotent — succeeds if already initialized)
     ok, msg = await backup_service.init_repo(config)
     if not ok:
         raise HTTPException(
             status_code=500, detail=f"Failed to initialize restic repo: {msg}"
         )
 
-    return {"status": "configured", "message": msg}
+    # Upload key to S3 as a convenience backup (if we generated a new one)
+    if not recovered:
+        key = backup_service.get_restic_key()
+        if key:
+            await backup_service.upload_key_to_s3(config, key)
+
+    result = {"status": "configured", "message": msg}
+    if recovered:
+        result["recovered"] = True
+        result["message"] = (
+            "Connected to existing backup repository. Key recovered from S3."
+        )
+    return result
 
 
 # --- Key management ---
+# The encryption key always lives on the local server (secrets/.backup/restic-key).
+# On setup, it's also uploaded to S3 as a convenience backup.
+# The user can download it (to store in a password manager) and delete it from S3
+# so that a compromised S3 store can't be used to decrypt backups.
 
 
 @router.get("/key")
 async def get_key():
-    """Download the restic encryption key. Store it safely!"""
+    """Download the restic encryption key for offline storage."""
     key = backup_service.get_restic_key()
     if not key:
         raise HTTPException(status_code=404, detail="No encryption key found")
     return {"key": key}
 
 
-@router.delete("/key")
-async def delete_key():
-    """Delete the local encryption key. Make sure you've downloaded it first!"""
-    if not backup_service.get_restic_key():
-        raise HTTPException(status_code=404, detail="No encryption key to delete")
-    backup_service.delete_restic_key()
+@router.get("/key/s3-status")
+async def key_s3_status():
+    """Check if the key exists on S3."""
+    config = backup_service.get_backup_config()
+    if not config:
+        raise HTTPException(status_code=400, detail="Backup not configured")
+    exists = await backup_service.key_exists_on_s3(config)
+    return {"on_s3": exists}
+
+
+@router.post("/key/upload-to-s3")
+async def upload_key_to_s3():
+    """Upload the encryption key to S3 as a backup copy."""
+    config = backup_service.get_backup_config()
+    key = backup_service.get_restic_key()
+    if not config or not key:
+        raise HTTPException(status_code=400, detail="Backup not configured or no key")
+    ok, msg = await backup_service.upload_key_to_s3(config, key)
+    if not ok:
+        raise HTTPException(status_code=500, detail=msg)
+    return {"status": "uploaded", "message": "Key uploaded to S3"}
+
+
+@router.delete("/key/s3")
+async def delete_key_from_s3():
+    """Delete the encryption key from S3. The local copy remains.
+    WARNING: If the local server is lost and you haven't downloaded the key,
+    all backups become unrecoverable."""
+    config = backup_service.get_backup_config()
+    if not config:
+        raise HTTPException(status_code=400, detail="Backup not configured")
+    ok, msg = await backup_service.delete_key_from_s3(config)
+    if not ok:
+        raise HTTPException(status_code=500, detail=msg)
     return {
         "status": "deleted",
-        "message": "Key deleted from server. Ensure you have a backup of the key.",
+        "message": "Key deleted from S3. Local copy still exists for making backups.",
     }
-
-
-@router.post("/key/restore")
-async def restore_key(body: dict):
-    """Restore the encryption key (e.g., after deletion for manual backup runs)."""
-    key = body.get("key", "").strip()
-    if not key:
-        raise HTTPException(status_code=400, detail="Key is required")
-    import os
-
-    backup_dir = backup_service._get_backup_dir()
-    os.makedirs(backup_dir, mode=0o700, exist_ok=True)
-    key_path = backup_service._get_key_path()
-    with open(key_path, "w") as f:
-        f.write(key)
-    os.chmod(key_path, 0o600)
-    return {"status": "restored"}
 
 
 # --- Backup operations ---
