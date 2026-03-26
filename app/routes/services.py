@@ -17,6 +17,7 @@ from app.models import (
     ServiceEnableRequest,
     ServiceRestoreRequest,
 )
+from app.dependencies import get_automation_service
 from app.services.infra_service import get_service
 
 router = APIRouter(prefix="/services", tags=["services"])
@@ -55,6 +56,15 @@ async def enable_service(service_type: str, request: ServiceEnableRequest):
             minio_image=request.minio_image,
         )
         result = await svc.enable()
+
+        # Trigger a full deploy so the new service container is created and started
+        try:
+            automation_service = get_automation_service()
+            await automation_service.deploy_automations()
+        except Exception as e:
+            # Enable succeeded but deploy failed — service is enabled but not running
+            result["warning"] = f"Service enabled but failed to start container: {e}"
+
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
