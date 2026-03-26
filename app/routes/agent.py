@@ -643,13 +643,19 @@ async def worktree_diff(
 
 
 async def _stash_workspace(workspace_dir: str) -> bool:
-    """Stash uncommitted changes. Returns True if a stash was created."""
+    """Stash all changes including untracked files. Returns True if a stash was created."""
     before, _, _ = await call_git_command_with_output(
         "git", "stash", "list", cwd=workspace_dir
     )
     count_before = len(before.strip().splitlines()) if before.strip() else 0
     await call_git_command_with_output(
-        "git", "stash", "push", "-m", "rebase-merge-stash", cwd=workspace_dir
+        "git",
+        "stash",
+        "push",
+        "--include-untracked",
+        "-m",
+        "rebase-merge-stash",
+        cwd=workspace_dir,
     )
     after, _, _ = await call_git_command_with_output(
         "git", "stash", "list", cwd=workspace_dir
