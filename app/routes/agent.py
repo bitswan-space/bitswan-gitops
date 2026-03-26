@@ -577,7 +577,7 @@ async def worktree_log(
         raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
 
     stdout, stderr, rc = await call_git_command_with_output(
-        "git", "log", f"--oneline", f"-{n}", cwd=worktree_path
+        "git", "log", "--oneline", f"-{n}", cwd=worktree_path
     )
     if rc != 0:
         raise HTTPException(status_code=500, detail=f"git log failed: {stderr.strip()}")
