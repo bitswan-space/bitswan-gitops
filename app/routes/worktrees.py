@@ -193,6 +193,21 @@ async def create_worktree(body: CreateWorktreeRequest):
     # Ensure worktrees directory exists
     os.makedirs(worktrees_base, exist_ok=True)
 
+    # Ensure worktrees/ is in .gitignore so worktree contents aren't tracked
+    gitignore_path = os.path.join(workspace_dir, ".gitignore")
+    try:
+        existing = ""
+        if os.path.exists(gitignore_path):
+            with open(gitignore_path) as f:
+                existing = f.read()
+        if "worktrees/" not in existing:
+            with open(gitignore_path, "a") as f:
+                if existing and not existing.endswith("\n"):
+                    f.write("\n")
+                f.write("worktrees/\n")
+    except OSError:
+        pass  # best-effort
+
     async with GitLockContext(timeout=15.0):
         # Create the branch from base
         success = await call_git_command(
