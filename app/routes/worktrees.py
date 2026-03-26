@@ -1,11 +1,10 @@
-import asyncio
 import logging
 import os
 import re
 import shutil
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.async_docker import get_async_docker_client, DockerError
@@ -14,7 +13,6 @@ from app.utils import (
     call_git_command_with_output,
     GitLockContext,
 )
-from app.dependencies import verify_token
 
 logger = logging.getLogger(__name__)
 

@@ -14,7 +14,6 @@ from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_caddy,
     AutomationConfig,
-    ServiceDependency,
     get_expose_to_for_stage,
     calculate_git_tree_hash,
     docker_compose_up,
