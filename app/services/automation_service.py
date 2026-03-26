@@ -2026,6 +2026,7 @@ fi
             if replicas <= 1:
                 entry["container_name"] = f"{self.workspace_name}__{deployment_id}"
             entry["restart"] = "always"
+            entry["ulimits"] = {"nofile": {"soft": 65536, "hard": 65536}}
             entry["labels"] = {
                 "gitops.deployment_id": deployment_id,
                 "gitops.workspace": self.workspace_name,
