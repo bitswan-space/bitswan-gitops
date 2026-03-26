@@ -118,7 +118,6 @@ class RequirementsService:
         """Return the first non-passing requirement in DFS order, or None."""
         reqs = self.get_requirements(business_process)
         # Build tree
-        by_id = {r["id"]: r for r in reqs}
         children: dict[str, list] = {"": []}
         for r in reqs:
             parent = r.get("parent", "")
