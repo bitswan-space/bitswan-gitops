@@ -65,7 +65,9 @@ class AutomationService:
         self.workspace_dir_host = os.path.join(self.bs_home_host, "workspace")
         # Workspace repo directory (mounted at /workspace-repo in container)
         # Used to read automation.toml for live-dev config
-        self.workspace_repo_dir = os.environ.get("BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo")
+        self.workspace_repo_dir = os.environ.get(
+            "BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo"
+        )
         # Cache full history per deployment_id: {deployment_id: (commit_hash, [entries])}
         self._history_cache: dict[str, tuple[str, list]] = {}
 
@@ -1975,7 +1977,9 @@ fi
 
             if stage == "live-dev" and relative_path:
                 # For live-dev, read automation.toml directly from the workspace
-                live_dev_source_dir = os.path.join(self.workspace_repo_dir, relative_path)
+                live_dev_source_dir = os.path.join(
+                    self.workspace_repo_dir, relative_path
+                )
                 if not os.path.isdir(live_dev_source_dir):
                     continue
                 automation_config = read_automation_config(live_dev_source_dir)
@@ -2052,10 +2056,14 @@ fi
                     parts = relative_path.replace("\\", "/").split("/")
                     if len(parts) >= 2 and parts[0] == "worktrees":
                         wt_name = parts[1]  # extract worktree name
-                        parts = parts[2:]   # skip "worktrees/{name}"
+                        parts = parts[2:]  # skip "worktrees/{name}"
                     if len(parts) >= 2:
                         bp_name = parts[0]
-                bp_sanitized = re.sub(r"[^a-z0-9-]", "-", bp_name.lower()).strip("-") if bp_name else ""
+                bp_sanitized = (
+                    re.sub(r"[^a-z0-9-]", "-", bp_name.lower()).strip("-")
+                    if bp_name
+                    else ""
+                )
                 wt_part = f"-wt-{wt_name}" if wt_name else ""
                 stage_suffix = f"-{stage}" if stage and stage != "production" else ""
                 if bp_sanitized:
@@ -2063,7 +2071,9 @@ fi
                 elif wt_name:
                     deployment_context = f"wt-{wt_name}{stage_suffix}"
                 else:
-                    deployment_context = stage if stage and stage != "production" else ""
+                    deployment_context = (
+                        stage if stage and stage != "production" else ""
+                    )
 
             if deployment_context:
                 entry["environment"]["BITSWAN_DEPLOYMENT_CONTEXT"] = deployment_context

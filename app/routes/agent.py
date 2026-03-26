@@ -50,11 +50,18 @@ def _resolve_agent_secret() -> str:
     agent_container_name = f"{workspace_name}-coding-agent"
     try:
         import subprocess
+
         result = subprocess.run(
-            ["docker", "inspect", "--format",
-             '{{range .Config.Env}}{{println .}}{{end}}',
-             agent_container_name],
-            capture_output=True, text=True, timeout=5,
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{range .Config.Env}}{{println .}}{{end}}",
+                agent_container_name,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             for line in result.stdout.splitlines():
@@ -63,7 +70,9 @@ def _resolve_agent_secret() -> str:
                     if secret:
                         _cached_agent_secret = secret
                         os.environ["BITSWAN_GITOPS_AGENT_SECRET"] = secret
-                        logger.info("Discovered agent secret from coding agent container")
+                        logger.info(
+                            "Discovered agent secret from coding agent container"
+                        )
                         return secret
     except Exception as e:
         logger.debug("Failed to inspect coding agent container: %s", e)
@@ -129,12 +138,14 @@ def _scan_worktree_automations(worktree: str) -> list[dict]:
             if deployment_id in seen_ids:
                 continue
             seen_ids.add(deployment_id)
-            results.append({
-                "deployment_id": deployment_id,
-                "automation_name": source_name,
-                "relative_path": f"worktrees/{worktree}/{rel_path}",
-                "source_path": root,
-            })
+            results.append(
+                {
+                    "deployment_id": deployment_id,
+                    "automation_name": source_name,
+                    "relative_path": f"worktrees/{worktree}/{rel_path}",
+                    "source_path": root,
+                }
+            )
     return results
 
 
@@ -179,21 +190,25 @@ async def list_agent_deployments(
     for src in sources:
         dep_id = src["deployment_id"]
         state = running_states.pop(dep_id, "not deployed")
-        result.append({
-            "deployment_id": dep_id,
-            "state": state,
-            "automation_name": src["automation_name"],
-            "url": _make_url(dep_id),
-        })
+        result.append(
+            {
+                "deployment_id": dep_id,
+                "state": state,
+                "automation_name": src["automation_name"],
+                "url": _make_url(dep_id),
+            }
+        )
 
     # Include any running containers not found on filesystem (orphaned)
     for dep_id, state in running_states.items():
-        result.append({
-            "deployment_id": dep_id,
-            "state": state,
-            "automation_name": dep_id,
-            "url": _make_url(dep_id),
-        })
+        result.append(
+            {
+                "deployment_id": dep_id,
+                "state": state,
+                "automation_name": dep_id,
+                "url": _make_url(dep_id),
+            }
+        )
 
     return result
 
@@ -214,7 +229,9 @@ async def start_agent_deployment(
 
     # Find the matching automation source on the filesystem
     sources = _scan_worktree_automations(worktree)
-    source = next((s for s in sources if s["deployment_id"] == body.deployment_id), None)
+    source = next(
+        (s for s in sources if s["deployment_id"] == body.deployment_id), None
+    )
     if not source:
         raise HTTPException(
             status_code=404,
@@ -300,7 +317,9 @@ async def inspect_deployment(
         raise HTTPException(status_code=500, detail=f"Docker error: {str(e)}")
 
     if not containers:
-        raise HTTPException(status_code=404, detail=f"No container found for '{deployment_id}'")
+        raise HTTPException(
+            status_code=404, detail=f"No container found for '{deployment_id}'"
+        )
 
     container_id = containers[0].get("Id")
     try:
@@ -323,17 +342,22 @@ async def inspect_deployment(
 
     mounts = []
     for m in info.get("Mounts", []):
-        mounts.append({
-            "source": m.get("Source", ""),
-            "destination": m.get("Destination", ""),
-            "mode": m.get("Mode", ""),
-            "rw": m.get("RW", True),
-        })
+        mounts.append(
+            {
+                "source": m.get("Source", ""),
+                "destination": m.get("Destination", ""),
+                "mode": m.get("Mode", ""),
+                "rw": m.get("RW", True),
+            }
+        )
 
     ports = {}
     for port, bindings in (network_settings.get("Ports") or {}).items():
         if bindings:
-            ports[port] = [{"host_ip": b.get("HostIp", ""), "host_port": b.get("HostPort", "")} for b in bindings]
+            ports[port] = [
+                {"host_ip": b.get("HostIp", ""), "host_port": b.get("HostPort", "")}
+                for b in bindings
+            ]
         else:
             ports[port] = None
 
@@ -383,7 +407,9 @@ async def get_deployment_env(
         raise HTTPException(status_code=500, detail=f"Docker error: {str(e)}")
 
     if not containers:
-        raise HTTPException(status_code=404, detail=f"No container found for '{deployment_id}'")
+        raise HTTPException(
+            status_code=404, detail=f"No container found for '{deployment_id}'"
+        )
 
     container_id = containers[0].get("Id")
     try:
@@ -529,9 +555,7 @@ async def commit_worktree(
         if rc != 0:
             # Check if it's just "nothing to commit"
             if "nothing to commit" in stdout or "nothing to commit" in stderr:
-                raise HTTPException(
-                    status_code=400, detail="Nothing to commit"
-                )
+                raise HTTPException(status_code=400, detail="Nothing to commit")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to commit: {stderr.strip()}",
@@ -556,13 +580,17 @@ async def worktree_status(
 ):
     worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
     if not os.path.exists(worktree_path):
-        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Worktree '{worktree_name}' not found"
+        )
 
     stdout, stderr, rc = await call_git_command_with_output(
         "git", "status", cwd=worktree_path
     )
     if rc != 0:
-        raise HTTPException(status_code=500, detail=f"git status failed: {stderr.strip()}")
+        raise HTTPException(
+            status_code=500, detail=f"git status failed: {stderr.strip()}"
+        )
     return {"output": stdout}
 
 
@@ -574,7 +602,9 @@ async def worktree_log(
 ):
     worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
     if not os.path.exists(worktree_path):
-        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Worktree '{worktree_name}' not found"
+        )
 
     stdout, stderr, rc = await call_git_command_with_output(
         "git", "log", "--oneline", f"-{n}", cwd=worktree_path
@@ -592,7 +622,9 @@ async def worktree_diff(
 ):
     worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
     if not os.path.exists(worktree_path):
-        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Worktree '{worktree_name}' not found"
+        )
 
     git_args = ["git", "diff", "HEAD"]
     if path:
@@ -601,7 +633,9 @@ async def worktree_diff(
         *git_args, cwd=worktree_path
     )
     if rc != 0:
-        raise HTTPException(status_code=500, detail=f"git diff failed: {stderr.strip()}")
+        raise HTTPException(
+            status_code=500, detail=f"git diff failed: {stderr.strip()}"
+        )
     return {"output": stdout}
 
 
@@ -624,7 +658,9 @@ async def _stash_workspace(workspace_dir: str) -> bool:
     return count_after > count_before
 
 
-async def _complete_merge(workspace_dir: str, worktree_path: str, stash_created: bool) -> dict:
+async def _complete_merge(
+    workspace_dir: str, worktree_path: str, stash_created: bool
+) -> dict:
     """After a successful rebase, fast-forward the default branch and pop stash."""
     # Get default branch
     stdout, _, _ = await call_git_command_with_output(
@@ -681,7 +717,9 @@ async def rebase_and_merge(
     worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
 
     if not os.path.exists(worktree_path):
-        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Worktree '{worktree_name}' not found"
+        )
 
     async with GitLockContext(timeout=30.0):
         # Detect default branch
@@ -689,7 +727,10 @@ async def rebase_and_merge(
             "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
         )
         if rc != 0:
-            raise HTTPException(status_code=500, detail=f"Failed to detect default branch: {stderr.strip()}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to detect default branch: {stderr.strip()}",
+            )
         default_branch = stdout.strip()
 
         # Stash workspace changes
@@ -736,7 +777,9 @@ async def rebase_continue(
     worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
 
     if not os.path.exists(worktree_path):
-        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Worktree '{worktree_name}' not found"
+        )
 
     async with GitLockContext(timeout=30.0):
         # Stage all resolved files
@@ -765,7 +808,7 @@ async def rebase_continue(
             # rebase --continue failed but no conflict markers — something else went wrong
             raise HTTPException(
                 status_code=500,
-                detail=f"Rebase continue failed: {stderr.strip()}\n{stdout.strip()}"
+                detail=f"Rebase continue failed: {stderr.strip()}\n{stdout.strip()}",
             )
 
         # Rebase complete — check if there was a stash
@@ -790,10 +833,14 @@ async def rebase_abort(
     worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
 
     if not os.path.exists(worktree_path):
-        raise HTTPException(status_code=404, detail=f"Worktree '{worktree_name}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Worktree '{worktree_name}' not found"
+        )
 
     async with GitLockContext(timeout=15.0):
-        await call_git_command_with_output("git", "rebase", "--abort", cwd=worktree_path)
+        await call_git_command_with_output(
+            "git", "rebase", "--abort", cwd=worktree_path
+        )
 
         # Pop stash if we created one
         stash_list, _, _ = await call_git_command_with_output(
@@ -857,5 +904,3 @@ async def exec_in_deployment(
         "exit_code": exit_code,
         "output": output,
     }
-
-
