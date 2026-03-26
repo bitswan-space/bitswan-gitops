@@ -17,12 +17,14 @@ def _parse_requirements_toml(content: str) -> list:
     raw = data.get("requirement", [])
     reqs = []
     for r in raw:
-        reqs.append({
-            "id": str(r.get("id", "")),
-            "description": str(r.get("description", "")),
-            "status": str(r.get("status", "pending")),
-            "parent": str(r.get("parent", "")),
-        })
+        reqs.append(
+            {
+                "id": str(r.get("id", "")),
+                "description": str(r.get("description", "")),
+                "status": str(r.get("status", "pending")),
+                "parent": str(r.get("parent", "")),
+            }
+        )
     return reqs
 
 
@@ -70,7 +72,9 @@ class RequirementsService:
             f.write(_serialize_requirements_toml(requirements))
         return requirements
 
-    def add_requirement(self, business_process: str, text: str, parent: str = "") -> dict:
+    def add_requirement(
+        self, business_process: str, text: str, parent: str = ""
+    ) -> dict:
         reqs = self.get_requirements(business_process)
         max_num = 0
         for r in reqs:

@@ -114,7 +114,9 @@ async def list_worktrees():
     )
 
     if rc != 0:
-        raise HTTPException(status_code=500, detail=f"Failed to list worktrees: {stderr}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to list worktrees: {stderr}"
+        )
 
     # Parse porcelain output
     worktrees = []
@@ -127,11 +129,11 @@ async def list_worktrees():
             current_wt = {}
             continue
         if line.startswith("worktree "):
-            current_wt["path"] = line[len("worktree "):]
+            current_wt["path"] = line[len("worktree ") :]
         elif line.startswith("branch "):
-            current_wt["branch"] = line[len("branch "):]
+            current_wt["branch"] = line[len("branch ") :]
         elif line.startswith("HEAD "):
-            current_wt["head"] = line[len("HEAD "):]
+            current_wt["head"] = line[len("HEAD ") :]
     # Capture last entry
     if current_wt and current_wt.get("path"):
         worktrees.append(current_wt)
@@ -159,9 +161,7 @@ async def list_worktrees():
                 commit_message = parts[1] if len(parts) > 1 else ""
 
         # Check if .requirements.json exists
-        has_requirements = os.path.exists(
-            os.path.join(wt_path, ".requirements.json")
-        )
+        has_requirements = os.path.exists(os.path.join(wt_path, ".requirements.json"))
 
         result.append(
             {
@@ -227,9 +227,7 @@ async def merge_worktree(name: str):
         )
 
         # Delete the branch
-        await call_git_command(
-            "git", "branch", "-d", name, cwd=workspace_dir
-        )
+        await call_git_command("git", "branch", "-d", name, cwd=workspace_dir)
 
     return {
         "status": "success",
@@ -257,9 +255,7 @@ async def delete_worktree(name: str):
             )
 
         # Delete the branch
-        await call_git_command(
-            "git", "branch", "-D", name, cwd=workspace_dir
-        )
+        await call_git_command("git", "branch", "-D", name, cwd=workspace_dir)
 
     return {"status": "success", "message": f"Worktree '{name}' deleted"}
 
@@ -313,13 +309,19 @@ async def ensure_coding_agent():
         if f"/{agent_container_name}" in names or agent_container_name in names:
             state = c.get("State", "")
             if state == "running":
-                return {"status": "running", "message": "Coding agent is already running"}
+                return {
+                    "status": "running",
+                    "message": "Coding agent is already running",
+                }
 
             # Container exists but stopped — start it
             container_id = c.get("Id")
             try:
                 await docker_client.start_container(container_id)
-                return {"status": "started", "message": "Coding agent container started"}
+                return {
+                    "status": "started",
+                    "message": "Coding agent container started",
+                }
             except DockerError as e:
                 raise HTTPException(
                     status_code=500, detail=f"Failed to start agent container: {e}"
@@ -409,7 +411,10 @@ async def ensure_coding_agent():
         # Start container
         await docker_client.start_container(container_id)
 
-        return {"status": "created", "message": "Coding agent container created and started"}
+        return {
+            "status": "created",
+            "message": "Coding agent container created and started",
+        }
     except DockerError as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to create agent container: {e}"
