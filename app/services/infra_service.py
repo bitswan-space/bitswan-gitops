@@ -407,9 +407,7 @@ class InfraService(ABC):
                 logger.info(f"oauth2-proxy already running in {container_name}")
                 return True
 
-            if not await copy_oauth2_proxy_to_container(
-                container_id, container_name
-            ):
+            if not await copy_oauth2_proxy_to_container(container_id, container_name):
                 return False
 
             # Start oauth2-proxy in background
