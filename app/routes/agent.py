@@ -323,7 +323,7 @@ async def inspect_deployment(
 
     container_id = containers[0].get("Id")
     try:
-        info = await docker_client.inspect_container(container_id)
+        info = await docker_client.get_container(container_id)
     except DockerError as e:
         raise HTTPException(status_code=500, detail=f"Docker inspect error: {str(e)}")
 
@@ -413,7 +413,7 @@ async def get_deployment_env(
 
     container_id = containers[0].get("Id")
     try:
-        info = await docker_client.inspect_container(container_id)
+        info = await docker_client.get_container(container_id)
         env_list = info.get("Config", {}).get("Env", [])
     except DockerError as e:
         raise HTTPException(status_code=500, detail=f"Docker inspect error: {str(e)}")
