@@ -88,6 +88,91 @@ def is_configured() -> bool:
     return config is not None and get_restic_key() is not None
 
 
+async def key_exists_on_s3(config: dict) -> bool:
+    """Check if the encryption key file exists on S3."""
+    stdout, stderr, rc = await _run_s3_cmd(
+        config, "ls", f"s3://{config['s3_bucket']}/.restic-key"
+    )
+    return rc == 0 and ".restic-key" in stdout
+
+
+async def upload_key_to_s3(config: dict, key: str) -> tuple[bool, str]:
+    """Upload the encryption key to S3."""
+    key_tmp = os.path.join(tempfile.gettempdir(), ".restic-key-upload")
+    try:
+        with open(key_tmp, "w") as f:
+            f.write(key)
+        stdout, stderr, rc = await _run_s3_cmd(
+            config, "cp", key_tmp, f"s3://{config['s3_bucket']}/.restic-key"
+        )
+        if rc != 0:
+            return False, stderr.strip()
+        return True, "Key uploaded"
+    finally:
+        if os.path.exists(key_tmp):
+            os.remove(key_tmp)
+
+
+async def download_key_from_s3(config: dict) -> str | None:
+    """Download the encryption key from S3."""
+    key_tmp = os.path.join(tempfile.gettempdir(), ".restic-key-download")
+    try:
+        stdout, stderr, rc = await _run_s3_cmd(
+            config, "cp", f"s3://{config['s3_bucket']}/.restic-key", key_tmp
+        )
+        if rc != 0:
+            return None
+        with open(key_tmp) as f:
+            return f.read().strip()
+    except Exception:
+        return None
+    finally:
+        if os.path.exists(key_tmp):
+            os.remove(key_tmp)
+
+
+def _save_key(key: str) -> None:
+    """Save a key to the local key file."""
+    backup_dir = _get_backup_dir()
+    os.makedirs(backup_dir, mode=0o700, exist_ok=True)
+    with open(_get_key_path(), "w") as f:
+        f.write(key)
+    os.chmod(_get_key_path(), 0o600)
+
+
+async def delete_key_from_s3(config: dict) -> tuple[bool, str]:
+    """Delete the encryption key from S3."""
+    stdout, stderr, rc = await _run_s3_cmd(
+        config, "rm", f"s3://{config['s3_bucket']}/.restic-key"
+    )
+    if rc != 0:
+        return False, stderr.strip()
+    return True, "Key deleted from S3"
+
+
+async def _run_s3_cmd(config: dict, *args: str) -> tuple[str, str, int]:
+    """Run an AWS CLI S3 command."""
+    env = os.environ.copy()
+    env["AWS_ACCESS_KEY_ID"] = config.get("s3_access_key", "")
+    env["AWS_SECRET_ACCESS_KEY"] = config.get("s3_secret_key", "")
+
+    # Use the S3 endpoint for non-AWS providers
+    endpoint = config.get("s3_endpoint", "")
+    cmd = ["aws", "s3"]
+    if endpoint and "amazonaws.com" not in endpoint:
+        cmd.extend(["--endpoint-url", endpoint])
+    cmd.extend(args)
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, stderr = await proc.communicate()
+    return stdout.decode(), stderr.decode(), proc.returncode
+
+
 def _restic_env(config: dict) -> dict:
     """Build environment variables for restic commands."""
     env = os.environ.copy()
