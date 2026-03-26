@@ -768,9 +768,7 @@ class AutomationService:
                 docker_client = get_async_docker_client()
 
                 # Check if oauth2-proxy is already running to avoid duplicates
-                if await is_oauth2_proxy_running(
-                    docker_client, container_id
-                ):
+                if await is_oauth2_proxy_running(docker_client, container_id):
                     print(f"oauth2-proxy already running in container {container_name}")
                     continue
 
@@ -857,9 +855,7 @@ class AutomationService:
                         continue
 
                     # Check if already running
-                    if await is_oauth2_proxy_running(
-                        docker_client, container_id
-                    ):
+                    if await is_oauth2_proxy_running(docker_client, container_id):
                         logger.info(f"oauth2-proxy already running in {container_name}")
                         continue
 
