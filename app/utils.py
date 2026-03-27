@@ -364,7 +364,10 @@ def test_read_pipeline_conf():
 
 
 def generate_workspace_url(workspace_name, deployment_id, gitops_domain, full=False):
-    url = "{}-{}.{}".format(workspace_name, deployment_id, gitops_domain)
+    from app.services.automation_service import _shorten_hostname_label
+
+    label = _shorten_hostname_label(workspace_name, deployment_id)
+    url = f"{label}.{gitops_domain}"
     return f"https://{url}" if full else url
 
 
