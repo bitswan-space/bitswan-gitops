@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import os
 import json
@@ -42,6 +43,57 @@ logger = logging.getLogger(__name__)
 # How often oauth2-proxy refreshes the session cookie (and access token).
 # Should be shorter than the access token lifespan in Keycloak (15m for automation clients).
 OAUTH2_COOKIE_REFRESH = "14m"
+
+
+def _shorten_hostname_label(workspace_name: str, deployment_id: str) -> str:
+    """Build a DNS hostname label, shortening the context if it would exceed 63 chars.
+
+    DNS labels have a hard limit of 63 characters. When the full
+    '{workspace}-{deployment_id}' label is too long, the middle part
+    (BP name + worktree context) is replaced with a 4-char hash while
+    keeping the automation name and stage visible.
+
+    Example:
+      Normal:  deployment-management-backend-dev  (32 chars, fine)
+      Long:    deployment-management-backend-deployment-management-wt-coding-agent-staging-live-dev  (87 chars)
+      Short:   deployment-management-backend-e8be-live-dev  (43 chars)
+    """
+    label = f"{workspace_name}-{deployment_id}"
+    if len(label) <= 63:
+        return label
+
+    # deployment_id format: {automationName}-{context}
+    # context format: {bp}-wt-{wt}-{stage} or {bp}-{stage}
+    # Keep the automation name and stage, hash the middle (bp + worktree)
+    parts = deployment_id.split("-")
+    auto_name = parts[0]
+
+    # Extract stage from the end (live-dev, dev, staging, or production-like)
+    stage_suffix = ""
+    if deployment_id.endswith("-live-dev"):
+        stage_suffix = "-live-dev"
+    elif deployment_id.endswith("-dev"):
+        stage_suffix = "-dev"
+    elif deployment_id.endswith("-staging"):
+        stage_suffix = "-staging"
+
+    # The middle part is everything between automation name and stage
+    middle = deployment_id[len(auto_name) :]
+    if stage_suffix:
+        middle = middle[: -len(stage_suffix)]
+    # middle is like "-deployment-management-wt-coding-agent-staging"
+
+    short_hash = hashlib.sha256(middle.encode()).hexdigest()[:4]
+    short_label = f"{workspace_name}-{auto_name}-{short_hash}{stage_suffix}"
+
+    if len(short_label) > 63:
+        # Still too long — truncate workspace name
+        max_ws = 63 - len(f"-{auto_name}-{short_hash}{stage_suffix}")
+        short_label = (
+            f"{workspace_name[:max_ws]}-{auto_name}-{short_hash}{stage_suffix}"
+        )
+
+    return short_label
 
 
 class AutomationService:
@@ -2272,10 +2324,11 @@ fi
 
             if expose and port:
                 # Set URL env vars for exposed automations
-                # These allow constructing URLs to any automation: {prefix}{deploymentId}{suffix}
+                # Shorten hostname if it would exceed DNS 63-char label limit
+                url_label = _shorten_hostname_label(self.workspace_name, deployment_id)
                 url_prefix = f"https://{self.workspace_name}-"
                 url_suffix = f".{self.gitops_domain}"
-                automation_url = f"{url_prefix}{deployment_id}{url_suffix}"
+                automation_url = f"https://{url_label}.{self.gitops_domain}"
 
                 entry["environment"]["BITSWAN_AUTOMATION_URL"] = automation_url
                 entry["environment"]["BITSWAN_URL_PREFIX"] = url_prefix
@@ -2335,7 +2388,7 @@ fi
             # Add the public hostname as a network alias so other containers
             # on the same Docker network can reach this automation by its URL.
             if expose and port and self.gitops_domain and not network_mode:
-                url_host = f"{self.workspace_name}-{deployment_id}.{self.gitops_domain}"
+                url_host = f"{_shorten_hostname_label(self.workspace_name, deployment_id)}.{self.gitops_domain}"
                 networks = entry.get("networks")
                 if isinstance(networks, dict):
                     for net_conf in networks.values():
