@@ -2375,7 +2375,9 @@ fi
                     # Store oauth2 config in labels for post-deployment execution
                     entry["labels"]["gitops.oauth2.enabled"] = "true"
                     entry["labels"]["gitops.intended_exposed"] = "true"
-                    if not add_workspace_route_to_ingress(deployment_id, self.oauth2_proxy_port):
+                    if not add_workspace_route_to_ingress(
+                        deployment_id, self.oauth2_proxy_port
+                    ):
                         logger.warning(
                             f"Failed to add ingress route for {deployment_id} (oauth2 proxy port)"
                         )

@@ -377,10 +377,11 @@ def generate_workspace_url(workspace_name, deployment_id, gitops_domain, full=Fa
 def add_workspace_route_to_ingress(deployment_id: str, port: str) -> bool:
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
-    hostname = generate_workspace_url(workspace_name, deployment_id, gitops_domain, False)
+    hostname = generate_workspace_url(
+        workspace_name, deployment_id, gitops_domain, False
+    )
     upstream = f"{workspace_name}__{deployment_id}:{port}"
     return add_route_to_ingress(hostname, upstream, workspace_name)
-
 
 
 def _ingress_client_and_base() -> tuple:
@@ -395,15 +396,23 @@ def _ingress_client_and_base() -> tuple:
     )
     if os.path.exists(socket_path):
         # Hostname in the URL is ignored by UDS transport; use a placeholder.
-        return httpx.Client(transport=httpx.HTTPTransport(uds=socket_path), timeout=10), "http://daemon"
+        return httpx.Client(
+            transport=httpx.HTTPTransport(uds=socket_path), timeout=10
+        ), "http://daemon"
     base_url = os.environ.get(
         "BITSWAN_INGRESS_URL", "http://bitswan-automation-server-daemon:8080"
     )
     return httpx.Client(timeout=10), base_url
 
 
-def add_route_to_ingress(hostname: str, upstream: str, workspace_name: str = "") -> bool:
-    body = {"hostname": hostname, "upstream": upstream, "workspace_name": workspace_name}
+def add_route_to_ingress(
+    hostname: str, upstream: str, workspace_name: str = ""
+) -> bool:
+    body = {
+        "hostname": hostname,
+        "upstream": upstream,
+        "workspace_name": workspace_name,
+    }
     try:
         client, base = _ingress_client_and_base()
         with client:
@@ -421,7 +430,9 @@ def add_route_to_ingress(hostname: str, upstream: str, workspace_name: str = "")
 
 def remove_route_from_ingress(deployment_id: str, workspace_name: str) -> bool:
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
-    hostname = generate_workspace_url(workspace_name, deployment_id, gitops_domain, False)
+    hostname = generate_workspace_url(
+        workspace_name, deployment_id, gitops_domain, False
+    )
     try:
         client, base = _ingress_client_and_base()
         with client:
