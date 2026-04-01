@@ -383,15 +383,33 @@ def add_workspace_route_to_ingress(deployment_id: str, port: str) -> bool:
 
 
 
-def add_route_to_ingress(hostname: str, upstream: str, workspace_name: str = "") -> bool:
-    ingress_url = os.environ.get(
-        "BITSWAN_INGRESS_URL", "http://bitswan-automation-server:8080"
+def _ingress_client_and_base() -> tuple:
+    """Return (httpx.Client, base_url) for the ingress daemon.
+
+    Prefers the Unix socket (BITSWAN_INGRESS_SOCKET) — access is controlled
+    by the docker-compose bind-mount, no token needed.
+    Falls back to BITSWAN_INGRESS_URL for environments without the socket.
+    """
+    import httpx
+
+    socket_path = os.environ.get(
+        "BITSWAN_INGRESS_SOCKET", "/var/run/bitswan/automation-server.sock"
     )
-    body: dict = {"hostname": hostname, "upstream": upstream, "workspace_name": workspace_name}
+    if os.path.exists(socket_path):
+        # Hostname in the URL is ignored by UDS transport; use a placeholder.
+        return httpx.Client(transport=httpx.HTTPTransport(uds=socket_path), timeout=10), "http://daemon"
+    base_url = os.environ.get(
+        "BITSWAN_INGRESS_URL", "http://bitswan-automation-server-daemon:8080"
+    )
+    return httpx.Client(timeout=10), base_url
+
+
+def add_route_to_ingress(hostname: str, upstream: str, workspace_name: str = "") -> bool:
+    body = {"hostname": hostname, "upstream": upstream, "workspace_name": workspace_name}
     try:
-        response = requests.post(
-            f"{ingress_url}/ingress/add-route", json=body, timeout=10
-        )
+        client, base = _ingress_client_and_base()
+        with client:
+            response = client.post(f"{base}/ingress/add-route", json=body)
         if response.status_code != 200:
             logger.warning(
                 f"Ingress add-route failed for {hostname}: HTTP {response.status_code} — {response.text}"
@@ -403,17 +421,13 @@ def add_route_to_ingress(hostname: str, upstream: str, workspace_name: str = "")
         return False
 
 
-
 def remove_route_from_ingress(deployment_id: str, workspace_name: str) -> bool:
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
     hostname = generate_workspace_url(workspace_name, deployment_id, gitops_domain, False)
-    ingress_url = os.environ.get(
-        "BITSWAN_INGRESS_URL", "http://bitswan-automation-server:8080"
-    )
     try:
-        response = requests.delete(
-            f"{ingress_url}/ingress/remove-route/{hostname}", timeout=10
-        )
+        client, base = _ingress_client_and_base()
+        with client:
+            response = client.delete(f"{base}/ingress/remove-route/{hostname}")
         return response.status_code == 200
     except Exception:
         return False
