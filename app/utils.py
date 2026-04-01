@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from io import StringIO
 from datetime import datetime, timezone
 import hashlib
+import logging
 import os
 import threading
 from typing import Any, Optional
@@ -11,6 +12,8 @@ import shlex
 import subprocess
 import shutil
 import tempfile
+
+logger = logging.getLogger(__name__)
 
 import humanize
 import toml
@@ -384,15 +387,19 @@ def add_route_to_ingress(hostname: str, upstream: str, workspace_name: str = "")
     ingress_url = os.environ.get(
         "BITSWAN_INGRESS_URL", "http://bitswan-automation-server:8080"
     )
-    body: dict = {"hostname": hostname, "upstream": upstream}
-    if workspace_name:
-        body["workspace_name"] = workspace_name
+    body: dict = {"hostname": hostname, "upstream": upstream, "workspace_name": workspace_name}
     try:
         response = requests.post(
             f"{ingress_url}/ingress/add-route", json=body, timeout=10
         )
-        return response.status_code == 200
-    except Exception:
+        if response.status_code != 200:
+            logger.warning(
+                f"Ingress add-route failed for {hostname}: HTTP {response.status_code} — {response.text}"
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"Ingress add-route request failed for {hostname}: {e}")
         return False
 
 
