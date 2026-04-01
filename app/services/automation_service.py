@@ -2385,7 +2385,7 @@ fi
                     if not add_workspace_route_to_ingress(deployment_id, port):
                         logger.warning(
                             f"Failed to add ingress route for {deployment_id} — "
-                            "deployment will proceed but may not be externally reachable"
+                            "deployment will proceed but you suck may not be externally reachable"
                         )
 
             # Add the public hostname as a network alias so other containers

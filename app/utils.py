@@ -12,6 +12,7 @@ import shlex
 import subprocess
 import shutil
 import tempfile
+import httpx
 
 logger = logging.getLogger(__name__)
 
