@@ -379,9 +379,6 @@ def add_workspace_route_to_ingress(deployment_id: str, port: str) -> bool:
     return add_route_to_ingress(hostname, upstream, workspace_name)
 
 
-# Keep old name as alias for now
-add_workspace_route_to_caddy = add_workspace_route_to_ingress
-
 
 def add_route_to_ingress(hostname: str, upstream: str, workspace_name: str = "") -> bool:
     ingress_url = os.environ.get(
@@ -399,11 +396,6 @@ def add_route_to_ingress(hostname: str, upstream: str, workspace_name: str = "")
         return False
 
 
-# Keep old name as alias for callers that still pass caddy_id as second arg
-def add_route_to_caddy(route: str, caddy_id: str, dial_address: str) -> bool:
-    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
-    return add_route_to_ingress(route, dial_address, workspace_name)
-
 
 def remove_route_from_ingress(deployment_id: str, workspace_name: str) -> bool:
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
@@ -418,10 +410,6 @@ def remove_route_from_ingress(deployment_id: str, workspace_name: str) -> bool:
         return response.status_code == 200
     except Exception:
         return False
-
-
-# Keep old name as alias
-remove_route_from_caddy = remove_route_from_ingress
 
 
 def calculate_checksum(file_path):
