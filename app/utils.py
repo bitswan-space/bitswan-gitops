@@ -371,71 +371,57 @@ def generate_workspace_url(workspace_name, deployment_id, gitops_domain, full=Fa
     return f"https://{url}" if full else url
 
 
-def add_workspace_route_to_caddy(deployment_id: str, port: str) -> bool:
+def add_workspace_route_to_ingress(deployment_id: str, port: str) -> bool:
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
-    endpoint = generate_workspace_url(
-        workspace_name, deployment_id, gitops_domain, False
+    hostname = generate_workspace_url(workspace_name, deployment_id, gitops_domain, False)
+    upstream = f"{workspace_name}__{deployment_id}:{port}"
+    return add_route_to_ingress(hostname, upstream, workspace_name)
+
+
+# Keep old name as alias for now
+add_workspace_route_to_caddy = add_workspace_route_to_ingress
+
+
+def add_route_to_ingress(hostname: str, upstream: str, workspace_name: str = "") -> bool:
+    ingress_url = os.environ.get(
+        "BITSWAN_INGRESS_URL", "http://bitswan-automation-server:8080"
     )
-
-    caddy_id = get_workspace_caddy_id(deployment_id, workspace_name)
-    dial_address = f"{workspace_name}__{deployment_id}:{port}"
-
-    return add_route_to_caddy(endpoint, caddy_id, dial_address)
-
-
-def add_route_to_caddy(route: str, caddy_id: str, dial_address: str) -> bool:
-    caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
-    upstreams = requests.get(f"{caddy_url}/reverse_proxy/upstreams")
-
-    if upstreams.status_code != 200:
+    body: dict = {"hostname": hostname, "upstream": upstream}
+    if workspace_name:
+        body["workspace_name"] = workspace_name
+    try:
+        response = requests.post(
+            f"{ingress_url}/ingress/add-route", json=body, timeout=10
+        )
+        return response.status_code == 200
+    except Exception:
         return False
 
-    upstreams = upstreams.json()
-    for upstream in upstreams:
-        # deployment_id is already in the upstreams
-        if upstream.get("address") == dial_address:
-            return True
 
-    body = [
-        {
-            "@id": caddy_id,
-            "match": [{"host": [route]}],
-            "handle": [
-                {
-                    "handler": "subroute",
-                    "routes": [
-                        {
-                            "handle": [
-                                {
-                                    "handler": "reverse_proxy",
-                                    "upstreams": [{"dial": dial_address}],
-                                }
-                            ]
-                        }
-                    ],
-                }
-            ],
-            "terminal": True,
-        }
-    ]
-
-    routes_url = "{}/config/apps/http/servers/srv0/routes/...".format(caddy_url)
-    response = requests.post(routes_url, json=body)
-    return response.status_code == 200
+# Keep old name as alias for callers that still pass caddy_id as second arg
+def add_route_to_caddy(route: str, caddy_id: str, dial_address: str) -> bool:
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+    return add_route_to_ingress(route, dial_address, workspace_name)
 
 
-def get_workspace_caddy_id(deployment_id, workspace_name):
-    return "{}.{}".format(deployment_id, workspace_name)
-
-
-def remove_route_from_caddy(deployment_id: str, workspace_name: str):
-    caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
-    routes_url = "{}/id/{}".format(
-        caddy_url, get_workspace_caddy_id(deployment_id, workspace_name)
+def remove_route_from_ingress(deployment_id: str, workspace_name: str) -> bool:
+    gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
+    hostname = generate_workspace_url(workspace_name, deployment_id, gitops_domain, False)
+    ingress_url = os.environ.get(
+        "BITSWAN_INGRESS_URL", "http://bitswan-automation-server:8080"
     )
-    response = requests.delete(routes_url)
-    return response.status_code == 200
+    try:
+        response = requests.delete(
+            f"{ingress_url}/ingress/remove-route/{hostname}", timeout=10
+        )
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+# Keep old name as alias
+remove_route_from_caddy = remove_route_from_ingress
 
 
 def calculate_checksum(file_path):
