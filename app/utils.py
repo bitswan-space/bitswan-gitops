@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 import humanize
 import toml
 import yaml
-import requests
 from fastapi import HTTPException
 
 
@@ -391,8 +390,6 @@ def _ingress_client_and_base() -> tuple:
     by the docker-compose bind-mount, no token needed.
     Falls back to BITSWAN_INGRESS_URL for environments without the socket.
     """
-    import httpx
-
     socket_path = os.environ.get(
         "BITSWAN_INGRESS_SOCKET", "/var/run/bitswan/automation-server.sock"
     )
