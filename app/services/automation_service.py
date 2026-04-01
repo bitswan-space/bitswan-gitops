@@ -2420,9 +2420,11 @@ fi
                 )
                 entry["environment"]["KEYCLOAK_ISSUER_URL"] = keycloak_url
 
-            # Always inject the org group path so any automation can verify
-            # group membership in JWT tokens (group_membership claim).
-            entry["environment"]["BITSWAN_ALLOWED_GROUP"] = org_group_path
+            # Inject the org group path for JWT group-membership verification,
+            # but only when AOC is configured (simple-mode deployments skip this).
+            org_group_path = self.get_org_group_path()
+            if org_group_path:
+                entry["environment"]["BITSWAN_ALLOWED_GROUP"] = org_group_path
 
             if "volumes" not in entry:
                 entry["volumes"] = []
