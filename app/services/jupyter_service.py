@@ -11,7 +11,7 @@ from aiohttp import ClientConnectorError
 from fastapi import HTTPException
 
 from app.utils import (
-    add_route_to_caddy,
+    add_route_to_ingress,
     read_bitswan_yaml,
     parse_pipeline_conf,
     parse_automation_toml,
@@ -349,19 +349,18 @@ class JupyterService:
         )
 
         success = await asyncio.to_thread(
-            add_route_to_caddy,
+            add_route_to_ingress,
             jupyter_server_host,
-            container_name,
             f"{container_name}:80",
+            self.workspace_name,
         )
         if not success:
             raise HTTPException(
                 status_code=500,
-                detail=f"Error adding route to Caddy: {jupyter_server_host}",
+                detail=f"Error adding ingress route: {jupyter_server_host}",
             )
 
-        # Give Caddy a moment to activate the route before returning
-        # This helps prevent connection refused errors when VS Code tries to connect immediately
+        # Give ingress a moment to activate the route before returning
         await asyncio.sleep(1)
 
         jupyter_server_full_url = self.generate_jupyter_server_caddy_url(
@@ -785,20 +784,20 @@ class JupyterService:
                 status_code=500, detail=f"Error installing ipykernel: {output}"
             )
 
-        # Add Caddy route
+        # Add ingress route
         jupyter_server_host = self.generate_jupyter_server_caddy_url(
             container_name, full=False
         )
         success = await asyncio.to_thread(
-            add_route_to_caddy,
+            add_route_to_ingress,
             jupyter_server_host,
-            container_name,
             f"{container_name}:80",
+            self.workspace_name,
         )
         if not success:
             raise HTTPException(
                 status_code=500,
-                detail=f"Error adding route to Caddy: {jupyter_server_host}",
+                detail=f"Error adding ingress route: {jupyter_server_host}",
             )
 
         await asyncio.sleep(1)

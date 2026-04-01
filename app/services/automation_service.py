@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Callable
 from app.models import DeployedAutomation
 from app.utils import (
-    add_workspace_route_to_caddy,
+    add_workspace_route_to_ingress,
     AutomationConfig,
     get_expose_to_for_stage,
     calculate_git_tree_hash,
@@ -22,7 +22,7 @@ from app.utils import (
     read_bitswan_yaml,
     read_pipeline_conf,
     read_automation_config,
-    remove_route_from_caddy,
+    remove_route_from_ingress,
     update_git,
     call_git_command,
     call_git_command_with_output,
@@ -1030,10 +1030,10 @@ fi
         await self.remove_automation_from_bitswan(deployment_id)
 
         await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "delete")
-        result = remove_route_from_caddy(deployment_id, self.workspace_name)
+        result = remove_route_from_ingress(deployment_id, self.workspace_name)
 
         if not result:
-            message = f"Deployment {deployment_id} deleted successfully, but failed to remove route from Caddy"
+            message = f"Deployment {deployment_id} deleted successfully, but failed to remove route from ingress"
         else:
             message = f"Deployment {deployment_id} deleted successfully"
 
@@ -2375,14 +2375,17 @@ fi
                     # Store oauth2 config in labels for post-deployment execution
                     entry["labels"]["gitops.oauth2.enabled"] = "true"
                     entry["labels"]["gitops.intended_exposed"] = "true"
-                    add_workspace_route_to_caddy(deployment_id, self.oauth2_proxy_port)
+                    if not add_workspace_route_to_ingress(deployment_id, self.oauth2_proxy_port):
+                        logger.warning(
+                            f"Failed to add ingress route for {deployment_id} (oauth2 proxy port)"
+                        )
 
                 else:
-                    result = add_workspace_route_to_caddy(deployment_id, port)
                     entry["labels"]["gitops.intended_exposed"] = "true"
-                    if not result:
-                        raise HTTPException(
-                            status_code=500, detail="Error adding route to Caddy"
+                    if not add_workspace_route_to_ingress(deployment_id, port):
+                        logger.warning(
+                            f"Failed to add ingress route for {deployment_id} — "
+                            "deployment will proceed but may not be externally reachable"
                         )
 
             # Add the public hostname as a network alias so other containers
