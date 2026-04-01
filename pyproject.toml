@@ -23,6 +23,7 @@ dependencies = [
  "watchdog",
  "markdown",
  "aiohttp",
+ "httpx",
 ]
 
 [project.optional-dependencies]
