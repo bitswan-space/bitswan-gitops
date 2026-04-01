@@ -281,7 +281,7 @@ class InfraService(ABC):
             )
 
     async def enable(self) -> dict:
-        """Enable the service: generate secrets, extra setup, register Caddy.
+        """Enable the service: generate secrets, extra setup, register with ingress.
 
         The container will be started by the main docker-compose managed by
         AutomationService.
@@ -302,7 +302,7 @@ class InfraService(ABC):
         # Run any extra setup (e.g., JAAS config for Kafka)
         await self._extra_enable_setup()
 
-        # Register with Caddy
+        # Register with ingress
         await self._register_with_caddy()
 
         # Register OAuth2 redirect URI with AOC/Keycloak
@@ -328,7 +328,7 @@ class InfraService(ABC):
         pass
 
     async def disable(self) -> dict:
-        """Disable the service: stop container, unregister Caddy, remove secrets.
+        """Disable the service: stop container, unregister from ingress, remove secrets.
 
         Works even if the service is not fully enabled (e.g. containers running
         but secrets file missing) — performs best-effort cleanup.
@@ -343,7 +343,7 @@ class InfraService(ABC):
         except Exception as e:
             logger.warning(f"Failed to stop {self.display_name}: {e}")
 
-        # Unregister from Caddy
+        # Unregister from ingress
         await self._unregister_from_caddy()
 
         # Remove secrets file

@@ -1988,12 +1988,12 @@ fi
                             f"Could not start {svc.display_name} container "
                             f"(may have been removed) — docker-compose up will recreate it"
                         )
-                        # Re-register with Caddy in case it was lost
+                        # Re-register with ingress in case route was lost
                         try:
                             await svc._register_with_caddy()
                         except Exception as e:
                             logger.warning(
-                                f"Failed to re-register {svc.display_name} with Caddy: {e}"
+                                f"Failed to re-register {svc.display_name} with ingress: {e}"
                             )
 
     def _resolve_service_secrets(
