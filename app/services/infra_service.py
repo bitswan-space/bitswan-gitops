@@ -230,7 +230,9 @@ class InfraService(ABC):
                 f"HTTP {response.status_code} - {response.text}"
             )
         except Exception as e:
-            logger.warning(f"Failed to unregister {self.display_name} from ingress: {e}")
+            logger.warning(
+                f"Failed to unregister {self.display_name} from ingress: {e}"
+            )
         return False
 
     async def _register_oauth2_redirect_uri(self) -> None:
