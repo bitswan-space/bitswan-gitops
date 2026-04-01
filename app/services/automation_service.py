@@ -1901,14 +1901,12 @@ fi
     def get_org_group_path(self):
         """Fetch the Keycloak org group path for this workspace from AOC.
 
-        Returns the group path string (e.g. "/Example Org").
-        Raises HTTPException if the group path cannot be resolved.
+        Returns the group path string (e.g. "/Example Org"), or None if AOC
+        is not configured (non-AOC deployments skip group-path resolution).
+        Raises HTTPException if AOC is configured but the call fails.
         """
         if not self.workspace_id or not self.aoc_url or not self.aoc_token:
-            raise HTTPException(
-                status_code=500,
-                detail="AOC not configured, cannot fetch org group path",
-            )
+            return None
 
         url = f"{self.aoc_url}/api/automation_server/workspaces/{self.workspace_id}/keycloak/org-group-path/"
         headers = {"Authorization": f"Bearer {self.aoc_token}"}
@@ -2298,18 +2296,20 @@ fi
             port = automation_config.port
             expose_to_groups = get_expose_to_for_stage(automation_config, stage)
 
-            # resolve groups to inject them for group validation
-            org_group_path = self.get_org_group_path()
-
-            # "*" means the org group itself, "/admin" becomes "/Example Org/admin".
+            # Resolve group paths if expose_to_groups is set and AOC is configured.
+            # Without AOC, group-based exposure is silently skipped (simple-mode deploy).
             if expose_to_groups:
-                resolved = []
-                for g in expose_to_groups:
-                    if g == "*":
-                        resolved.append(org_group_path)
-                    else:
-                        resolved.append(f"{org_group_path}{g}")
-                expose_to_groups = resolved
+                org_group_path = self.get_org_group_path()
+                if org_group_path:
+                    resolved = []
+                    for g in expose_to_groups:
+                        if g == "*":
+                            resolved.append(org_group_path)
+                        else:
+                            resolved.append(f"{org_group_path}{g}")
+                    expose_to_groups = resolved
+                else:
+                    expose_to_groups = []
 
             # Error if both expose and expose_to_groups are set
             if expose and expose_to_groups:
