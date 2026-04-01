@@ -185,51 +185,52 @@ class InfraService(ABC):
         """Return the upstream address for Caddy (e.g., 'container:5984')."""
 
     async def _register_with_caddy(self) -> bool:
-        """Register this service with Caddy."""
-        from app.utils import add_route_to_caddy
+        """Register this service with the ingress daemon."""
+        from app.utils import add_route_to_ingress
 
         if not self.gitops_domain:
             logger.warning(
-                f"No domain configured, skipping Caddy registration for {self.display_name}"
+                f"No domain configured, skipping ingress registration for {self.display_name}"
             )
             return False
 
         hostname = self.caddy_hostname()
-        caddy_id = f"svc-{self.service_type}{self.service_suffix}.{self.workspace_name}"
         upstream = self._get_caddy_upstream()
 
-        result = add_route_to_caddy(hostname, caddy_id, upstream)
+        result = add_route_to_ingress(hostname, upstream, self.workspace_name)
         if result:
             logger.info(
-                f"Registered {self.display_name} with Caddy: {hostname} -> {upstream}"
+                f"Registered {self.display_name} with ingress: {hostname} -> {upstream}"
             )
         else:
-            logger.error(f"Failed to register {self.display_name} with Caddy")
+            logger.error(f"Failed to register {self.display_name} with ingress")
         return result
 
     async def _unregister_from_caddy(self) -> bool:
-        """Remove this service from Caddy."""
+        """Remove this service from the ingress daemon."""
         if not self.gitops_domain:
             return False
 
-        caddy_url = os.environ.get("CADDY_URL", "http://caddy:2019")
-        caddy_id = f"svc-{self.service_type}{self.service_suffix}.{self.workspace_name}"
+        hostname = self.caddy_hostname()
+        ingress_url = os.environ.get(
+            "BITSWAN_INGRESS_URL", "http://bitswan-automation-server:8080"
+        )
 
         try:
             response = await asyncio.to_thread(
                 requests.delete,
-                f"{caddy_url}/id/{caddy_id}",
+                f"{ingress_url}/ingress/remove-route/{hostname}",
                 timeout=5,
             )
             if response.status_code == 200:
-                logger.info(f"Unregistered {self.display_name} from Caddy")
+                logger.info(f"Unregistered {self.display_name} from ingress")
                 return True
             logger.warning(
-                f"Failed to unregister {self.display_name} from Caddy: "
+                f"Failed to unregister {self.display_name} from ingress: "
                 f"HTTP {response.status_code} - {response.text}"
             )
         except Exception as e:
-            logger.warning(f"Failed to unregister {self.display_name} from Caddy: {e}")
+            logger.warning(f"Failed to unregister {self.display_name} from ingress: {e}")
         return False
 
     async def _register_oauth2_redirect_uri(self) -> None:
