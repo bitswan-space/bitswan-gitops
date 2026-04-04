@@ -15,7 +15,7 @@ import logging
 import os
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +155,8 @@ async def _run_s3_cmd(config: dict, *args: str) -> tuple[str, str, int]:
     env = os.environ.copy()
     env["AWS_ACCESS_KEY_ID"] = config.get("s3_access_key", "")
     env["AWS_SECRET_ACCESS_KEY"] = config.get("s3_secret_key", "")
+    if config.get("s3_region"):
+        env["AWS_DEFAULT_REGION"] = config["s3_region"]
 
     # Use the S3 endpoint for non-AWS providers
     endpoint = config.get("s3_endpoint", "")
@@ -180,6 +182,8 @@ def _restic_env(config: dict) -> dict:
     env["RESTIC_PASSWORD"] = get_restic_key() or ""
     env["AWS_ACCESS_KEY_ID"] = config.get("s3_access_key", "")
     env["AWS_SECRET_ACCESS_KEY"] = config.get("s3_secret_key", "")
+    if config.get("s3_region"):
+        env["AWS_DEFAULT_REGION"] = config["s3_region"]
     return env
 
 
@@ -217,7 +221,7 @@ async def run_backup(config: dict) -> dict:
     """Run a full backup of all production data."""
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
     results = {}
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
 
     # 1. Backup workspace files
     workspace_dir = os.environ.get("BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo")
@@ -521,7 +525,8 @@ async def restore_couchdb(
 
 
 async def restore_workspace(config: dict, snapshot_id: str) -> tuple[bool, str]:
-    """Restore workspace files to /tmp/restores/{datetime}."""
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
-    target = f"/tmp/restores/{timestamp}"
+    """Restore workspace files to /workspace-repo/restores/{datetime}."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    workspace_dir = os.environ.get("BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo")
+    target = os.path.join(workspace_dir, f"restores/{timestamp}")
     return await restore_snapshot(config, snapshot_id, target)
