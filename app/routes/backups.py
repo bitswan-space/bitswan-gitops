@@ -20,6 +20,7 @@ class S3ConfigRequest(BaseModel):
     s3_bucket: str
     s3_access_key: str
     s3_secret_key: str
+    s3_region: str = ""
     retention_daily: int = 30
     retention_monthly: int = 12
 
@@ -40,11 +41,19 @@ async def get_config():
 @router.post("/config")
 async def save_config(body: S3ConfigRequest):
     """Save S3 backup configuration and initialize the restic repository."""
+    # Preserve existing secret key if not provided
+    secret_key = body.s3_secret_key
+    if not secret_key:
+        existing = backup_service.get_backup_config()
+        if existing:
+            secret_key = existing.get("s3_secret_key", "")
+
     config = {
         "s3_endpoint": body.s3_endpoint,
         "s3_bucket": body.s3_bucket,
         "s3_access_key": body.s3_access_key,
-        "s3_secret_key": body.s3_secret_key,
+        "s3_secret_key": secret_key,
+        "s3_region": body.s3_region,
         "retention": {
             "daily": body.retention_daily,
             "monthly": body.retention_monthly,
