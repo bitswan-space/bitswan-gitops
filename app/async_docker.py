@@ -182,8 +182,11 @@ class AsyncDockerClient:
         since: int = 0,
         stdout: bool = True,
         stderr: bool = True,
-    ) -> AsyncGenerator[str, None]:
-        """Stream container logs as an async generator. Yields decoded log lines."""
+    ) -> AsyncGenerator[tuple[str, str], None]:
+        """Stream container logs as an async generator.
+
+        Yields (stream, line) tuples where stream is "stdout" or "stderr".
+        """
         params = {
             "follow": "true",
             "tail": str(tail),
@@ -220,7 +223,7 @@ class AsyncDockerClient:
                             for line in lines:
                                 stripped = line.rstrip("\r")
                                 if stripped:
-                                    yield stripped
+                                    yield ("stdout", stripped)
                             break
 
                         frame_size = int.from_bytes(buf[4:8], byteorder="big")
@@ -229,11 +232,12 @@ class AsyncDockerClient:
 
                         frame = buf[8 : 8 + frame_size]
                         buf = buf[8 + frame_size :]
+                        stream_name = "stderr" if stream_type == 2 else "stdout"
                         text = frame.decode("utf-8", errors="replace")
                         for line in text.split("\n"):
                             stripped = line.rstrip("\r")
                             if stripped:
-                                yield stripped
+                                yield (stream_name, stripped)
         except (asyncio.IncompleteReadError, aiohttp.ClientPayloadError):
             # Container stopped or connection lost — end the stream gracefully
             return

@@ -1625,12 +1625,12 @@ fi
         async def read_replica(index: int, container_id: str):
             nonlocal active_tasks
             try:
-                async for line in docker_client.stream_container_logs(
+                async for stream, line in docker_client.stream_container_logs(
                     container_id, tail=lines, since=since
                 ):
                     prefix = f"[replica-{index}] " if multiple else ""
                     await queue.put(
-                        f"event: log\ndata: {json.dumps({'replica': index, 'line': prefix + line})}\n\n"
+                        f"event: log\ndata: {json.dumps({'replica': index, 'line': prefix + line, 'stream': stream})}\n\n"
                     )
             except Exception as e:
                 await queue.put(
