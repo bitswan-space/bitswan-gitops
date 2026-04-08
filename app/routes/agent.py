@@ -175,7 +175,7 @@ async def list_agent_deployments(
         for container in containers:
             labels = container.get("Labels", {})
             dep_id = labels.get("gitops.deployment_id", "")
-            if dep_id.endswith(f"-wt-{worktree}-live-dev"):
+            if f"-wt-{worktree}" in dep_id and dep_id.endswith("-live-dev"):
                 running_states[dep_id] = container.get("State", "unknown")
     except DockerError:
         pass  # If Docker query fails, we still show sources as "not deployed"
