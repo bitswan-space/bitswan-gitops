@@ -45,76 +45,41 @@ logger = logging.getLogger(__name__)
 OAUTH2_COOKIE_REFRESH = "14m"
 
 
-def _split_deployment_id(deployment_id: str) -> tuple[str, str, str]:
-    """Split a deployment_id into (auto_name, middle, stage_suffix).
+def _short_hash(context: str) -> str:
+    """Deterministic 4-char hash for a context string."""
+    return hashlib.sha256(context.encode()).hexdigest()[:4]
 
-    Deployment IDs follow these patterns:
-      {auto}-wt-{worktree}-{bp}-live-dev   (worktree live-dev)
-      {auto}-{bp}-{stage}                  (promoted)
-      {auto}-{stage}                       (simple)
 
-    Returns:
-      auto_name:    the automation name (everything before the BP/worktree context)
-      middle:       the BP + worktree context (the part that gets hashed)
-      stage_suffix: the stage at the end (e.g. "-live-dev", "-dev", "-staging", or "")
+MAX_NAME_LEN = 24
+
+
+def make_hostname_label(
+    workspace_name: str, automation_name: str, context: str, stage: str
+) -> str:
+    """Build a DNS hostname label from structured components.
+
+    No string parsing — components are passed in directly.
+    workspace_name and automation_name are each capped at 24 chars to
+    guarantee the result fits within the 63-char DNS label limit.
     """
-    stage_suffix = ""
-    if deployment_id.endswith("-live-dev"):
-        stage_suffix = "-live-dev"
-    elif deployment_id.endswith("-dev"):
-        stage_suffix = "-dev"
-    elif deployment_id.endswith("-staging"):
-        stage_suffix = "-staging"
-
-    body = deployment_id[: -len(stage_suffix)] if stage_suffix else deployment_id
-
-    wt_idx = body.find("-wt-")
-    if wt_idx >= 0:
-        auto_name = body[:wt_idx]
-        middle = body[wt_idx:]
-    else:
-        first_dash = body.find("-")
-        if first_dash >= 0:
-            auto_name = body[:first_dash]
-            middle = body[first_dash:]
-        else:
-            auto_name = body
-            middle = ""
-
-    return auto_name, middle, stage_suffix
+    ws = workspace_name[:MAX_NAME_LEN]
+    an = automation_name[:MAX_NAME_LEN]
+    if context:
+        h = _short_hash(context)
+        return f"{ws}-{an}-{h}-{stage}" if stage else f"{ws}-{an}-{h}"
+    return f"{ws}-{an}-{stage}" if stage else f"{ws}-{an}"
 
 
-def _short_hash(middle: str) -> str:
-    """Deterministic 4-char hash used to shorten deployment names."""
-    return hashlib.sha256(middle.encode()).hexdigest()[:4]
+def make_service_name(automation_name: str, context: str, stage: str) -> str:
+    """Build a Docker service name from structured components.
 
-
-def _shorten_hostname_label(workspace_name: str, deployment_id: str) -> str:
-    """Build a DNS hostname label.
-
-    Worktree IDs ({auto}-wt-...) are shortened to {workspace}-{auto}-{hash}{stage}.
-    Non-worktree IDs are used as-is: {workspace}-{deployment_id}.
+    No string parsing — components are passed in directly.
     """
-    if "-wt-" not in deployment_id:
-        return f"{workspace_name}-{deployment_id}"
-
-    auto_name, middle, stage_suffix = _split_deployment_id(deployment_id)
-    h = _short_hash(middle)
-    return f"{workspace_name}-{auto_name}-{h}{stage_suffix}"
-
-
-def _shorten_service_name(deployment_id: str) -> str:
-    """Shorten a deployment_id for use as a Docker service name.
-
-    Worktree IDs ({auto}-wt-...) are shortened to {auto}-{hash}{stage}.
-    Non-worktree IDs are returned as-is.
-    """
-    if "-wt-" not in deployment_id:
-        return deployment_id
-
-    auto_name, middle, stage_suffix = _split_deployment_id(deployment_id)
-    h = _short_hash(middle)
-    return f"{auto_name}-{h}{stage_suffix}"
+    an = automation_name[:MAX_NAME_LEN]
+    if context:
+        h = _short_hash(context)
+        return f"{an}-{h}-{stage}" if stage else f"{an}-{h}"
+    return f"{an}-{stage}" if stage else an
 
 
 class AutomationService:
@@ -251,6 +216,8 @@ class AutomationService:
 
         gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", None)
 
+        dep_configs = bs_yaml.get("deployments", {})
+
         # updated pres with active containers
         for container in containers:
             labels = container.get("Labels", {})
@@ -258,8 +225,14 @@ class AutomationService:
             if deployment_id and deployment_id in pres:
                 label = labels.get("gitops.intended_exposed", "false")
 
+                dep_conf = dep_configs.get(deployment_id, {})
                 url = generate_workspace_url(
-                    self.workspace_name, deployment_id, gitops_domain, True
+                    self.workspace_name,
+                    dep_conf.get("automation_name", deployment_id),
+                    dep_conf.get("context", ""),
+                    dep_conf.get("stage", "production") or "production",
+                    gitops_domain,
+                    True,
                 )
 
                 if label != "true":
@@ -1048,10 +1021,19 @@ fi
         return success
 
     async def delete_automation(self, deployment_id: str):
+        # Read components before removing from bitswan.yaml
+        bs_yaml = read_bitswan_yaml(self.gitops_dir) or {}
+        dep_conf = bs_yaml.get("deployments", {}).get(deployment_id, {})
+        dep_an = dep_conf.get("automation_name", deployment_id)
+        dep_ctx = dep_conf.get("context", "")
+        dep_stg = dep_conf.get("stage", "production") or "production"
+
         await self.remove_automation_from_bitswan(deployment_id)
 
         await update_git(self.gitops_dir, self.gitops_dir_host, deployment_id, "delete")
-        result = remove_route_from_ingress(deployment_id, self.workspace_name)
+        result = remove_route_from_ingress(
+            dep_an, dep_ctx, dep_stg, self.workspace_name
+        )
 
         if not result:
             message = f"Deployment {deployment_id} deleted successfully, but failed to remove route from ingress"
@@ -1084,6 +1066,9 @@ fi
         checksum: str | None = None,
         stage: str | None = None,
         relative_path: str | None = None,
+        # Structured name components (for shortened hostnames/service names)
+        automation_name: str | None = None,
+        context: str | None = None,
         # Automation config values (for live-dev, sent by extension)
         image: str | None = None,
         expose: bool | None = None,
@@ -1173,6 +1158,11 @@ fi
                 # Map production to empty string
                 deployment_config["stage"] = "" if stage == "production" else stage
 
+            if automation_name is not None:
+                deployment_config["automation_name"] = automation_name
+            if context is not None:
+                deployment_config["context"] = context
+
             if relative_path is not None:
                 deployment_config["relative_path"] = relative_path
 
@@ -1257,7 +1247,12 @@ fi
         deployments = bs_yaml.get("deployments", {})
 
         dc_config = yaml.safe_load(dc_yaml)
-        compose_service_name = _shorten_service_name(deployment_id)
+        dep_conf = bs_yaml.get("deployments", {}).get(deployment_id, {})
+        compose_service_name = make_service_name(
+            dep_conf.get("automation_name", deployment_id),
+            dep_conf.get("context", ""),
+            dep_conf.get("stage", "production") or "production",
+        )
 
         # deploy the automation and its infra services
         await _report("docker_compose_up", "Starting containers...")
@@ -1451,10 +1446,16 @@ fi
         dc_yaml, infra_service_names = self.generate_docker_compose(bs_yaml)
         self._save_docker_compose(dc_yaml)
 
+        dep_conf = bs_yaml.get("deployments", {}).get(deployment_id, {})
+        compose_svc = make_service_name(
+            dep_conf.get("automation_name", deployment_id),
+            dep_conf.get("context", ""),
+            dep_conf.get("stage", "production") or "production",
+        )
         deployment_result = await docker_compose_up(
             self.gitops_dir,
             dc_yaml,
-            _shorten_service_name(deployment_id),
+            compose_svc,
             extra_services=infra_service_names,
         )
         await self._post_deploy_infra_services(bs_yaml)
@@ -2078,10 +2079,17 @@ fi
         external_networks = {"bitswan_network"}
         deployments = bs_yaml.get("deployments", {})
         for deployment_id, conf in deployments.items():
-            service_name = _shorten_service_name(deployment_id)
             if conf is None:
                 conf = {}
                 deployments[deployment_id] = conf
+
+            dep_automation_name = conf.get("automation_name", deployment_id)
+            dep_context = conf.get("context", "")
+            dep_stage = conf.get("stage", "production") or "production"
+            service_name = make_service_name(
+                dep_automation_name, dep_context, dep_stage
+            )
+
             entry = {}
 
             source = conf.get("source") or conf.get("checksum") or deployment_id
@@ -2203,15 +2211,13 @@ fi
                 entry["environment"]["POSTGRES_DB"] = wt_db
 
             if self.workspace_name and self.gitops_domain:
-                if wt_name and deployment_context:
-                    # Worktree: use the same short hash as hostnames/service names
-                    _, middle, _ = _split_deployment_id(deployment_id)
-                    h = _short_hash(middle)
+                if dep_context:
+                    h = _short_hash(dep_context)
                     ctx_suffix = (
-                        f"-{h}{'-' + stage if stage and stage != 'production' else ''}"
+                        f"-{h}-{dep_stage}" if dep_stage != "production" else f"-{h}"
                     )
-                elif deployment_context:
-                    ctx_suffix = f"-{deployment_context}"
+                elif dep_stage != "production":
+                    ctx_suffix = f"-{dep_stage}"
                 else:
                     ctx_suffix = ""
                 entry["environment"]["BITSWAN_URL_TEMPLATE"] = (
@@ -2376,7 +2382,9 @@ fi
             if expose and port:
                 # Set URL env vars for exposed automations
                 # Shorten hostname if it would exceed DNS 63-char label limit
-                url_label = _shorten_hostname_label(self.workspace_name, deployment_id)
+                url_label = make_hostname_label(
+                    self.workspace_name, dep_automation_name, dep_context, dep_stage
+                )
                 url_prefix = f"https://{self.workspace_name}-"
                 url_suffix = f".{self.gitops_domain}"
                 automation_url = f"https://{url_label}.{self.gitops_domain}"
@@ -2427,7 +2435,10 @@ fi
                     entry["labels"]["gitops.oauth2.enabled"] = "true"
                     entry["labels"]["gitops.intended_exposed"] = "true"
                     if not add_workspace_route_to_ingress(
-                        deployment_id, self.oauth2_proxy_port
+                        dep_automation_name,
+                        dep_context,
+                        dep_stage,
+                        self.oauth2_proxy_port,
                     ):
                         logger.warning(
                             f"Failed to add ingress route for {deployment_id} (oauth2 proxy port)"
@@ -2435,7 +2446,9 @@ fi
 
                 else:
                     entry["labels"]["gitops.intended_exposed"] = "true"
-                    if not add_workspace_route_to_ingress(deployment_id, port):
+                    if not add_workspace_route_to_ingress(
+                        dep_automation_name, dep_context, dep_stage, port
+                    ):
                         logger.warning(
                             f"Failed to add ingress route for {deployment_id} — "
                             "deployment will proceed but you suck may not be externally reachable"
@@ -2444,7 +2457,7 @@ fi
             # Add the public hostname as a network alias so other containers
             # on the same Docker network can reach this automation by its URL.
             if expose and port and self.gitops_domain and not network_mode:
-                url_host = f"{_shorten_hostname_label(self.workspace_name, deployment_id)}.{self.gitops_domain}"
+                url_host = f"{make_hostname_label(self.workspace_name, dep_automation_name, dep_context, dep_stage)}.{self.gitops_domain}"
                 networks = entry.get("networks")
                 if isinstance(networks, dict):
                     for net_conf in networks.values():

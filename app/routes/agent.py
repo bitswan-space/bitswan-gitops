@@ -12,7 +12,7 @@ from app.async_docker import get_async_docker_client, DockerError
 from app.dependencies import get_automation_service
 from app.services.automation_service import (
     AutomationService,
-    _shorten_hostname_label,
+    make_hostname_label,
 )
 from app.utils import (
     call_git_command,
@@ -146,11 +146,15 @@ def _scan_automations(worktree: str | None = None) -> list[dict]:
 
             if worktree:
                 bp_suffix = f"-{bp_name}" if bp_name else ""
-                deployment_id = f"{sanitized}-wt-{worktree}{bp_suffix}-live-dev"
+                context = f"wt-{worktree}{bp_suffix}"
+                deployment_id = f"{sanitized}-{context}-live-dev"
                 relative_path = f"worktrees/{worktree}/{rel_path}"
+                deploy_stage = "live-dev"
             else:
+                context = bp_name  # just the BP name (or empty)
                 deployment_id = f"{sanitized}-{bp_prefix}live-dev"
                 relative_path = rel_path
+                deploy_stage = "live-dev"
 
             if deployment_id in seen_ids:
                 continue
@@ -158,7 +162,10 @@ def _scan_automations(worktree: str | None = None) -> list[dict]:
             results.append(
                 {
                     "deployment_id": deployment_id,
-                    "automation_name": source_name,
+                    "automation_name": sanitized,
+                    "display_name": source_name,
+                    "context": context,
+                    "stage": deploy_stage,
                     "relative_path": relative_path,
                     "source_path": root,
                     "worktree": worktree,
@@ -198,9 +205,11 @@ async def list_agent_deployments(
     except DockerError:
         pass  # If Docker query fails, we still show sources as "not deployed"
 
-    def _make_url(dep_id):
+    def _make_url(src):
         if gitops_domain:
-            label = _shorten_hostname_label(workspace_name, dep_id)
+            label = make_hostname_label(
+                workspace_name, src["automation_name"], src["context"], src["stage"]
+            )
             return f"https://{label}.{gitops_domain}"
         return ""
 
@@ -214,22 +223,27 @@ async def list_agent_deployments(
                 "deployment_id": dep_id,
                 "state": state,
                 "automation_name": src["automation_name"],
+                "context": src["context"],
+                "stage": src["stage"],
                 "relative_path": src["relative_path"],
                 "worktree": src["worktree"],
-                "url": _make_url(dep_id),
+                "url": _make_url(src),
             }
         )
 
     # Include any running containers not found on filesystem (orphaned)
     for dep_id, state in running_states.items():
+        orphan = {"automation_name": dep_id, "context": "", "stage": "live-dev"}
         result.append(
             {
                 "deployment_id": dep_id,
                 "state": state,
                 "automation_name": dep_id,
+                "context": "",
+                "stage": "live-dev",
                 "relative_path": None,
                 "worktree": worktree,
-                "url": _make_url(dep_id),
+                "url": _make_url(orphan),
             }
         )
 
@@ -284,6 +298,8 @@ async def start_agent_deployment(
         checksum="live-dev",
         stage="live-dev",
         relative_path=source["relative_path"],
+        automation_name=source["automation_name"],
+        context=source["context"],
         deployed_by="agent@bitswan.local",
     )
 
@@ -312,7 +328,12 @@ async def start_agent_deployment(
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "")
     url = ""
     if gitops_domain:
-        label = _shorten_hostname_label(workspace_name, deployment_id)
+        label = make_hostname_label(
+            workspace_name,
+            source["automation_name"],
+            source["context"],
+            source["stage"],
+        )
         url = f"https://{label}.{gitops_domain}"
 
     return {

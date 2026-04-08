@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from app.deploy_manager import DeployStatus, DeployStep, deploy_manager
 from app.event_broadcaster import event_broadcaster
 from app.routes.agent import _scan_automations
-from app.services.automation_service import AutomationService, _shorten_hostname_label
+from app.services.automation_service import AutomationService, make_hostname_label
 from app.dependencies import get_automation_service
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,8 @@ async def start_live_dev(
         checksum="live-dev",
         stage="live-dev",
         relative_path=source["relative_path"],
+        automation_name=source["automation_name"],
+        context=source["context"],
     )
 
     asyncio.create_task(
@@ -92,7 +94,12 @@ async def start_live_dev(
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "")
     url = ""
     if gitops_domain:
-        label = _shorten_hostname_label(workspace_name, deployment_id)
+        label = make_hostname_label(
+            workspace_name,
+            source["automation_name"],
+            source["context"],
+            source["stage"],
+        )
         url = f"https://{label}.{gitops_domain}"
 
     return JSONResponse(
@@ -209,6 +216,8 @@ async def deploy_automation(
     services: str | None = Form(None),  # JSON: {"kafka": {"enabled": true}, ...}
     replicas: str | None = Form(None),  # replicas as string from form
     deployed_by: str | None = Form(None),  # email of the user who triggered the deploy
+    automation_name_field: str | None = Form(None, alias="automation_name"),
+    context_field: str | None = Form(None, alias="context"),
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     # Guard: reject if already deploying
@@ -267,6 +276,8 @@ async def deploy_automation(
         checksum=checksum,
         stage=stage,
         relative_path=relative_path,
+        automation_name=automation_name_field,
+        context=context_field,
         image=image,
         expose=expose_bool,
         expose_to=expose_to_list,

@@ -47,7 +47,7 @@ async def retrieve_active_automations() -> Topology:
                     "status": calculate_uptime(c.attrs["State"]["StartedAt"]),
                     "deployment_id": c.labels["gitops.deployment_id"],
                     "automation_url": get_automation_url(
-                        c, workspace_name, gitops_domain
+                        c, workspace_name, gitops_domain, bs_yaml
                     ),
                     "relative_path": get_relative_path(
                         c.labels["gitops.deployment_id"], bs_yaml
@@ -75,7 +75,10 @@ async def retrieve_active_automations() -> Topology:
 
 
 def get_automation_url(
-    container, workspace_name: str, gitops_domain: str | None
+    container,
+    workspace_name: str,
+    gitops_domain: str | None,
+    bs_yaml: dict | None = None,
 ) -> str | None:
     """Generate automation URL if the container is exposed"""
     if not gitops_domain:
@@ -87,7 +90,15 @@ def get_automation_url(
         return None
 
     deployment_id = container.labels["gitops.deployment_id"]
-    return generate_workspace_url(workspace_name, deployment_id, gitops_domain, True)
+    dep_conf = (bs_yaml or {}).get("deployments", {}).get(deployment_id, {})
+    return generate_workspace_url(
+        workspace_name,
+        dep_conf.get("automation_name", deployment_id),
+        dep_conf.get("context", ""),
+        dep_conf.get("stage", "production") or "production",
+        gitops_domain,
+        True,
+    )
 
 
 def get_relative_path(deployment_id: str, bs_yaml: dict | None) -> str | None:
