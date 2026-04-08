@@ -95,6 +95,8 @@ def _shorten_hostname_label(workspace_name: str, deployment_id: str) -> str:
     For worktree deployments (containing "-wt-"), the middle context is
     always replaced with a 4-char hash so that all automations in the
     same worktree share a consistent, predictable URL pattern.
+    The BP prefix is stripped from the auto_name when it matches the
+    workspace name, since it would be redundant in the hostname.
 
     For non-worktree deployments, shortening is only applied when the
     full label would exceed 63 chars (DNS limit).
@@ -109,6 +111,12 @@ def _shorten_hostname_label(workspace_name: str, deployment_id: str) -> str:
     label = f"{workspace_name}-{deployment_id}"
     if not is_worktree and len(label) <= 63:
         return label
+
+    # For worktree deployments, auto_name is "{source}-{bp}".
+    # The BP name is typically the workspace name and redundant in the
+    # hostname (which already starts with the workspace name).  Strip it.
+    if is_worktree and auto_name.endswith(f"-{workspace_name}"):
+        auto_name = auto_name[: -len(f"-{workspace_name}")]
 
     h = _short_hash(middle)
     short_label = f"{workspace_name}-{auto_name}-{h}{stage_suffix}"
