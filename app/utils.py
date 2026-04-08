@@ -380,7 +380,10 @@ def add_workspace_route_to_ingress(deployment_id: str, port: str) -> bool:
     hostname = generate_workspace_url(
         workspace_name, deployment_id, gitops_domain, False
     )
-    upstream = f"{deployment_id}:{port}"
+    container_label = f"{workspace_name}__{deployment_id}"
+    if len(container_label) > 63:
+        container_label = deployment_id
+    upstream = f"{container_label}:{port}"
     return add_route_to_ingress(hostname, upstream, workspace_name)
 
 
