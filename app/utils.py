@@ -375,14 +375,17 @@ def generate_workspace_url(workspace_name, deployment_id, gitops_domain, full=Fa
 
 
 def add_workspace_route_to_ingress(deployment_id: str, port: str) -> bool:
+    from app.services.automation_service import _shorten_service_name
+
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
     hostname = generate_workspace_url(
         workspace_name, deployment_id, gitops_domain, False
     )
-    container_label = f"{workspace_name}__{deployment_id}"
+    service_name = _shorten_service_name(deployment_id)
+    container_label = f"{workspace_name}__{service_name}"
     if len(container_label) > 63:
-        container_label = deployment_id
+        container_label = service_name
     upstream = f"{container_label}:{port}"
     return add_route_to_ingress(hostname, upstream, workspace_name)
 

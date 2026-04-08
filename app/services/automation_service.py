@@ -96,6 +96,62 @@ def _shorten_hostname_label(workspace_name: str, deployment_id: str) -> str:
     return short_label
 
 
+def _shorten_service_name(deployment_id: str, max_len: int = 63) -> str:
+    """Shorten a deployment_id so it can be used as a Docker service name / DNS label.
+
+    When the deployment_id fits within *max_len* it is returned as-is.
+    Otherwise the middle section (BP name + worktree context) is replaced
+    with a short hash, keeping the automation name and stage readable.
+
+    Deployment IDs follow these patterns:
+      {auto}-{bp}-wt-{worktree}-live-dev   (worktree live-dev)
+      {auto}-{bp}-{stage}                  (promoted)
+      {auto}-{stage}                       (simple)
+    """
+    if len(deployment_id) <= max_len:
+        return deployment_id
+
+    stage_suffix = ""
+    if deployment_id.endswith("-live-dev"):
+        stage_suffix = "-live-dev"
+    elif deployment_id.endswith("-dev"):
+        stage_suffix = "-dev"
+    elif deployment_id.endswith("-staging"):
+        stage_suffix = "-staging"
+
+    # Use the "-wt-" marker to split automation name from context when present
+    body = deployment_id
+    if stage_suffix:
+        body = deployment_id[: -len(stage_suffix)]
+
+    wt_idx = body.find("-wt-")
+    if wt_idx >= 0:
+        # Everything before "-{bp}-wt-" includes the auto name and bp prefix.
+        # Try to find the bp boundary: the bp name also appears as a prefix
+        # of the "-wt-" portion, but we can't reliably separate them.
+        # Keep the part before the bp (the auto name) by finding the bp-wt block.
+        auto_name = body[:wt_idx]
+        middle = body[wt_idx:]
+    else:
+        # No worktree marker — split on first dash
+        first_dash = body.find("-")
+        if first_dash >= 0:
+            auto_name = body[:first_dash]
+            middle = body[first_dash:]
+        else:
+            auto_name = body
+            middle = ""
+
+    short_hash = hashlib.sha256(middle.encode()).hexdigest()[:8]
+    short = f"{auto_name}-{short_hash}{stage_suffix}"
+
+    if len(short) > max_len:
+        avail = max_len - len(f"-{short_hash}{stage_suffix}")
+        short = f"{auto_name[:avail]}-{short_hash}{stage_suffix}"
+
+    return short
+
+
 class AutomationService:
     def __init__(self):
         self.bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
@@ -2038,6 +2094,7 @@ fi
         external_networks = {"bitswan_network"}
         deployments = bs_yaml.get("deployments", {})
         for deployment_id, conf in deployments.items():
+            service_name = _shorten_service_name(deployment_id)
             if conf is None:
                 conf = {}
                 deployments[deployment_id] = conf
@@ -2101,7 +2158,10 @@ fi
                 entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
             replicas = conf.get("replicas", 1)
             if replicas <= 1:
-                entry["container_name"] = f"{self.workspace_name}__{deployment_id}"
+                container_label = f"{self.workspace_name}__{service_name}"
+                if len(container_label) > 63:
+                    container_label = service_name
+                entry["container_name"] = container_label
             entry["restart"] = "always"
             entry["ulimits"] = {"nofile": {"soft": 65536, "hard": 65536}}
             entry["labels"] = {
@@ -2454,7 +2514,7 @@ fi
                 )
 
             if conf.get("enabled", True):
-                dc["services"][deployment_id] = entry
+                dc["services"][service_name] = entry
 
         # Merge infra service entries (Kafka, CouchDB, etc.) for enabled services
         infra_service_names = self._merge_infra_services(
