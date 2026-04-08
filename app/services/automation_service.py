@@ -49,7 +49,7 @@ def _split_deployment_id(deployment_id: str) -> tuple[str, str, str]:
     """Split a deployment_id into (auto_name, middle, stage_suffix).
 
     Deployment IDs follow these patterns:
-      {auto}-{bp}-wt-{worktree}-live-dev   (worktree live-dev)
+      {auto}-wt-{worktree}-{bp}-live-dev   (worktree live-dev)
       {auto}-{bp}-{stage}                  (promoted)
       {auto}-{stage}                       (simple)
 

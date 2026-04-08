@@ -24,7 +24,7 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 security = HTTPBearer()
 
 # Pattern for valid worktree live-dev deployment IDs
-# Format: {name}-{bp}-wt-{worktree}-live-dev
+# Format: {name}-wt-{worktree}-{bp}-live-dev
 LIVE_DEV_PATTERN = re.compile(r"^.+-wt-.+-live-dev$")
 
 # Cached agent secret — resolved lazily from the coding agent container
@@ -133,8 +133,8 @@ def _scan_worktree_automations(worktree: str) -> list[dict]:
             # Extract BP name from relative path (e.g., "Test/backend" → "test")
             rel_parts = rel_path.replace("\\", "/").split("/")
             bp_name = _sanitize_name(rel_parts[0]) if len(rel_parts) >= 2 else ""
-            bp_prefix = f"{bp_name}-" if bp_name else ""
-            deployment_id = f"{sanitized}-{bp_prefix}wt-{worktree}-live-dev"
+            bp_suffix = f"-{bp_name}" if bp_name else ""
+            deployment_id = f"{sanitized}-wt-{worktree}{bp_suffix}-live-dev"
             if deployment_id in seen_ids:
                 continue
             seen_ids.add(deployment_id)
