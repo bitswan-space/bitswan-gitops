@@ -2221,7 +2221,9 @@ fi
                     # Worktree: use the same short hash as hostnames/service names
                     _, middle, _ = _split_deployment_id(deployment_id)
                     h = _short_hash(middle)
-                    ctx_suffix = f"-{h}{'-' + stage if stage and stage != 'production' else ''}"
+                    ctx_suffix = (
+                        f"-{h}{'-' + stage if stage and stage != 'production' else ''}"
+                    )
                 elif deployment_context:
                     ctx_suffix = f"-{deployment_context}"
                 else:
