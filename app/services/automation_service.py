@@ -2083,9 +2083,28 @@ fi
                 conf = {}
                 deployments[deployment_id] = conf
 
-            dep_automation_name = conf.get("automation_name", deployment_id)
-            dep_context = conf.get("context", "")
             dep_stage = conf.get("stage", "production") or "production"
+            dep_automation_name = conf.get("automation_name", "")
+            dep_context = conf.get("context", "")
+
+            # Backfill components from relative_path for old entries
+            if not dep_automation_name:
+                rel = conf.get("relative_path", "")
+                rel_parts = rel.replace("\\", "/").split("/") if rel else []
+                # Strip worktrees/{name}/ prefix
+                if len(rel_parts) >= 2 and rel_parts[0] == "worktrees":
+                    rel_parts = rel_parts[2:]
+                if rel_parts:
+                    dep_automation_name = (
+                        re.sub(r"[^a-z0-9-]", "-", rel_parts[-1].lower()).strip("-")
+                        or deployment_id
+                    )
+                else:
+                    dep_automation_name = deployment_id
+                if not dep_context and len(rel_parts) >= 2:
+                    dep_context = re.sub(
+                        r"[^a-z0-9-]", "-", rel_parts[0].lower()
+                    ).strip("-")
             service_name = make_service_name(
                 dep_automation_name, dep_context, dep_stage
             )
