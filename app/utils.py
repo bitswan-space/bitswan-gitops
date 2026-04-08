@@ -383,10 +383,7 @@ def add_workspace_route_to_ingress(deployment_id: str, port: str) -> bool:
         workspace_name, deployment_id, gitops_domain, False
     )
     service_name = _shorten_service_name(deployment_id)
-    container_label = f"{workspace_name}__{service_name}"
-    if len(container_label) > 63:
-        container_label = service_name
-    upstream = f"{container_label}:{port}"
+    upstream = f"{service_name}:{port}"
     return add_route_to_ingress(hostname, upstream, workspace_name)
 
 

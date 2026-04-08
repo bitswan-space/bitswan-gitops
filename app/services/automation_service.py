@@ -90,56 +90,31 @@ def _short_hash(middle: str) -> str:
 
 
 def _shorten_hostname_label(workspace_name: str, deployment_id: str) -> str:
-    """Build a DNS hostname label for a deployment.
+    """Build a DNS hostname label.
 
-    For worktree deployments (containing "-wt-"), the middle context is
-    always replaced with a 4-char hash so that all automations in the
-    same worktree share a consistent, predictable URL pattern.
-
-    For non-worktree deployments, shortening is only applied when the
-    full label would exceed 63 chars (DNS limit).
+    Worktree IDs ({auto}-wt-...) are shortened to {workspace}-{auto}-{hash}{stage}.
+    Non-worktree IDs are used as-is: {workspace}-{deployment_id}.
     """
+    if "-wt-" not in deployment_id:
+        return f"{workspace_name}-{deployment_id}"
+
     auto_name, middle, stage_suffix = _split_deployment_id(deployment_id)
-    is_worktree = "-wt-" in deployment_id
-
-    label = f"{workspace_name}-{deployment_id}"
-    if not is_worktree and len(label) <= 63:
-        return label
-
     h = _short_hash(middle)
-    short_label = f"{workspace_name}-{auto_name}-{h}{stage_suffix}"
-
-    if len(short_label) > 63:
-        max_ws = 63 - len(f"-{auto_name}-{h}{stage_suffix}")
-        short_label = f"{workspace_name[:max_ws]}-{auto_name}-{h}{stage_suffix}"
-
-    return short_label
+    return f"{workspace_name}-{auto_name}-{h}{stage_suffix}"
 
 
-def _shorten_service_name(deployment_id: str, max_len: int = 63) -> str:
-    """Shorten a deployment_id for use as a Docker service name / DNS label.
+def _shorten_service_name(deployment_id: str) -> str:
+    """Shorten a deployment_id for use as a Docker service name.
 
-    For worktree deployments (containing "-wt-"), the middle context is
-    always replaced with a 4-char hash so that service names, container
-    names, and hostnames all use the same consistent short identifier.
-
-    For non-worktree deployments, shortening is only applied when the
-    name exceeds *max_len* (63 chars, the DNS label limit).
+    Worktree IDs ({auto}-wt-...) are shortened to {auto}-{hash}{stage}.
+    Non-worktree IDs are returned as-is.
     """
-    auto_name, middle, stage_suffix = _split_deployment_id(deployment_id)
-    is_worktree = "-wt-" in deployment_id
-
-    if not is_worktree and len(deployment_id) <= max_len:
+    if "-wt-" not in deployment_id:
         return deployment_id
 
+    auto_name, middle, stage_suffix = _split_deployment_id(deployment_id)
     h = _short_hash(middle)
-    short = f"{auto_name}-{h}{stage_suffix}"
-
-    if len(short) > max_len:
-        avail = max_len - len(f"-{h}{stage_suffix}")
-        short = f"{auto_name[:avail]}-{h}{stage_suffix}"
-
-    return short
+    return f"{auto_name}-{h}{stage_suffix}"
 
 
 class AutomationService:
@@ -2149,10 +2124,7 @@ fi
                 entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
             replicas = conf.get("replicas", 1)
             if replicas <= 1:
-                container_label = f"{self.workspace_name}__{service_name}"
-                if len(container_label) > 63:
-                    container_label = service_name
-                entry["container_name"] = container_label
+                entry["container_name"] = f"{self.workspace_name}__{service_name}"
             entry["restart"] = "always"
             entry["ulimits"] = {"nofile": {"soft": 65536, "hard": 65536}}
             entry["labels"] = {
