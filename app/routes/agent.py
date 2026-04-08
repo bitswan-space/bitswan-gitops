@@ -10,7 +10,10 @@ from pydantic import BaseModel
 
 from app.async_docker import get_async_docker_client, DockerError
 from app.dependencies import get_automation_service
-from app.services.automation_service import AutomationService
+from app.services.automation_service import (
+    AutomationService,
+    _shorten_hostname_label,
+)
 from app.utils import (
     call_git_command,
     call_git_command_with_output,
@@ -144,6 +147,7 @@ def _scan_worktree_automations(worktree: str) -> list[dict]:
                     "automation_name": source_name,
                     "relative_path": f"worktrees/{worktree}/{rel_path}",
                     "source_path": root,
+                    "worktree": worktree,
                 }
             )
     return results
@@ -182,7 +186,8 @@ async def list_agent_deployments(
 
     def _make_url(dep_id):
         if gitops_domain:
-            return f"https://{workspace_name}-{dep_id}.{gitops_domain}"
+            label = _shorten_hostname_label(workspace_name, dep_id)
+            return f"https://{label}.{gitops_domain}"
         return ""
 
     # Merge: filesystem sources + running state
@@ -195,6 +200,8 @@ async def list_agent_deployments(
                 "deployment_id": dep_id,
                 "state": state,
                 "automation_name": src["automation_name"],
+                "relative_path": src["relative_path"],
+                "worktree": src["worktree"],
                 "url": _make_url(dep_id),
             }
         )
@@ -206,6 +213,8 @@ async def list_agent_deployments(
                 "deployment_id": dep_id,
                 "state": state,
                 "automation_name": dep_id,
+                "relative_path": None,
+                "worktree": worktree,
                 "url": _make_url(dep_id),
             }
         )
@@ -214,50 +223,50 @@ async def list_agent_deployments(
 
 
 class StartDeploymentRequest(BaseModel):
-    deployment_id: str
+    relative_path: str
+    worktree: str
 
 
 @router.post("/deployments/start")
 async def start_agent_deployment(
     body: StartDeploymentRequest,
-    worktree: str = Query(...),
     automation_service: AutomationService = Depends(get_automation_service),
     _token=Depends(verify_agent_token),
 ):
     """Start a live-dev deployment for a worktree automation."""
-    _validate_deployment_id(body.deployment_id)
-
     # Find the matching automation source on the filesystem
-    sources = _scan_worktree_automations(worktree)
+    sources = _scan_worktree_automations(body.worktree)
     source = next(
-        (s for s in sources if s["deployment_id"] == body.deployment_id), None
+        (s for s in sources if s["relative_path"] == body.relative_path), None
     )
     if not source:
         raise HTTPException(
             status_code=404,
-            detail=f"No automation source found for deployment '{body.deployment_id}' in worktree '{worktree}'",
+            detail=f"No automation source at '{body.relative_path}' in worktree '{body.worktree}'",
         )
+
+    deployment_id = source["deployment_id"]
 
     # Guard: reject if already deploying
     from app.deploy_manager import deploy_manager
 
-    if deploy_manager.is_deploying(body.deployment_id):
+    if deploy_manager.is_deploying(deployment_id):
         raise HTTPException(
             status_code=409,
-            detail=f"Deployment {body.deployment_id} is already in progress",
+            detail=f"Deployment {deployment_id} is already in progress",
         )
 
-    task = await deploy_manager.create_task(body.deployment_id)
+    task = await deploy_manager.create_task(deployment_id)
     if task is None:
         raise HTTPException(
             status_code=409,
-            detail=f"Deployment {body.deployment_id} is already in progress",
+            detail=f"Deployment {deployment_id} is already in progress",
         )
 
     # Only send minimal info — the gitops service reads automation.toml
     # directly from the workspace filesystem for live-dev config
     deploy_kwargs = dict(
-        deployment_id=body.deployment_id,
+        deployment_id=deployment_id,
         checksum="live-dev",
         stage="live-dev",
         relative_path=source["relative_path"],
@@ -276,7 +285,7 @@ async def start_agent_deployment(
         except Exception as exc:
             logger.exception(
                 "Live-dev deploy failed for %s (task %s)",
-                body.deployment_id,
+                deployment_id,
                 task.task_id,
             )
             await deploy_manager.update_task(
@@ -285,9 +294,17 @@ async def start_agent_deployment(
 
     asyncio.create_task(_run_deploy())
 
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+    gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "")
+    url = ""
+    if gitops_domain:
+        label = _shorten_hostname_label(workspace_name, deployment_id)
+        url = f"https://{label}.{gitops_domain}"
+
     return {
         "task_id": task.task_id,
-        "deployment_id": body.deployment_id,
+        "deployment_id": deployment_id,
+        "url": url,
         "status": "pending",
     }
 

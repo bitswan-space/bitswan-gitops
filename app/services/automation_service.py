@@ -1143,10 +1143,28 @@ fi
             ]
         )
         if has_updates:
-            if deployment_id not in bs_yaml.get("deployments", {}):
-                bs_yaml.setdefault("deployments", {})[deployment_id] = {}
+            deployments = bs_yaml.setdefault("deployments", {})
 
-            deployment_config = bs_yaml["deployments"][deployment_id]
+            # Clean up old-format worktree entries for the same automation.
+            # When the deployment ID format changes, old entries linger in
+            # bitswan.yaml alongside the new ones.  Remove any other -wt-
+            # live-dev entry that shares the same relative_path.
+            if "-wt-" in deployment_id and stage == "live-dev" and relative_path:
+                stale = [
+                    k
+                    for k, v in deployments.items()
+                    if k != deployment_id
+                    and "-wt-" in k
+                    and k.endswith("-live-dev")
+                    and (v or {}).get("relative_path") == relative_path
+                ]
+                for k in stale:
+                    del deployments[k]
+
+            if deployment_id not in deployments:
+                deployments[deployment_id] = {}
+
+            deployment_config = deployments[deployment_id]
 
             if checksum is not None:
                 deployment_config["checksum"] = checksum
