@@ -45,72 +45,19 @@ logger = logging.getLogger(__name__)
 OAUTH2_COOKIE_REFRESH = "14m"
 
 
-def _shorten_hostname_label(workspace_name: str, deployment_id: str) -> str:
-    """Build a DNS hostname label, shortening the context if it would exceed 63 chars.
-
-    DNS labels have a hard limit of 63 characters. When the full
-    '{workspace}-{deployment_id}' label is too long, the middle part
-    (BP name + worktree context) is replaced with a 4-char hash while
-    keeping the automation name and stage visible.
-
-    Example:
-      Normal:  deployment-management-backend-dev  (32 chars, fine)
-      Long:    deployment-management-backend-deployment-management-wt-coding-agent-staging-live-dev  (87 chars)
-      Short:   deployment-management-backend-e8be-live-dev  (43 chars)
-    """
-    label = f"{workspace_name}-{deployment_id}"
-    if len(label) <= 63:
-        return label
-
-    # deployment_id format: {automationName}-{context}
-    # context format: {bp}-wt-{wt}-{stage} or {bp}-{stage}
-    # Keep the automation name and stage, hash the middle (bp + worktree)
-    parts = deployment_id.split("-")
-    auto_name = parts[0]
-
-    # Extract stage from the end (live-dev, dev, staging, or production-like)
-    stage_suffix = ""
-    if deployment_id.endswith("-live-dev"):
-        stage_suffix = "-live-dev"
-    elif deployment_id.endswith("-dev"):
-        stage_suffix = "-dev"
-    elif deployment_id.endswith("-staging"):
-        stage_suffix = "-staging"
-
-    # The middle part is everything between automation name and stage
-    middle = deployment_id[len(auto_name) :]
-    if stage_suffix:
-        middle = middle[: -len(stage_suffix)]
-    # middle is like "-deployment-management-wt-coding-agent-staging"
-
-    short_hash = hashlib.sha256(middle.encode()).hexdigest()[:4]
-    short_label = f"{workspace_name}-{auto_name}-{short_hash}{stage_suffix}"
-
-    if len(short_label) > 63:
-        # Still too long — truncate workspace name
-        max_ws = 63 - len(f"-{auto_name}-{short_hash}{stage_suffix}")
-        short_label = (
-            f"{workspace_name[:max_ws]}-{auto_name}-{short_hash}{stage_suffix}"
-        )
-
-    return short_label
-
-
-def _shorten_service_name(deployment_id: str, max_len: int = 63) -> str:
-    """Shorten a deployment_id so it can be used as a Docker service name / DNS label.
-
-    When the deployment_id fits within *max_len* it is returned as-is.
-    Otherwise the middle section (BP name + worktree context) is replaced
-    with a short hash, keeping the automation name and stage readable.
+def _split_deployment_id(deployment_id: str) -> tuple[str, str, str]:
+    """Split a deployment_id into (auto_name, middle, stage_suffix).
 
     Deployment IDs follow these patterns:
       {auto}-{bp}-wt-{worktree}-live-dev   (worktree live-dev)
       {auto}-{bp}-{stage}                  (promoted)
       {auto}-{stage}                       (simple)
-    """
-    if len(deployment_id) <= max_len:
-        return deployment_id
 
+    Returns:
+      auto_name:    the automation name (everything before the BP/worktree context)
+      middle:       the BP + worktree context (the part that gets hashed)
+      stage_suffix: the stage at the end (e.g. "-live-dev", "-dev", "-staging", or "")
+    """
     stage_suffix = ""
     if deployment_id.endswith("-live-dev"):
         stage_suffix = "-live-dev"
@@ -119,21 +66,13 @@ def _shorten_service_name(deployment_id: str, max_len: int = 63) -> str:
     elif deployment_id.endswith("-staging"):
         stage_suffix = "-staging"
 
-    # Use the "-wt-" marker to split automation name from context when present
-    body = deployment_id
-    if stage_suffix:
-        body = deployment_id[: -len(stage_suffix)]
+    body = deployment_id[: -len(stage_suffix)] if stage_suffix else deployment_id
 
     wt_idx = body.find("-wt-")
     if wt_idx >= 0:
-        # Everything before "-{bp}-wt-" includes the auto name and bp prefix.
-        # Try to find the bp boundary: the bp name also appears as a prefix
-        # of the "-wt-" portion, but we can't reliably separate them.
-        # Keep the part before the bp (the auto name) by finding the bp-wt block.
         auto_name = body[:wt_idx]
         middle = body[wt_idx:]
     else:
-        # No worktree marker — split on first dash
         first_dash = body.find("-")
         if first_dash >= 0:
             auto_name = body[:first_dash]
@@ -142,12 +81,67 @@ def _shorten_service_name(deployment_id: str, max_len: int = 63) -> str:
             auto_name = body
             middle = ""
 
-    short_hash = hashlib.sha256(middle.encode()).hexdigest()[:8]
-    short = f"{auto_name}-{short_hash}{stage_suffix}"
+    return auto_name, middle, stage_suffix
+
+
+def _short_hash(middle: str) -> str:
+    """Deterministic 4-char hash used to shorten deployment names."""
+    return hashlib.sha256(middle.encode()).hexdigest()[:4]
+
+
+def _shorten_hostname_label(workspace_name: str, deployment_id: str) -> str:
+    """Build a DNS hostname label for a deployment.
+
+    For worktree deployments (containing "-wt-"), the middle context is
+    always replaced with a 4-char hash so that all automations in the
+    same worktree share a consistent, predictable URL pattern.
+
+    For non-worktree deployments, shortening is only applied when the
+    full label would exceed 63 chars (DNS limit).
+
+    Example:
+      Normal:   deployment-management-backend-dev  (fits, unchanged)
+      Worktree: deployment-management-backend-4e2d-live-dev  (always hashed)
+    """
+    auto_name, middle, stage_suffix = _split_deployment_id(deployment_id)
+    is_worktree = "-wt-" in deployment_id
+
+    label = f"{workspace_name}-{deployment_id}"
+    if not is_worktree and len(label) <= 63:
+        return label
+
+    h = _short_hash(middle)
+    short_label = f"{workspace_name}-{auto_name}-{h}{stage_suffix}"
+
+    if len(short_label) > 63:
+        max_ws = 63 - len(f"-{auto_name}-{h}{stage_suffix}")
+        short_label = f"{workspace_name[:max_ws]}-{auto_name}-{h}{stage_suffix}"
+
+    return short_label
+
+
+def _shorten_service_name(deployment_id: str, max_len: int = 63) -> str:
+    """Shorten a deployment_id for use as a Docker service name / DNS label.
+
+    For worktree deployments (containing "-wt-"), the middle context is
+    always replaced with a 4-char hash so that service names, container
+    names, and hostnames all use the same consistent short identifier.
+
+    For non-worktree deployments, shortening is only applied when the
+    name exceeds *max_len* (63 chars, the DNS label limit).
+    """
+    auto_name, middle, stage_suffix = _split_deployment_id(deployment_id)
+    is_worktree = "-wt-" in deployment_id
+
+    if not is_worktree and len(deployment_id) <= max_len:
+        return deployment_id
+
+    h = _short_hash(middle)
+    short = f"{auto_name}-{h}{stage_suffix}"
 
     if len(short) > max_len:
-        avail = max_len - len(f"-{short_hash}{stage_suffix}")
-        short = f"{auto_name[:avail]}-{short_hash}{stage_suffix}"
+        avail = max_len - len(f"-{h}{stage_suffix}")
+        short = f"{auto_name[:avail]}-{h}{stage_suffix}"
 
     return short
 
@@ -2223,7 +2217,15 @@ fi
                 entry["environment"]["POSTGRES_DB"] = wt_db
 
             if self.workspace_name and self.gitops_domain:
-                ctx_suffix = f"-{deployment_context}" if deployment_context else ""
+                if wt_name and deployment_context:
+                    # Worktree: use the same short hash as hostnames/service names
+                    _, middle, _ = _split_deployment_id(deployment_id)
+                    h = _short_hash(middle)
+                    ctx_suffix = f"-{h}{'-' + stage if stage and stage != 'production' else ''}"
+                elif deployment_context:
+                    ctx_suffix = f"-{deployment_context}"
+                else:
+                    ctx_suffix = ""
                 entry["environment"]["BITSWAN_URL_TEMPLATE"] = (
                     f"https://{self.workspace_name}-"
                     "{name}"
