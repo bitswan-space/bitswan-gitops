@@ -17,9 +17,12 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from pydantic import BaseModel
+
 from app.deploy_manager import DeployStatus, DeployStep, deploy_manager
 from app.event_broadcaster import event_broadcaster
-from app.services.automation_service import AutomationService
+from app.routes.agent import _scan_automations
+from app.services.automation_service import AutomationService, _shorten_hostname_label
 from app.dependencies import get_automation_service
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,74 @@ async def get_automations(
 ):
     # Now fully async using aiohttp Docker client
     return await automation_service.get_automations()
+
+
+class StartLiveDevRequest(BaseModel):
+    relative_path: str
+    worktree: str | None = None
+
+
+@router.post("/start-live-dev")
+async def start_live_dev(
+    body: StartLiveDevRequest,
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    """Start a live-dev deployment. Server constructs the deployment ID."""
+    sources = _scan_automations(body.worktree)
+    source = next(
+        (s for s in sources if s["relative_path"] == body.relative_path), None
+    )
+    if not source:
+        ctx = f" in worktree '{body.worktree}'" if body.worktree else ""
+        raise HTTPException(
+            status_code=404,
+            detail=f"No automation source at '{body.relative_path}'{ctx}",
+        )
+
+    deployment_id = source["deployment_id"]
+
+    if deploy_manager.is_deploying(deployment_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Deployment {deployment_id} is already in progress",
+        )
+
+    task = await deploy_manager.create_task(deployment_id)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Deployment {deployment_id} is already in progress",
+        )
+
+    deploy_kwargs = dict(
+        deployment_id=deployment_id,
+        checksum="live-dev",
+        stage="live-dev",
+        relative_path=source["relative_path"],
+    )
+
+    asyncio.create_task(
+        _run_deploy_with_progress(
+            task.task_id, deployment_id, automation_service, deploy_kwargs
+        )
+    )
+
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+    gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "")
+    url = ""
+    if gitops_domain:
+        label = _shorten_hostname_label(workspace_name, deployment_id)
+        url = f"https://{label}.{gitops_domain}"
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "task_id": task.task_id,
+            "deployment_id": deployment_id,
+            "url": url,
+            "status": "pending",
+        },
+    )
 
 
 @router.post("/deploy")
