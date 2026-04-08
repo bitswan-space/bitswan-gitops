@@ -117,27 +117,41 @@ def _sanitize_name(name: str) -> str:
     return re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
 
 
-def _scan_worktree_automations(worktree: str) -> list[dict]:
-    """Scan the worktree filesystem for automation sources (automation.toml)."""
-    worktree_path = os.path.join(_get_workspace_dir(), "worktrees", worktree)
-    if not os.path.isdir(worktree_path):
+def _scan_automations(worktree: str | None = None) -> list[dict]:
+    """Scan the filesystem for automation sources (automation.toml).
+
+    If *worktree* is given, scans the worktree directory.
+    Otherwise scans the main workspace directory.
+    """
+    workspace_dir = _get_workspace_dir()
+    if worktree:
+        scan_root = os.path.join(workspace_dir, "worktrees", worktree)
+    else:
+        scan_root = workspace_dir
+    if not os.path.isdir(scan_root):
         return []
 
     skip_dirs = {"templates", "worktrees", ".git"}
     results = []
     seen_ids: set[str] = set()
-    for root, dirs, files in os.walk(worktree_path):
-        # Prune directories we should never recurse into
+    for root, dirs, files in os.walk(scan_root):
         dirs[:] = [d for d in dirs if d not in skip_dirs]
         if "automation.toml" in files:
-            rel_path = os.path.relpath(root, worktree_path)
+            rel_path = os.path.relpath(root, scan_root)
             source_name = os.path.basename(root)
             sanitized = _sanitize_name(source_name)
-            # Extract BP name from relative path (e.g., "Test/backend" → "test")
             rel_parts = rel_path.replace("\\", "/").split("/")
             bp_name = _sanitize_name(rel_parts[0]) if len(rel_parts) >= 2 else ""
-            bp_suffix = f"-{bp_name}" if bp_name else ""
-            deployment_id = f"{sanitized}-wt-{worktree}{bp_suffix}-live-dev"
+            bp_prefix = f"{bp_name}-" if bp_name else ""
+
+            if worktree:
+                bp_suffix = f"-{bp_name}" if bp_name else ""
+                deployment_id = f"{sanitized}-wt-{worktree}{bp_suffix}-live-dev"
+                relative_path = f"worktrees/{worktree}/{rel_path}"
+            else:
+                deployment_id = f"{sanitized}-{bp_prefix}live-dev"
+                relative_path = rel_path
+
             if deployment_id in seen_ids:
                 continue
             seen_ids.add(deployment_id)
@@ -145,7 +159,7 @@ def _scan_worktree_automations(worktree: str) -> list[dict]:
                 {
                     "deployment_id": deployment_id,
                     "automation_name": source_name,
-                    "relative_path": f"worktrees/{worktree}/{rel_path}",
+                    "relative_path": relative_path,
                     "source_path": root,
                     "worktree": worktree,
                 }
@@ -163,7 +177,7 @@ async def list_agent_deployments(
         raise HTTPException(status_code=400, detail="worktree parameter is required")
 
     # Scan filesystem for all automation sources in this worktree
-    sources = _scan_worktree_automations(worktree)
+    sources = _scan_automations(worktree)
 
     # Query running containers to get their state
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
@@ -224,7 +238,7 @@ async def list_agent_deployments(
 
 class StartDeploymentRequest(BaseModel):
     relative_path: str
-    worktree: str
+    worktree: str | None = None
 
 
 @router.post("/deployments/start")
@@ -233,16 +247,16 @@ async def start_agent_deployment(
     automation_service: AutomationService = Depends(get_automation_service),
     _token=Depends(verify_agent_token),
 ):
-    """Start a live-dev deployment for a worktree automation."""
-    # Find the matching automation source on the filesystem
-    sources = _scan_worktree_automations(body.worktree)
+    """Start a live-dev deployment for an automation."""
+    sources = _scan_automations(body.worktree)
     source = next(
         (s for s in sources if s["relative_path"] == body.relative_path), None
     )
     if not source:
+        ctx = f" in worktree '{body.worktree}'" if body.worktree else ""
         raise HTTPException(
             status_code=404,
-            detail=f"No automation source at '{body.relative_path}' in worktree '{body.worktree}'",
+            detail=f"No automation source at '{body.relative_path}'{ctx}",
         )
 
     deployment_id = source["deployment_id"]
