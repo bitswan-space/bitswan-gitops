@@ -1274,13 +1274,14 @@ fi
         deployments = bs_yaml.get("deployments", {})
 
         dc_config = yaml.safe_load(dc_yaml)
+        compose_service_name = _shorten_service_name(deployment_id)
 
         # deploy the automation and its infra services
         await _report("docker_compose_up", "Starting containers...")
         deployment_result = await docker_compose_up(
             self.gitops_dir,
             dc_yaml,
-            deployment_id,
+            compose_service_name,
             extra_services=infra_service_names,
         )
         await self._post_deploy_infra_services(bs_yaml)
@@ -1288,8 +1289,8 @@ fi
         # record deployment in bitswan.yaml
 
         image_tag = None
-        if deployment_id in dc_config.get("services", {}):
-            deployed_image = dc_config["services"][deployment_id].get("image")
+        if compose_service_name in dc_config.get("services", {}):
+            deployed_image = dc_config["services"][compose_service_name].get("image")
             image_tag = await self.get_tag(deployed_image)
 
         for result in deployment_result.values():
@@ -1470,7 +1471,7 @@ fi
         deployment_result = await docker_compose_up(
             self.gitops_dir,
             dc_yaml,
-            deployment_id,
+            _shorten_service_name(deployment_id),
             extra_services=infra_service_names,
         )
         await self._post_deploy_infra_services(bs_yaml)
