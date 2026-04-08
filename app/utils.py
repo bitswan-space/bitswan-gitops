@@ -366,24 +366,33 @@ def test_read_pipeline_conf():
         assert config.get("pipeline1", "key1") == "value1"
 
 
-def generate_workspace_url(workspace_name, deployment_id, gitops_domain, full=False):
-    from app.services.automation_service import _shorten_hostname_label
+def generate_workspace_url(
+    workspace_name: str,
+    automation_name: str,
+    context: str,
+    stage: str,
+    gitops_domain: str,
+    full: bool = False,
+) -> str:
+    from app.services.automation_service import make_hostname_label
 
-    label = _shorten_hostname_label(workspace_name, deployment_id)
+    label = make_hostname_label(workspace_name, automation_name, context, stage)
     url = f"{label}.{gitops_domain}"
     return f"https://{url}" if full else url
 
 
-def add_workspace_route_to_ingress(deployment_id: str, port: str) -> bool:
-    from app.services.automation_service import _shorten_service_name
+def add_workspace_route_to_ingress(
+    automation_name: str, context: str, stage: str, port: str
+) -> bool:
+    from app.services.automation_service import make_service_name
 
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
     hostname = generate_workspace_url(
-        workspace_name, deployment_id, gitops_domain, False
+        workspace_name, automation_name, context, stage, gitops_domain, False
     )
-    service_name = _shorten_service_name(deployment_id)
-    upstream = f"{service_name}:{port}"
+    svc_name = make_service_name(automation_name, context, stage)
+    upstream = f"{svc_name}:{port}"
     return add_route_to_ingress(hostname, upstream, workspace_name)
 
 
@@ -431,10 +440,12 @@ def add_route_to_ingress(
         return False
 
 
-def remove_route_from_ingress(deployment_id: str, workspace_name: str) -> bool:
+def remove_route_from_ingress(
+    automation_name: str, context: str, stage: str, workspace_name: str
+) -> bool:
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
     hostname = generate_workspace_url(
-        workspace_name, deployment_id, gitops_domain, False
+        workspace_name, automation_name, context, stage, gitops_domain, False
     )
     try:
         client, base = _ingress_client_and_base()
