@@ -2083,9 +2083,9 @@ fi
                 conf = {}
                 deployments[deployment_id] = conf
 
+            dep_stage = conf.get("stage", "production") or "production"
             dep_automation_name = conf.get("automation_name", deployment_id)
             dep_context = conf.get("context", "")
-            dep_stage = conf.get("stage", "production") or "production"
             service_name = make_service_name(
                 dep_automation_name, dep_context, dep_stage
             )
