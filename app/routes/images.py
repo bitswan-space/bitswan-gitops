@@ -40,11 +40,13 @@ async def create_image(
     checksum: str = Form(...),
     image_service: ImageService = Depends(get_image_service),
 ):
-    if file.filename.endswith(".zip"):
+    if file.filename.endswith((".zip", ".tar.gz", ".tgz")):
         result = await image_service.create_image(image_tag, file, checksum=checksum)
         return JSONResponse(content=result)
     else:
-        raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+        raise HTTPException(
+            status_code=400, detail="File must be a .zip or .tar.gz archive"
+        )
 
 
 @router.delete("/{image_tag}")

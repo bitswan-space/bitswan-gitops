@@ -401,13 +401,15 @@ async def create_automation(
     checksum: str = Form(...),
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    if file.filename.endswith(".zip"):
+    if file.filename.endswith((".zip", ".tar.gz", ".tgz")):
         result = await automation_service.create_automation(
             deployment_id, file, relative_path, checksum=checksum
         )
         return JSONResponse(content=result)
     else:
-        raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+        raise HTTPException(
+            status_code=400, detail="File must be a .zip or .tar.gz archive"
+        )
 
 
 @router.delete("/{deployment_id}")
@@ -424,11 +426,13 @@ async def upload_asset(
     checksum: str = Form(...),
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    if file.filename.endswith(".zip"):
+    if file.filename.endswith((".zip", ".tar.gz", ".tgz")):
         result = await automation_service.upload_asset(file, checksum=checksum)
         return JSONResponse(content=result)
     else:
-        raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+        raise HTTPException(
+            status_code=400, detail="File must be a .zip or .tar.gz archive"
+        )
 
 
 @router.post("/assets/upload-stream")
@@ -443,7 +447,7 @@ async def upload_asset_stream(
     This endpoint supports chunked transfer encoding.
     """
     # Create a temporary file to store the streamed data
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as temp_file:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as temp_file:
         temp_path = temp_file.name
         # Stream the request body to the temp file
         async for chunk in request.stream():
@@ -470,11 +474,11 @@ async def download_asset(
     checksum: str,
     automation_service: AutomationService = Depends(get_automation_service),
 ):
-    zip_bytes = automation_service.download_asset(checksum)
+    archive_bytes = automation_service.download_asset(checksum)
     return StreamingResponse(
-        iter([zip_bytes]),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{checksum}.zip"'},
+        iter([archive_bytes]),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{checksum}.tar.gz"'},
     )
 
 
