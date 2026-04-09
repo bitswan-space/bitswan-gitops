@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 import os
 from tempfile import NamedTemporaryFile
+import tarfile
 import zipfile
 import shutil
 from typing import Optional, AsyncGenerator, Dict
@@ -393,9 +394,13 @@ class ImageService:
                 os.makedirs(temp_dir_path)  # Create a directory with the same name
 
                 try:
-                    # Extract the zip file to the temporary directory
-                    with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
-                        zip_ref.extractall(temp_dir_path)
+                    # Extract the archive to the temporary directory
+                    if tarfile.is_tarfile(temp_file.name):
+                        with tarfile.open(temp_file.name, "r:gz") as tar_ref:
+                            tar_ref.extractall(temp_dir_path, filter="data")
+                    else:
+                        with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
+                            zip_ref.extractall(temp_dir_path)
 
                     # Verify the checksum using git tree hash algorithm
                     calculated_hash = await calculate_git_tree_hash(temp_dir_path)

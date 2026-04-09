@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 from tempfile import NamedTemporaryFile
+import tarfile
 import zipfile
 import yaml
 import requests
@@ -299,8 +300,12 @@ class AutomationService:
                 if os.path.exists(output_dir):
                     shutil.rmtree(output_dir)
                 os.makedirs(output_dir)
-                with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
-                    zip_ref.extractall(output_dir)
+                if tarfile.is_tarfile(temp_file.name):
+                    with tarfile.open(temp_file.name, "r:gz") as tar_ref:
+                        tar_ref.extractall(output_dir, filter="data")
+                else:
+                    with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
+                        zip_ref.extractall(output_dir)
 
                 # Verify the checksum using git tree hash algorithm
                 calculated_hash = await calculate_git_tree_hash(output_dir)
@@ -424,18 +429,15 @@ class AutomationService:
         os.makedirs(output_dir)
 
         try:
-            with zipfile.ZipFile(file_path, "r") as zip_ref:
-                logger.info("Zip contents: %s", [n for n in zip_ref.namelist()])
-                zip_ref.extractall(output_dir)
-        except zipfile.BadZipFile as e:
+            if tarfile.is_tarfile(file_path):
+                with tarfile.open(file_path, "r:gz") as tar_ref:
+                    tar_ref.extractall(output_dir, filter="data")
+            else:
+                with zipfile.ZipFile(file_path, "r") as zip_ref:
+                    zip_ref.extractall(output_dir)
+        except (tarfile.TarError, zipfile.BadZipFile) as e:
             shutil.rmtree(output_dir, ignore_errors=True)
-            raise HTTPException(status_code=400, detail=f"Invalid zip file: {e}")
-
-        # Log extracted files for debugging
-        for dirpath, dirnames, filenames in os.walk(output_dir):
-            rel = os.path.relpath(dirpath, output_dir)
-            for f in sorted(filenames):
-                logger.info("Extracted file: %s", os.path.join(rel, f))
+            raise HTTPException(status_code=400, detail=f"Invalid archive: {e}")
 
         # Verify the checksum using git tree hash algorithm
         calculated_hash = await calculate_git_tree_hash(output_dir)
@@ -589,12 +591,12 @@ class AutomationService:
             )
 
         buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
             for root, _dirs, files in os.walk(asset_dir):
-                for file in files:
+                for file in sorted(files):
                     file_path = os.path.join(root, file)
                     arcname = os.path.relpath(file_path, asset_dir)
-                    zf.write(file_path, arcname)
+                    tf.add(file_path, arcname)
 
         return buf.getvalue()
 
