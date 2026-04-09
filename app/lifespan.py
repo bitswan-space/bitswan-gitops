@@ -146,11 +146,59 @@ async def _docker_event_watcher():
             await asyncio.sleep(5)
 
 
+def _start_profiling():
+    """Start yappi async-aware profiler if BITSWAN_PROFILING is set.
+
+    Returns a dump callable (also wired to SIGUSR1) or None when disabled.
+    Re-evaluated on every lifespan startup so hot-reload picks up env changes.
+    """
+    enabled = os.environ.get("BITSWAN_PROFILING", "").lower() in ("1", "true", "yes")
+    if not enabled:
+        return None
+
+    import yappi
+    import datetime
+    import signal
+
+    workspace_dir = os.environ.get("BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo")
+    profiling_dir = os.path.join(workspace_dir, "profiling")
+    os.makedirs(profiling_dir, exist_ok=True)
+
+    # Stop any leftover session from a previous reload before starting fresh.
+    yappi.stop()
+    prior_stats = yappi.get_func_stats()
+    if not prior_stats.empty():
+        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        prior_path = os.path.join(profiling_dir, f"profile_{ts}.pstat")
+        prior_stats.save(prior_path, type="pstat")
+        logger.info("Saved previous profiling session to %s", prior_path)
+    yappi.clear_stats()
+    yappi.set_clock_type("wall")
+    yappi.start(builtins=False)
+    logger.info("=" * 60)
+    logger.info("  PROFILING ACTIVE (yappi, wall-clock, asyncio-aware)")
+    logger.info("  Output: %s", profiling_dir)
+    logger.info("  Dump now: kill -USR1 %d", os.getpid())
+    logger.info("=" * 60)
+
+    def dump_profile(sig=None, frame=None):
+        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        path = os.path.join(profiling_dir, f"profile_{ts}.pstat")
+        yappi.get_func_stats().save(path, type="pstat")
+        logger.info("Profile written to %s", path)
+
+    # SIGUSR1 → on-demand snapshot without stopping the server.
+    signal.signal(signal.SIGUSR1, dump_profile)
+
+    return dump_profile
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     observer = None
     worktree_observer = None
     watcher_task: asyncio.Task | None = None
+    dump_profile = _start_profiling()
 
     scheduler = AsyncIOScheduler(timezone="UTC")
     result = await mqtt_resource.connect()
@@ -265,3 +313,6 @@ async def lifespan(app: FastAPI):
         if worktree_observer:
             worktree_observer.stop()
             await asyncio.to_thread(worktree_observer.join)
+
+        if dump_profile is not None:
+            dump_profile()
