@@ -419,10 +419,17 @@ class AutomationService:
 
         try:
             with zipfile.ZipFile(file_path, "r") as zip_ref:
+                logger.info("Zip contents: %s", [n for n in zip_ref.namelist()])
                 zip_ref.extractall(output_dir)
         except zipfile.BadZipFile as e:
             shutil.rmtree(output_dir, ignore_errors=True)
             raise HTTPException(status_code=400, detail=f"Invalid zip file: {e}")
+
+        # Log extracted files for debugging
+        for dirpath, dirnames, filenames in os.walk(output_dir):
+            rel = os.path.relpath(dirpath, output_dir)
+            for f in sorted(filenames):
+                logger.info("Extracted file: %s", os.path.join(rel, f))
 
         # Verify the checksum using git tree hash algorithm
         calculated_hash = await calculate_git_tree_hash(output_dir)
