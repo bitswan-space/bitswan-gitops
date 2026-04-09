@@ -1,16 +1,18 @@
 #!/bin/bash
 
-# Auto-detect dev mode: if /src/app is mounted with source code, enable DEBUG
-# This allows hot-reload without manually setting DEBUG=true
-if [ "$DEBUG" != "true" ] && [ -f "/src/app/pyproject.toml" ]; then
-    # Verify this is the gitops source by checking pyproject.toml content
-    if grep -q "bitswan-gitops" /src/app/pyproject.toml 2>/dev/null; then
+# Auto-detect dev mode: if the bitswan-gitops source is mounted at /src,
+# enable DEBUG and reinstall deps so the running container matches the
+# mounted source (handles packages added after the image was built).
+if [ -f "/src/pyproject.toml" ] && grep -q "bitswan-gitops" /src/pyproject.toml 2>/dev/null; then
+    if [ "$DEBUG" != "true" ]; then
         echo "========================================"
-        echo "AUTO-DETECTED DEV MODE: Found gitops source mounted at /src/app"
+        echo "AUTO-DETECTED DEV MODE: Found gitops source mounted at /src"
         echo "Enabling DEBUG=true for hot-reload support"
         echo "========================================"
         export DEBUG=true
     fi
+    echo "Dev mode: reinstalling dependencies from mounted source..."
+    pip install -e /src --quiet
 fi
 
 # Function to get the group ID of the docker socket
