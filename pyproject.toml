@@ -24,6 +24,7 @@ dependencies = [
  "markdown",
  "aiohttp",
  "httpx",
+ "yappi",
 ]
 
 [project.optional-dependencies]
