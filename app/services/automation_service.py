@@ -295,7 +295,10 @@ class AutomationService:
             try:
                 output_dir = os.path.join(self.gitops_dir, output_dir)
 
-                os.makedirs(output_dir, exist_ok=True)
+                # Clean stale files from any previous extraction attempt
+                if os.path.exists(output_dir):
+                    shutil.rmtree(output_dir)
+                os.makedirs(output_dir)
                 with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
                     zip_ref.extractall(output_dir)
 
@@ -415,7 +418,10 @@ class AutomationService:
         checksum: Pre-calculated git tree hash that will be verified.
         """
         output_dir = os.path.join(self.gitops_dir, checksum)
-        os.makedirs(output_dir, exist_ok=True)
+        # Clean any stale files from a previous extraction attempt
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+        os.makedirs(output_dir)
 
         try:
             with zipfile.ZipFile(file_path, "r") as zip_ref:
