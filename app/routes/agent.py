@@ -955,9 +955,14 @@ async def sync_worktree(
             }
 
         # Rebase succeeded — worktree is now up-to-date
-        tip_stdout, _, _ = await call_git_command_with_output(
+        tip_stdout, tip_stderr, tip_rc = await call_git_command_with_output(
             "git", "rev-parse", "HEAD", cwd=worktree_path
         )
+        if tip_rc != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to get worktree HEAD after rebase: {tip_stderr.strip()}",
+            )
         return {
             "status": "success",
             "tip": tip_stdout.strip()[:12],
@@ -1006,9 +1011,14 @@ async def sync_continue(
                 detail=f"Rebase continue failed: {stderr.strip()}\n{stdout.strip()}",
             )
 
-        tip_stdout, _, _ = await call_git_command_with_output(
+        tip_stdout, tip_stderr, tip_rc = await call_git_command_with_output(
             "git", "rev-parse", "HEAD", cwd=worktree_path
         )
+        if tip_rc != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to get worktree HEAD after rebase: {tip_stderr.strip()}",
+            )
         return {
             "status": "success",
             "tip": tip_stdout.strip()[:12],
