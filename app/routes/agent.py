@@ -800,12 +800,26 @@ async def rebase_and_merge(
         )
 
         if rc != 0:
-            # Rebase hit conflicts — DON'T abort, let the agent resolve them
-            # Get the list of conflicted files
+            # Check whether this is actually a conflict or some other failure
             conflict_stdout, _, _ = await call_git_command_with_output(
                 "git", "diff", "--name-only", "--diff-filter=U", cwd=worktree_path
             )
             conflicted_files = [f for f in conflict_stdout.strip().splitlines() if f]
+
+            if not conflicted_files:
+                # Not a conflict — abort the rebase and restore stash
+                await call_git_command_with_output(
+                    "git", "rebase", "--abort", cwd=worktree_path
+                )
+                if stash_created:
+                    await call_git_command_with_output(
+                        "git", "stash", "pop", cwd=workspace_dir
+                    )
+                rebase_output = f"{stdout.strip()}\n{stderr.strip()}".strip()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Rebase failed: {rebase_output}",
+                )
 
             return {
                 "status": "conflicts",
@@ -921,6 +935,17 @@ async def sync_worktree(
                 "git", "diff", "--name-only", "--diff-filter=U", cwd=worktree_path
             )
             conflicted_files = [f for f in conflict_stdout.strip().splitlines() if f]
+
+            if not conflicted_files:
+                # Not a conflict — abort the rebase
+                await call_git_command_with_output(
+                    "git", "rebase", "--abort", cwd=worktree_path
+                )
+                rebase_output = f"{stdout.strip()}\n{stderr.strip()}".strip()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Rebase failed: {rebase_output}",
+                )
 
             return {
                 "status": "conflicts",
