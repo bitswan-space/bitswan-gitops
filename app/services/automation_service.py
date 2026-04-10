@@ -1254,6 +1254,21 @@ fi
             await _report("enabling_services", "Enabling declared services...")
             await self.enable_services(deploy_services, deploy_stage)
 
+        # Remove stale live-dev entries that lack relative_path
+        stale_live_devs = [
+            k
+            for k, v in bs_yaml.get("deployments", {}).items()
+            if (v or {}).get("stage") == "live-dev"
+            and not (v or {}).get("relative_path")
+        ]
+        if stale_live_devs:
+            for k in stale_live_devs:
+                logger.warning("Removing stale live-dev entry: %s", k)
+                del bs_yaml["deployments"][k]
+            bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+            with open(bitswan_yaml_path, "w") as f:
+                yaml.dump(bs_yaml, f)
+
         await _report(
             "generating_compose", "Generating docker-compose configuration..."
         )
@@ -2127,6 +2142,11 @@ fi
                 if not automation_config.image:
                     continue
                 pipeline_conf = None
+            elif stage == "live-dev":
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Live-dev deployment {deployment_id} is missing relative_path",
+                )
             elif not os.path.exists(source_dir):
                 raise HTTPException(
                     status_code=500,
