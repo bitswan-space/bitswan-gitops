@@ -444,9 +444,18 @@ CODING_AGENT_IMAGE = os.environ.get(
 )
 
 
+class EnsureCodingAgentRequest(BaseModel):
+    image: str | None = None
+    dev_mode: bool = False
+    source_dir: str | None = None  # host path to bitswan-agent source
+
+
 @router.post("/coding-agent/ensure")
-async def ensure_coding_agent():
+async def ensure_coding_agent(body: EnsureCodingAgentRequest | None = None):
     """Ensure the coding agent container is running. Start it if not."""
+    custom_image = body.image if body else None
+    dev_mode = body.dev_mode if body else False
+    source_dir = body.source_dir if body else None
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace")
     agent_container_name = f"{workspace_name}-coding-agent"
     docker_client = get_async_docker_client()
@@ -462,8 +471,20 @@ async def ensure_coding_agent():
 
     for c in containers:
         names = c.get("Names", [])
-        # Docker prefixes names with /
         if f"/{agent_container_name}" in names or agent_container_name in names:
+            # If custom image or dev mode requested, recreate the container
+            if custom_image or dev_mode:
+                container_id = c.get("Id")
+                try:
+                    await docker_client.stop_container(container_id, timeout=5)
+                except Exception:
+                    pass
+                try:
+                    await docker_client.remove_container(container_id, force=True)
+                except Exception:
+                    pass
+                break  # fall through to create
+
             state = c.get("State", "")
             if state == "running":
                 return {
@@ -526,16 +547,24 @@ async def ensure_coding_agent():
     if ssh_pub_key:
         env_vars.append(f"EDITOR_SSH_PUBLIC_KEY={ssh_pub_key}")
 
+    image = custom_image or CODING_AGENT_IMAGE
+    binds = [
+        f"{bind_base}/workspace/worktrees:/workspace/worktrees:z",
+        f"{bind_base}/coding-agent-home:/home/agent:z",
+        f"{bind_base}/coding-agent-sessions:/var/log/agent-sessions:z",
+    ]
+    if dev_mode and source_dir:
+        binds.append(
+            f"{source_dir}/agent-session-wrapper:/usr/local/bin/agent-session-wrapper:z"
+        )
+        binds.append(f"{source_dir}/AGENTS-inside-container.md:/AGENTS.md:z")
+
     container_config = {
-        "Image": CODING_AGENT_IMAGE,
+        "Image": image,
         "Hostname": agent_container_name,
         "Env": env_vars,
         "HostConfig": {
-            "Binds": [
-                f"{bind_base}/workspace/worktrees:/workspace/worktrees:z",
-                f"{bind_base}/coding-agent-home:/home/agent:z",
-                f"{bind_base}/coding-agent-sessions:/var/log/agent-sessions:z",
-            ],
+            "Binds": binds,
             "RestartPolicy": {"Name": "always"},
         },
         "NetworkingConfig": {
@@ -546,15 +575,16 @@ async def ensure_coding_agent():
     }
 
     try:
-        # Pull image (best effort, timeout 60s)
-        try:
-            await docker_client._post(
-                "/images/create",
-                params={"fromImage": CODING_AGENT_IMAGE},
-                timeout=60.0,
-            )
-        except Exception:
-            logger.warning("Could not pull coding agent image, using local")
+        # Pull image (best effort, skip for custom local images)
+        if not custom_image:
+            try:
+                await docker_client._post(
+                    "/images/create",
+                    params={"fromImage": image},
+                    timeout=60.0,
+                )
+            except Exception:
+                logger.warning("Could not pull coding agent image, using local")
 
         # Create container
         resp = await docker_client._post(
