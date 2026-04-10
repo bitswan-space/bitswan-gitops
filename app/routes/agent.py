@@ -725,7 +725,10 @@ async def _complete_merge(
         "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
     )
     if rc != 0:
-        return {"status": "error", "detail": f"Failed to detect default branch: {stderr.strip()}"}
+        return {
+            "status": "error",
+            "detail": f"Failed to detect default branch: {stderr.strip()}",
+        }
     default_branch = stdout.strip()
 
     # Get worktree tip
