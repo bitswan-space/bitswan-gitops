@@ -855,7 +855,14 @@ async def rebase_continue(
 
     async with GitLockContext(timeout=30.0):
         # Stage all resolved files
-        await call_git_command_with_output("git", "add", "-A", cwd=worktree_path)
+        _, add_stderr, add_rc = await call_git_command_with_output(
+            "git", "add", "-A", cwd=worktree_path
+        )
+        if add_rc != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to stage resolved files: {add_stderr.strip()}",
+            )
 
         # Continue rebase
         stdout, stderr, rc = await call_git_command_with_output(
@@ -985,7 +992,14 @@ async def sync_continue(
 
     async with GitLockContext(timeout=30.0):
         # Stage all resolved files
-        await call_git_command_with_output("git", "add", "-A", cwd=worktree_path)
+        _, add_stderr, add_rc = await call_git_command_with_output(
+            "git", "add", "-A", cwd=worktree_path
+        )
+        if add_rc != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to stage resolved files: {add_stderr.strip()}",
+            )
 
         # Continue rebase
         stdout, stderr, rc = await call_git_command_with_output(
