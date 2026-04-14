@@ -1789,8 +1789,13 @@ fi
 
             image_service = ImageService()
 
+            # Build fully disambiguated image tag from structured components
+            auto_name = config.get("automation_name", deployment_id)
+            context = config.get("context", "")
+            full_image_tag = f"{self.workspace_name}-{context}-{auto_name}" if context else f"{self.workspace_name}-{auto_name}"
+
             result = await image_service.create_image(
-                image_tag=deployment_id,
+                image_tag=full_image_tag,
                 build_context_path=source_dir,
                 checksum=tag_checksum,
             )
