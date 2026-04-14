@@ -566,15 +566,36 @@ async def build_and_restart_deployment(
                     from app.services.image_service import ImageService
 
                     image_service = ImageService()
-                    # Use automation name for the image tag
                     auto_name = os.path.basename(source_dir)
                     result = await image_service.create_image(
                         image_tag=auto_name,
                         build_context_path=image_dir,
                     )
+                    tag = result.get("tag", "")
+                    checksum = tag.split(":sha", 1)[1] if ":sha" in tag else None
+
+                    # Wait for the build to finish, streaming log lines
+                    # as task messages
+                    if checksum:
+                        last_line = ""
+                        async for chunk in image_service.stream_build_logs(checksum):
+                            for line in chunk.splitlines():
+                                line = line.strip()
+                                if line and line != last_line:
+                                    last_line = line
+                                    await deploy_manager.update_task(
+                                        task.task_id,
+                                        message=f"Building: {line[:120]}",
+                                    )
+
+                        # Check if build succeeded
+                        build_status = image_service._get_build_status(checksum)
+                        if build_status == "failed":
+                            raise Exception(f"Image build failed for {auto_name}")
+
                     await deploy_manager.update_task(
                         task.task_id,
-                        message=f"Image built: {result.get('tag', auto_name)}",
+                        message=f"Image built: {tag}",
                     )
 
             await deploy_manager.update_task(task.task_id, message="Deploying...")
