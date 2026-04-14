@@ -519,7 +519,7 @@ async def build_and_restart_deployment(
     _validate_deployment_id(deployment_id)
 
     # Trigger deploy which handles image build + restart
-    from app.deploy_manager import deploy_manager
+    from app.deploy_manager import deploy_manager, DeployStatus
 
     # Guard: reject if already deploying
     if deploy_manager.is_deploying(deployment_id):
@@ -539,13 +539,17 @@ async def build_and_restart_deployment(
     async def _run_build_and_restart():
         try:
             await deploy_manager.update_task(
-                task.task_id, message="Starting build and restart..."
+                task.task_id,
+                status=DeployStatus.IN_PROGRESS,
+                message="Starting build and restart...",
             )
             await automation_service.deploy_automation(
                 deployment_id=deployment_id, stage="live-dev"
             )
             await deploy_manager.update_task(
-                task.task_id, message="Build and restart completed"
+                task.task_id,
+                status=DeployStatus.COMPLETED,
+                message="Build and restart completed",
             )
         except Exception as exc:
             logger.exception(
@@ -554,7 +558,10 @@ async def build_and_restart_deployment(
                 task.task_id,
             )
             await deploy_manager.update_task(
-                task.task_id, error=str(exc), message="Build and restart failed"
+                task.task_id,
+                status=DeployStatus.FAILED,
+                error=str(exc),
+                message="Build and restart failed",
             )
 
     asyncio.create_task(_run_build_and_restart())
