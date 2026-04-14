@@ -516,7 +516,7 @@ async def build_and_restart_deployment(
     automation_service: AutomationService = Depends(get_automation_service),
     _token=Depends(verify_agent_token),
 ):
-    """Build image and restart deployment. Streams progress as text/plain."""
+    """Build image and restart deployment. Streams ndjson progress."""
     _validate_deployment_id(deployment_id)
 
     from app.deploy_manager import deploy_manager
@@ -527,10 +527,16 @@ async def build_and_restart_deployment(
             detail=f"Deployment {deployment_id} is already in progress",
         )
 
+    import json as _json
+    import docker as _docker
+
     async def _stream():
         from app.services.automation_service import read_bitswan_yaml
 
-        yield "Looking up deployment...\n"
+        def _ndjson(**kwargs):
+            return _json.dumps(kwargs) + "\n"
+
+        yield _ndjson(status="Looking up deployment...")
         bs_yaml = read_bitswan_yaml(automation_service.gitops_dir)
         dep_conf = (bs_yaml or {}).get("deployments", {}).get(deployment_id, {})
         relative_path = dep_conf.get("relative_path", "")
@@ -544,39 +550,46 @@ async def build_and_restart_deployment(
             if os.path.isdir(image_dir) and os.path.isfile(
                 os.path.join(image_dir, "Dockerfile")
             ):
-                yield "Building image...\n"
-                from app.services.image_service import ImageService
-
-                image_service = ImageService()
                 auto_name = os.path.basename(source_dir)
-                result = await image_service.create_image(
-                    image_tag=auto_name,
-                    build_context_path=image_dir,
-                )
-                tag = result.get("tag", "")
-                checksum = tag.split(":sha", 1)[1] if ":sha" in tag else None
+                tag = f"internal/{auto_name}"
+                yield _ndjson(status=f"Building image {tag}...")
 
-                if checksum:
-                    async for chunk in image_service.stream_build_logs(checksum):
-                        yield chunk
+                # Build using Docker API directly — streams ndjson
+                client = _docker.from_env()
+                try:
 
-                    build_status = image_service._get_build_status(checksum)
-                    if build_status == "failed":
-                        yield "ERROR: Image build failed\n"
-                        return
+                    def _build():
+                        return client.api.build(
+                            path=image_dir,
+                            tag=tag,
+                            rm=True,
+                            decode=True,
+                        )
 
-                yield f"Image built: {tag}\n"
+                    build_iter = await asyncio.to_thread(_build)
+                    build_error = None
+                    for line in build_iter:
+                        yield _json.dumps(line) + "\n"
+                        if "error" in line:
+                            build_error = line["error"]
+                finally:
+                    client.close()
 
-        yield "Deploying...\n"
+                if build_error:
+                    return
+
+                yield _ndjson(status=f"Image built: {tag}")
+
+        yield _ndjson(status="Deploying...")
         try:
             await automation_service.deploy_automation(
                 deployment_id=deployment_id, stage="live-dev"
             )
-            yield "Deploy completed successfully\n"
+            yield _ndjson(status="Deploy completed successfully")
         except Exception as exc:
-            yield f"ERROR: {exc}\n"
+            yield _ndjson(error=str(exc))
 
-    return StreamingResponse(_stream(), media_type="text/plain")
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
 
 @router.get("/images/builds/{checksum}/stream")
