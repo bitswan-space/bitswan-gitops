@@ -317,6 +317,20 @@ async def list_worktrees():
         # Check if .requirements.json exists
         has_requirements = os.path.exists(os.path.join(wt_path, ".requirements.json"))
 
+        # Check sync status: is the worktree branch up-to-date with main?
+        synced = False
+        if branch:
+            # Check if main's HEAD is an ancestor of the worktree branch
+            _, _, merge_base_rc = await call_git_command_with_output(
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                "HEAD",
+                branch,
+                cwd=workspace_dir,
+            )
+            synced = merge_base_rc == 0
+
         result.append(
             {
                 "name": name,
@@ -324,6 +338,7 @@ async def list_worktrees():
                 "commit_hash": commit_hash,
                 "commit_message": commit_message,
                 "has_requirements": has_requirements,
+                "synced": synced,
             }
         )
 
