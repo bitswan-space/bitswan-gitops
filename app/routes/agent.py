@@ -541,8 +541,43 @@ async def build_and_restart_deployment(
             await deploy_manager.update_task(
                 task.task_id,
                 status=DeployStatus.IN_PROGRESS,
-                message="Starting build and restart...",
+                message="Looking up deployment...",
             )
+
+            # Look up deployment config to find source path
+            from app.services.automation_service import read_bitswan_yaml
+
+            bs_yaml = read_bitswan_yaml(automation_service.gitops_dir)
+            dep_conf = (bs_yaml or {}).get("deployments", {}).get(deployment_id, {})
+            relative_path = dep_conf.get("relative_path", "")
+
+            # Build image if image/ directory exists in the source
+            if relative_path:
+                source_dir = os.path.join(
+                    automation_service.workspace_repo_dir, relative_path
+                )
+                image_dir = os.path.join(source_dir, "image")
+                if os.path.isdir(image_dir) and os.path.isfile(
+                    os.path.join(image_dir, "Dockerfile")
+                ):
+                    await deploy_manager.update_task(
+                        task.task_id, message="Building image..."
+                    )
+                    from app.services.image_service import ImageService
+
+                    image_service = ImageService()
+                    # Use automation name for the image tag
+                    auto_name = os.path.basename(source_dir)
+                    result = await image_service.create_image(
+                        image_tag=auto_name,
+                        build_context_path=image_dir,
+                    )
+                    await deploy_manager.update_task(
+                        task.task_id,
+                        message=f"Image built: {result.get('tag', auto_name)}",
+                    )
+
+            await deploy_manager.update_task(task.task_id, message="Deploying...")
             await automation_service.deploy_automation(
                 deployment_id=deployment_id, stage="live-dev"
             )
