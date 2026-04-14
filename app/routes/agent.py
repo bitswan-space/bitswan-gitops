@@ -569,6 +569,12 @@ async def build_and_restart_deployment(
                     build_iter = await asyncio.to_thread(_build)
                     build_error = None
                     for line in build_iter:
+                        # Strip ANSI escape sequences from stream output
+                        # to prevent terminal clears/resets on the client
+                        if "stream" in line:
+                            line["stream"] = re.sub(
+                                r"\x1b\[[0-9;]*[a-zA-Z]", "", line["stream"]
+                            )
                         yield _json.dumps(line) + "\n"
                         if "error" in line:
                             build_error = line["error"]
