@@ -42,6 +42,8 @@ class DeployedAutomation(BaseModel):
     automation_url: str | None
     relative_path: str | None
     stage: str | None
+    automation_name: str | None = None
+    context: str | None = None
     version_hash: str | None = None
     replicas: int = 1
 

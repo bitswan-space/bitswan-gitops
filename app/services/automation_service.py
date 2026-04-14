@@ -203,6 +203,10 @@ class AutomationService:
                     "relative_path", None
                 ),
                 stage=bs_yaml["deployments"][deployment_id].get("stage", "production"),
+                automation_name=bs_yaml["deployments"][deployment_id].get(
+                    "automation_name", None
+                ),
+                context=bs_yaml["deployments"][deployment_id].get("context", None),
                 version_hash=bs_yaml["deployments"][deployment_id].get(
                     "checksum", None
                 ),
@@ -265,6 +269,8 @@ class AutomationService:
                     automation_url=url,
                     relative_path=pres[deployment_id].relative_path,
                     stage=pres[deployment_id].stage,
+                    automation_name=pres[deployment_id].automation_name,
+                    context=pres[deployment_id].context,
                     version_hash=pres[deployment_id].version_hash,
                     replicas=pres[deployment_id].replicas,
                 )
@@ -1278,7 +1284,8 @@ fi
 
         dc_config = yaml.safe_load(dc_yaml)
         dep_conf = bs_yaml.get("deployments", {}).get(deployment_id, {})
-        compose_service_name = make_service_name(
+        compose_service_name = make_hostname_label(
+            self.workspace_name,
             dep_conf.get("automation_name", deployment_id),
             dep_conf.get("context", ""),
             dep_conf.get("stage", "production") or "production",
@@ -1477,7 +1484,8 @@ fi
         self._save_docker_compose(dc_yaml)
 
         dep_conf = bs_yaml.get("deployments", {}).get(deployment_id, {})
-        compose_svc = make_service_name(
+        compose_svc = make_hostname_label(
+            self.workspace_name,
             dep_conf.get("automation_name", deployment_id),
             dep_conf.get("context", ""),
             dep_conf.get("stage", "production") or "production",
@@ -2116,8 +2124,8 @@ fi
             dep_stage = conf.get("stage", "production") or "production"
             dep_automation_name = conf.get("automation_name", deployment_id)
             dep_context = conf.get("context", "")
-            service_name = make_service_name(
-                dep_automation_name, dep_context, dep_stage
+            service_name = make_hostname_label(
+                self.workspace_name, dep_automation_name, dep_context, dep_stage
             )
 
             entry = {}
@@ -2185,12 +2193,15 @@ fi
                 entry["environment"] = {"DEPLOYMENT_ID": deployment_id}
             replicas = conf.get("replicas", 1)
             if replicas <= 1:
-                entry["container_name"] = f"{self.workspace_name}__{service_name}"
+                entry["container_name"] = f"{service_name}"
             entry["restart"] = "always"
             entry["ulimits"] = {"nofile": {"soft": 65536, "hard": 65536}}
             entry["labels"] = {
                 "gitops.deployment_id": deployment_id,
                 "gitops.workspace": self.workspace_name,
+                "gitops.automation_name": dep_automation_name,
+                "gitops.context": dep_context,
+                "gitops.stage": dep_stage,
                 "gitops.intended_exposed": "false",
             }
             entry["image"] = "bitswan/pipeline-runtime-environment:latest"
@@ -2361,7 +2372,7 @@ fi
             if not network_mode:
                 if replicas > 1:
                     # Use network aliases instead of container_name for DNS round-robin
-                    alias = f"{self.workspace_name}__{deployment_id}"
+                    alias = service_name
                     entry["networks"] = {
                         net: {"aliases": [alias]} for net in networks_list
                     }
