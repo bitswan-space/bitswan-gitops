@@ -566,6 +566,23 @@ async def build_and_restart_deployment(
     }
 
 
+@router.get("/deployments/{deployment_id}/deploy-status")
+async def get_deployment_status(
+    deployment_id: str,
+    _token=Depends(verify_agent_token),
+):
+    """Get the active deploy task for a deployment, if any."""
+    from app.deploy_manager import deploy_manager
+
+    task_id = deploy_manager._active_deploys.get(deployment_id)
+    if not task_id:
+        return {"deploying": False}
+    task = deploy_manager.get_task(task_id)
+    if not task:
+        return {"deploying": False}
+    return {"deploying": True, **task.to_dict()}
+
+
 # --- Worktree commit endpoint ---
 
 
