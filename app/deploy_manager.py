@@ -41,6 +41,7 @@ class DeployTask:
     step: DeployStep | None = None
     message: str = ""
     error: str | None = None
+    build_checksum: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
 
@@ -52,6 +53,7 @@ class DeployTask:
             "step": self.step.value if self.step else None,
             "message": self.message,
             "error": self.error,
+            "build_checksum": self.build_checksum,
             "started_at": self.started_at.isoformat(),
             "completed_at": self.completed_at.isoformat()
             if self.completed_at
