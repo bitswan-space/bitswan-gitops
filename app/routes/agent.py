@@ -550,9 +550,35 @@ async def build_and_restart_deployment(
             if os.path.isdir(image_dir) and os.path.isfile(
                 os.path.join(image_dir, "Dockerfile")
             ):
+                from app.utils import calculate_git_tree_hash
+                import toml as _toml
+
+                # Compute content hash and build disambiguated tag
+                # matching the editor scheme: internal/{ws}-{bp}-{name}:sha{hash}
+                checksum = await calculate_git_tree_hash(image_dir)
                 auto_name = os.path.basename(source_dir)
-                tag = f"internal/{auto_name}"
-                yield _ndjson(status=f"Building image {tag}...")
+                ws_name = automation_service.workspace_name or "workspace"
+                # Extract BP name from relative_path
+                # e.g. "worktrees/test2/foobar/backend" → bp = "foobar"
+                # e.g. "foobar/backend" → bp = "foobar"
+                rel_parts = relative_path.replace("\\", "/").split("/")
+                if len(rel_parts) >= 2 and rel_parts[0] == "worktrees":
+                    bp_name = rel_parts[2] if len(rel_parts) >= 4 else ""
+                else:
+                    bp_name = rel_parts[0] if len(rel_parts) >= 2 else ""
+                bp_sanitized = (
+                    re.sub(r"[^a-z0-9-]", "-", bp_name.lower()).strip("-")
+                    if bp_name
+                    else ""
+                )
+                full_image_name = (
+                    f"{ws_name}-{bp_sanitized}-{auto_name}"
+                    if bp_sanitized
+                    else f"{ws_name}-{auto_name}"
+                )
+                full_tag = f"internal/{full_image_name}:sha{checksum}"
+
+                yield _ndjson(status=f"Building image {full_tag}...")
 
                 # Build using Docker API directly — streams ndjson
                 client = _docker.from_env()
@@ -561,7 +587,7 @@ async def build_and_restart_deployment(
                     def _build():
                         return client.api.build(
                             path=image_dir,
-                            tag=tag,
+                            tag=full_tag,
                             rm=True,
                             decode=True,
                         )
@@ -569,8 +595,6 @@ async def build_and_restart_deployment(
                     build_iter = await asyncio.to_thread(_build)
                     build_error = None
                     for line in build_iter:
-                        # Strip ANSI escape sequences from stream output
-                        # to prevent terminal clears/resets on the client
                         if "stream" in line:
                             line["stream"] = re.sub(
                                 r"\x1b\[[0-9;]*[a-zA-Z]", "", line["stream"]
@@ -584,7 +608,17 @@ async def build_and_restart_deployment(
                 if build_error:
                     return
 
-                yield _ndjson(status=f"Image built: {tag}")
+                # Update automation.toml with the new image tag
+                automation_toml_path = os.path.join(source_dir, "automation.toml")
+                if os.path.isfile(automation_toml_path):
+                    with open(automation_toml_path, "r") as f:
+                        config = _toml.load(f)
+                    config.setdefault("deployment", {})["image"] = full_tag
+                    with open(automation_toml_path, "w") as f:
+                        _toml.dump(config, f)
+                    yield _ndjson(status=f"Updated automation.toml: image = {full_tag}")
+
+                yield _ndjson(status=f"Image built: {full_tag}")
 
         yield _ndjson(status="Deploying...")
         try:
