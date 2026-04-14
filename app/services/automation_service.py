@@ -71,7 +71,6 @@ def make_hostname_label(
     return f"{ws}-{an}-{stage}" if stage else f"{ws}-{an}"
 
 
-
 class AutomationService:
     def __init__(self):
         self.bs_home = os.environ.get("BITSWAN_GITOPS_DIR", "/mnt/repo/pipeline")
@@ -1781,7 +1780,11 @@ fi
             # Build fully disambiguated image tag from structured components
             auto_name = config.get("automation_name", deployment_id)
             context = config.get("context", "")
-            full_image_tag = f"{self.workspace_name}-{context}-{auto_name}" if context else f"{self.workspace_name}-{auto_name}"
+            full_image_tag = (
+                f"{self.workspace_name}-{context}-{auto_name}"
+                if context
+                else f"{self.workspace_name}-{auto_name}"
+            )
 
             result = await image_service.create_image(
                 image_tag=full_image_tag,
