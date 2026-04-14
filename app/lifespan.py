@@ -69,6 +69,42 @@ class WorkspaceChangeHandler(FileSystemEventHandler):
             self.schedule_update()
 
 
+class WorktreeChangeHandler(FileSystemEventHandler):
+    """Watch worktree directories for file changes and broadcast via SSE."""
+
+    def __init__(self, event_loop):
+        super().__init__()
+        self.event_loop = event_loop
+        self._debounce_task: asyncio.Task | None = None
+
+    def _schedule_broadcast(self):
+        async def _broadcast():
+            await asyncio.sleep(1)  # debounce 1s
+            try:
+                await event_broadcaster.broadcast("worktrees", {})
+            except Exception as e:
+                logger.warning("Failed to broadcast worktree change: %s", e)
+
+        def _run():
+            if self._debounce_task and not self._debounce_task.done():
+                self._debounce_task.cancel()
+            self._debounce_task = asyncio.ensure_future(_broadcast())
+
+        self.event_loop.call_soon_threadsafe(_run)
+
+    def on_created(self, event):
+        self._schedule_broadcast()
+
+    def on_deleted(self, event):
+        self._schedule_broadcast()
+
+    def on_modified(self, event):
+        self._schedule_broadcast()
+
+    def on_moved(self, event):
+        self._schedule_broadcast()
+
+
 async def _broadcast_automations_after_delay():
     """Debounced broadcast of automation state after Docker events settle."""
     await asyncio.sleep(0.5)
@@ -113,6 +149,7 @@ async def _docker_event_watcher():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     observer = None
+    worktree_observer = None
     watcher_task: asyncio.Task | None = None
 
     scheduler = AsyncIOScheduler(timezone="UTC")
@@ -146,6 +183,15 @@ async def lifespan(app: FastAPI):
             print(f"Started watching workspace directory: {workspace_dir}")
         else:
             print(f"Workspace directory does not exist: {workspace_dir}")
+
+        # Watch worktree directories for file changes → SSE push
+        worktrees_dir = os.path.join(workspace_dir, "worktrees")
+        if os.path.exists(worktrees_dir):
+            wt_handler = WorktreeChangeHandler(asyncio.get_event_loop())
+            worktree_observer = Observer()
+            worktree_observer.schedule(wt_handler, worktrees_dir, recursive=True)
+            worktree_observer.start()
+            print(f"Started watching worktrees directory: {worktrees_dir}")
 
         # Clean up completed/failed deploy tasks every 10 minutes
         scheduler.add_job(
@@ -203,3 +249,6 @@ async def lifespan(app: FastAPI):
             observer.stop()
             # Run blocking join in executor to avoid blocking event loop
             await asyncio.to_thread(observer.join)
+        if worktree_observer:
+            worktree_observer.stop()
+            await asyncio.to_thread(worktree_observer.join)
