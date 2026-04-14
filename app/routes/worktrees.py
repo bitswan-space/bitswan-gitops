@@ -317,19 +317,27 @@ async def list_worktrees():
         # Check if .requirements.json exists
         has_requirements = os.path.exists(os.path.join(wt_path, ".requirements.json"))
 
-        # Check sync status: is the worktree branch up-to-date with main?
+        # Check sync status: worktree is synced only when its branch tip
+        # matches main AND there are no uncommitted changes.
         synced = False
         if branch:
-            # Check if main's HEAD is an ancestor of the worktree branch
-            _, _, merge_base_rc = await call_git_command_with_output(
-                "git",
-                "merge-base",
-                "--is-ancestor",
-                "HEAD",
-                branch,
+            # Check main's HEAD is ancestor of worktree (worktree has main's changes)
+            _, _, main_in_wt_rc = await call_git_command_with_output(
+                "git", "merge-base", "--is-ancestor", "HEAD", branch,
                 cwd=workspace_dir,
             )
-            synced = merge_base_rc == 0
+            # Check worktree is ancestor of main (no commits ahead)
+            _, _, wt_in_main_rc = await call_git_command_with_output(
+                "git", "merge-base", "--is-ancestor", branch, "HEAD",
+                cwd=workspace_dir,
+            )
+            # Check for uncommitted changes in the worktree
+            diff_stdout, _, diff_rc = await call_git_command_with_output(
+                "git", "status", "--porcelain",
+                cwd=wt_path,
+            )
+            has_changes = bool(diff_stdout and diff_stdout.strip())
+            synced = main_in_wt_rc == 0 and wt_in_main_rc == 0 and not has_changes
 
         result.append(
             {
