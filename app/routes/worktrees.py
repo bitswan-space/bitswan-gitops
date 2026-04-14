@@ -323,17 +323,27 @@ async def list_worktrees():
         if branch:
             # Check main's HEAD is ancestor of worktree (worktree has main's changes)
             _, _, main_in_wt_rc = await call_git_command_with_output(
-                "git", "merge-base", "--is-ancestor", "HEAD", branch,
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                "HEAD",
+                branch,
                 cwd=workspace_dir,
             )
             # Check worktree is ancestor of main (no commits ahead)
             _, _, wt_in_main_rc = await call_git_command_with_output(
-                "git", "merge-base", "--is-ancestor", branch, "HEAD",
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                branch,
+                "HEAD",
                 cwd=workspace_dir,
             )
             # Check for uncommitted changes in the worktree
             diff_stdout, _, diff_rc = await call_git_command_with_output(
-                "git", "status", "--porcelain",
+                "git",
+                "status",
+                "--porcelain",
                 cwd=wt_path,
             )
             has_changes = bool(diff_stdout and diff_stdout.strip())
