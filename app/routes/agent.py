@@ -516,117 +516,81 @@ async def build_and_restart_deployment(
     automation_service: AutomationService = Depends(get_automation_service),
     _token=Depends(verify_agent_token),
 ):
+    """Build image and restart deployment. Streams progress as text/plain."""
     _validate_deployment_id(deployment_id)
 
-    # Trigger deploy which handles image build + restart
-    from app.deploy_manager import deploy_manager, DeployStatus
+    from app.deploy_manager import deploy_manager
 
-    # Guard: reject if already deploying
     if deploy_manager.is_deploying(deployment_id):
         raise HTTPException(
             status_code=409,
             detail=f"Deployment {deployment_id} is already in progress",
         )
 
-    task = await deploy_manager.create_task(deployment_id)
-    if task is None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Deployment {deployment_id} is already in progress",
-        )
+    async def _stream():
+        from app.services.automation_service import read_bitswan_yaml
 
-    # Spawn background deploy task
-    async def _run_build_and_restart():
-        try:
-            await deploy_manager.update_task(
-                task.task_id,
-                status=DeployStatus.IN_PROGRESS,
-                message="Looking up deployment...",
+        yield "Looking up deployment...\n"
+        bs_yaml = read_bitswan_yaml(automation_service.gitops_dir)
+        dep_conf = (bs_yaml or {}).get("deployments", {}).get(deployment_id, {})
+        relative_path = dep_conf.get("relative_path", "")
+
+        # Build image if image/ directory exists
+        if relative_path:
+            source_dir = os.path.join(
+                automation_service.workspace_repo_dir, relative_path
             )
+            image_dir = os.path.join(source_dir, "image")
+            if os.path.isdir(image_dir) and os.path.isfile(
+                os.path.join(image_dir, "Dockerfile")
+            ):
+                yield "Building image...\n"
+                from app.services.image_service import ImageService
 
-            # Look up deployment config to find source path
-            from app.services.automation_service import read_bitswan_yaml
-
-            bs_yaml = read_bitswan_yaml(automation_service.gitops_dir)
-            dep_conf = (bs_yaml or {}).get("deployments", {}).get(deployment_id, {})
-            relative_path = dep_conf.get("relative_path", "")
-
-            # Build image if image/ directory exists in the source
-            if relative_path:
-                source_dir = os.path.join(
-                    automation_service.workspace_repo_dir, relative_path
+                image_service = ImageService()
+                auto_name = os.path.basename(source_dir)
+                result = await image_service.create_image(
+                    image_tag=auto_name,
+                    build_context_path=image_dir,
                 )
-                image_dir = os.path.join(source_dir, "image")
-                if os.path.isdir(image_dir) and os.path.isfile(
-                    os.path.join(image_dir, "Dockerfile")
-                ):
-                    await deploy_manager.update_task(
-                        task.task_id, message="Building image..."
-                    )
-                    from app.services.image_service import ImageService
+                tag = result.get("tag", "")
+                checksum = tag.split(":sha", 1)[1] if ":sha" in tag else None
 
-                    image_service = ImageService()
-                    auto_name = os.path.basename(source_dir)
-                    result = await image_service.create_image(
-                        image_tag=auto_name,
-                        build_context_path=image_dir,
-                    )
-                    tag = result.get("tag", "")
-                    checksum = tag.split(":sha", 1)[1] if ":sha" in tag else None
+                if checksum:
+                    async for chunk in image_service.stream_build_logs(checksum):
+                        yield chunk
 
-                    # Wait for the build to finish, streaming log lines
-                    # as task messages
-                    if checksum:
-                        last_line = ""
-                        async for chunk in image_service.stream_build_logs(checksum):
-                            for line in chunk.splitlines():
-                                line = line.strip()
-                                if line and line != last_line:
-                                    last_line = line
-                                    await deploy_manager.update_task(
-                                        task.task_id,
-                                        message=f"Building: {line[:120]}",
-                                    )
+                    build_status = image_service._get_build_status(checksum)
+                    if build_status == "failed":
+                        yield "ERROR: Image build failed\n"
+                        return
 
-                        # Check if build succeeded
-                        build_status = image_service._get_build_status(checksum)
-                        if build_status == "failed":
-                            raise Exception(f"Image build failed for {auto_name}")
+                yield f"Image built: {tag}\n"
 
-                    await deploy_manager.update_task(
-                        task.task_id,
-                        message=f"Image built: {tag}",
-                    )
-
-            await deploy_manager.update_task(task.task_id, message="Deploying...")
+        yield "Deploying...\n"
+        try:
             await automation_service.deploy_automation(
                 deployment_id=deployment_id, stage="live-dev"
             )
-            await deploy_manager.update_task(
-                task.task_id,
-                status=DeployStatus.COMPLETED,
-                message="Build and restart completed",
-            )
+            yield "Deploy completed successfully\n"
         except Exception as exc:
-            logger.exception(
-                "Build and restart failed for %s (task %s)",
-                deployment_id,
-                task.task_id,
-            )
-            await deploy_manager.update_task(
-                task.task_id,
-                status=DeployStatus.FAILED,
-                error=str(exc),
-                message="Build and restart failed",
-            )
+            yield f"ERROR: {exc}\n"
 
-    asyncio.create_task(_run_build_and_restart())
+    return StreamingResponse(_stream(), media_type="text/plain")
 
-    return {
-        "task_id": task.task_id,
-        "deployment_id": deployment_id,
-        "status": "pending",
-    }
+
+@router.get("/images/builds/{checksum}/stream")
+async def stream_agent_build_logs(
+    checksum: str,
+    _token=Depends(verify_agent_token),
+):
+    """Stream image build logs (proxied from image service)."""
+    from app.services.image_service import ImageService
+
+    image_service = ImageService()
+    return StreamingResponse(
+        image_service.stream_build_logs(checksum), media_type="text/plain"
+    )
 
 
 @router.get("/deployments/{deployment_id}/deploy-status")
