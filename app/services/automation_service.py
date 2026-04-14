@@ -71,17 +71,6 @@ def make_hostname_label(
     return f"{ws}-{an}-{stage}" if stage else f"{ws}-{an}"
 
 
-def make_service_name(automation_name: str, context: str, stage: str) -> str:
-    """Build a Docker service name from structured components.
-
-    No string parsing — components are passed in directly.
-    """
-    an = automation_name[:MAX_NAME_LEN]
-    if context:
-        h = _short_hash(context)
-        return f"{an}-{h}-{stage}" if stage else f"{an}-{h}"
-    return f"{an}-{stage}" if stage else an
-
 
 class AutomationService:
     def __init__(self):
