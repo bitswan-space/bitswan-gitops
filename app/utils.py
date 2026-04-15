@@ -112,6 +112,9 @@ class AutomationConfig:
     allowed_domains: list[str] | None = None
     # Infrastructure service dependencies
     services: dict[str, ServiceDependency] | None = None
+    # When True, expose_to automations are also routed via the external
+    # (internet-facing) ingress, not just the VPN ingress.
+    expose_to_internet: bool = False
     # Use host network for external access (Selenium testing)
     external_testing_network: bool = False
 
@@ -193,6 +196,7 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
             ),
             allowed_domains=allowed_domains,
             services=services,
+            expose_to_internet=deployment.get("expose_to_internet", False),
             external_testing_network=deployment.get("external-testing-network", False),
         )
     except Exception:
@@ -382,7 +386,11 @@ def generate_workspace_url(
 
 
 def add_workspace_route_to_ingress(
-    automation_name: str, context: str, stage: str, port: str
+    automation_name: str,
+    context: str,
+    stage: str,
+    port: str,
+    ingress_target: str = "",
 ) -> bool:
     from app.services.automation_service import make_hostname_label
 
@@ -393,7 +401,7 @@ def add_workspace_route_to_ingress(
     )
     svc_name = make_hostname_label(workspace_name, automation_name, context, stage)
     upstream = f"{svc_name}:{port}"
-    return add_route_to_ingress(hostname, upstream, workspace_name)
+    return add_route_to_ingress(hostname, upstream, workspace_name, ingress_target)
 
 
 def _ingress_client_and_base() -> tuple:
@@ -418,13 +426,18 @@ def _ingress_client_and_base() -> tuple:
 
 
 def add_route_to_ingress(
-    hostname: str, upstream: str, workspace_name: str = ""
+    hostname: str,
+    upstream: str,
+    workspace_name: str = "",
+    ingress_target: str = "",
 ) -> bool:
     body = {
         "hostname": hostname,
         "upstream": upstream,
         "workspace_name": workspace_name,
     }
+    if ingress_target:
+        body["ingress_target"] = ingress_target
     try:
         client, base = _ingress_client_and_base()
         with client:
