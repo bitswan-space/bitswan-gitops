@@ -1228,15 +1228,23 @@ fi
         if deploy_stage == "":
             deploy_stage = "production"
 
-        if not deploy_services and deploy_stage != "live-dev":
+        if not deploy_services:
             # Read services from automation config on disk
-            source = (
-                deployment_conf.get("source")
-                or deployment_conf.get("checksum")
-                or deployment_id
-            )
-            source_dir = os.path.join(self.gitops_dir, source)
-            if os.path.exists(source_dir):
+            if deploy_stage == "live-dev":
+                # For live-dev, read from the workspace source directory
+                rel_path = deployment_conf.get("relative_path", "")
+                if rel_path:
+                    source_dir = os.path.join(self.workspace_repo_dir, rel_path)
+                else:
+                    source_dir = ""
+            else:
+                source = (
+                    deployment_conf.get("source")
+                    or deployment_conf.get("checksum")
+                    or deployment_id
+                )
+                source_dir = os.path.join(self.gitops_dir, source)
+            if source_dir and os.path.exists(source_dir):
                 auto_conf = read_automation_config(source_dir)
                 if auto_conf.services:
                     deploy_services = {
