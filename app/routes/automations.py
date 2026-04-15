@@ -201,21 +201,9 @@ async def deploy_automation(
     checksum: str | None = Form(None),
     stage: str | None = Form(None),
     relative_path: str | None = Form(None),
-    # Automation config values (sent by extension for live-dev)
-    image: str | None = Form(None),
-    expose: str | None = Form(None),  # "true" or "false" as string from form
-    port: str | None = Form(None),  # port as string from form
-    mount_path: str | None = Form(None),
-    secret_groups: str | None = Form(None),  # comma-separated list of secret groups
-    automation_id: str | None = Form(None),  # Unique automation ID for Keycloak
-    auth: str | None = Form(None),  # "true" or "false" - enable Keycloak auth
-    allowed_domains: str | None = Form(
-        None
-    ),  # comma-separated list of CORS allowed domains
-    expose_to: str | None = Form(None),  # JSON list: ["/Example Org/admin"]
     services: str | None = Form(None),  # JSON: {"kafka": {"enabled": true}, ...}
-    replicas: str | None = Form(None),  # replicas as string from form
-    deployed_by: str | None = Form(None),  # email of the user who triggered the deploy
+    replicas: str | None = Form(None),
+    deployed_by: str | None = Form(None),
     automation_name_field: str | None = Form(None, alias="automation_name"),
     context_field: str | None = Form(None, alias="context"),
     automation_service: AutomationService = Depends(get_automation_service),
@@ -228,33 +216,18 @@ async def deploy_automation(
         )
 
     # Validate stage if provided
-    if stage is not None and stage not in ["dev", "staging", "production", "live-dev"]:
+    if stage is not None and stage not in [
+        "dev",
+        "staging",
+        "production",
+        "live-dev",
+    ]:
         raise HTTPException(
             status_code=400,
             detail="Stage must be one of: dev, staging, production, live-dev",
         )
-    # Convert form values to proper types
-    expose_bool = expose.lower() == "true" if expose else None
-    port_int = int(port) if port else None
-    secret_groups_list = (
-        [g.strip() for g in secret_groups.split(",") if g.strip()]
-        if secret_groups
-        else None
-    )
-    auth_bool = auth.lower() == "true" if auth else None
-    allowed_domains_list = (
-        [d.strip() for d in allowed_domains.split(",") if d.strip()]
-        if allowed_domains
-        else None
-    )
-    replicas_int = int(replicas) if replicas else None
 
-    expose_to_list = None
-    if expose_to:
-        try:
-            expose_to_list = _json.loads(expose_to)
-        except _json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid expose_to JSON")
+    replicas_int = int(replicas) if replicas else None
 
     services_dict = None
     if services:
@@ -278,15 +251,6 @@ async def deploy_automation(
         relative_path=relative_path,
         automation_name=automation_name_field,
         context=context_field,
-        image=image,
-        expose=expose_bool,
-        expose_to=expose_to_list,
-        port=port_int,
-        mount_path=mount_path,
-        secret_groups=secret_groups_list,
-        automation_id=automation_id,
-        auth=auth_bool,
-        allowed_domains=allowed_domains_list,
         services=services_dict,
         replicas=replicas_int,
         deployed_by=deployed_by,
