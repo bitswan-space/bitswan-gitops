@@ -219,6 +219,21 @@ async def create_worktree(body: CreateWorktreeRequest):
         pass  # best-effort
 
     async with GitLockContext(timeout=15.0):
+        # Ensure there is at least one commit — git worktree requires it
+        _, _, rev_rc = await call_git_command_with_output(
+            "git", "rev-parse", "HEAD", cwd=workspace_dir
+        )
+        if rev_rc != 0:
+            # No commits yet — create an initial commit
+            await call_git_command(
+                "git",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial commit",
+                cwd=workspace_dir,
+            )
+
         # Create the branch from base
         success = await call_git_command(
             "git", "branch", body.branch_name, base_branch, cwd=workspace_dir
