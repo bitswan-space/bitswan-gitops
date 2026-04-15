@@ -41,6 +41,7 @@ async def get_automations(
 class StartLiveDevRequest(BaseModel):
     relative_path: str
     worktree: str | None = None
+    automation_toml: str | None = None
 
 
 @router.post("/start-live-dev")
@@ -83,6 +84,31 @@ async def start_live_dev(
         automation_name=source["automation_name"],
         context=source["context"],
     )
+
+    # Parse automation.toml sent by the editor and extract all config fields
+    if body.automation_toml:
+        from app.utils import parse_automation_toml, get_expose_to_for_stage
+
+        config = parse_automation_toml(body.automation_toml)
+        if config:
+            deploy_kwargs["image"] = config.image
+            deploy_kwargs["expose"] = config.expose
+            deploy_kwargs["port"] = config.port
+            deploy_kwargs["mount_path"] = config.mount_path
+            deploy_kwargs["automation_id"] = config.id
+            deploy_kwargs["auth"] = config.auth
+            deploy_kwargs["allowed_domains"] = config.allowed_domains
+            expose_to = get_expose_to_for_stage(config, "live-dev")
+            if expose_to:
+                deploy_kwargs["expose_to"] = expose_to
+            secret_groups = config.live_dev_groups or config.dev_groups
+            if secret_groups:
+                deploy_kwargs["secret_groups"] = secret_groups
+            if config.services:
+                deploy_kwargs["services"] = {
+                    name: {"enabled": dep.enabled}
+                    for name, dep in config.services.items()
+                }
 
     asyncio.create_task(
         _run_deploy_with_progress(
