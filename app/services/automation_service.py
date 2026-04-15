@@ -1069,6 +1069,29 @@ fi
         except DockerError:
             return None
 
+    def resolve_automation_config(self, deployment_conf: dict) -> "AutomationConfig":
+        """Resolve AutomationConfig for a deployment from the canonical source.
+
+        For live-dev: reads automation.toml from the workspace source directory.
+        For promoted stages: reads from the gitops checksum directory.
+        Single source of truth — used by both deploy_automation (service auto-enable)
+        and generate_docker_compose (container config).
+        """
+        stage = deployment_conf.get("stage", "production") or "production"
+        relative_path = deployment_conf.get("relative_path", "")
+
+        if stage == "live-dev" and relative_path:
+            source_dir = os.path.join(self.workspace_repo_dir, relative_path)
+        else:
+            source = (
+                deployment_conf.get("source") or deployment_conf.get("checksum") or ""
+            )
+            source_dir = os.path.join(self.gitops_dir, source) if source else ""
+
+        if source_dir and os.path.exists(source_dir):
+            return read_automation_config(source_dir)
+        return AutomationConfig()
+
     async def deploy_automation(
         self,
         deployment_id: str,
@@ -1078,16 +1101,6 @@ fi
         # Structured name components (for shortened hostnames/service names)
         automation_name: str | None = None,
         context: str | None = None,
-        # Automation config values (for live-dev, sent by extension)
-        image: str | None = None,
-        expose: bool | None = None,
-        expose_to: list[str] | None = None,
-        port: int | None = None,
-        mount_path: str | None = None,
-        secret_groups: list[str] | None = None,
-        automation_id: str | None = None,
-        auth: bool | None = None,
-        allowed_domains: list[str] | None = None,
         services: dict | None = None,
         replicas: int | None = None,
         deployed_by: str | None = None,
@@ -1123,15 +1136,6 @@ fi
                 checksum,
                 stage,
                 relative_path,
-                image,
-                expose,
-                expose_to,
-                port,
-                mount_path,
-                secret_groups,
-                automation_id,
-                auth,
-                allowed_domains,
                 services,
                 replicas,
             ]
@@ -1175,25 +1179,6 @@ fi
             if relative_path is not None:
                 deployment_config["relative_path"] = relative_path
 
-            # Store automation config values (for live-dev deployments)
-            if image is not None:
-                deployment_config["image"] = image
-            if expose is not None:
-                deployment_config["expose"] = expose
-            if expose_to is not None:
-                deployment_config["expose_to"] = expose_to
-            if port is not None:
-                deployment_config["port"] = port
-            if mount_path is not None:
-                deployment_config["mount_path"] = mount_path
-            if secret_groups is not None:
-                deployment_config["secret_groups"] = secret_groups
-            if automation_id is not None:
-                deployment_config["id"] = automation_id
-            if auth is not None:
-                deployment_config["auth"] = auth
-            if allowed_domains is not None:
-                deployment_config["allowed_domains"] = allowed_domains
             if services is not None:
                 deployment_config["services"] = services
             if replicas is not None:
@@ -1219,30 +1204,19 @@ fi
             bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         # Auto-enable declared services for this deployment.
-        # Check bitswan.yaml first, then fall back to automation config on disk
-        # so that promoted deployments (which don't have services in bitswan.yaml)
-        # still trigger service auto-enable.
         deployment_conf = bs_yaml.get("deployments", {}).get(deployment_id, {}) or {}
         deploy_services = services or deployment_conf.get("services")
         deploy_stage = stage or deployment_conf.get("stage") or "production"
         if deploy_stage == "":
             deploy_stage = "production"
 
-        if not deploy_services and deploy_stage != "live-dev":
-            # Read services from automation config on disk
-            source = (
-                deployment_conf.get("source")
-                or deployment_conf.get("checksum")
-                or deployment_id
-            )
-            source_dir = os.path.join(self.gitops_dir, source)
-            if os.path.exists(source_dir):
-                auto_conf = read_automation_config(source_dir)
-                if auto_conf.services:
-                    deploy_services = {
-                        svc_name: {"enabled": svc_dep.enabled}
-                        for svc_name, svc_dep in auto_conf.services.items()
-                    }
+        if not deploy_services:
+            auto_conf = self.resolve_automation_config(deployment_conf)
+            if auto_conf.services:
+                deploy_services = {
+                    svc_name: {"enabled": svc_dep.enabled}
+                    for svc_name, svc_dep in auto_conf.services.items()
+                }
 
         if deploy_services:
             await _report("enabling_services", "Enabling declared services...")
@@ -2136,30 +2110,22 @@ fi
                 stage = "production"
             relative_path = conf.get("relative_path")
 
-            if stage == "live-dev" and relative_path:
-                # For live-dev, read automation.toml directly from the workspace
-                live_dev_source_dir = os.path.join(
-                    self.workspace_repo_dir, relative_path
-                )
-                if not os.path.isdir(live_dev_source_dir):
-                    continue
-                automation_config = read_automation_config(live_dev_source_dir)
-                if not automation_config.image:
-                    continue
-                pipeline_conf = None
-            elif stage == "live-dev":
+            automation_config = self.resolve_automation_config(conf)
+            if stage == "live-dev" and not automation_config.image:
+                continue
+            elif stage == "live-dev" and not relative_path:
                 raise HTTPException(
                     status_code=500,
                     detail=f"Live-dev deployment {deployment_id} is missing relative_path",
                 )
-            elif not os.path.exists(source_dir):
+            elif stage != "live-dev" and not os.path.exists(source_dir):
                 raise HTTPException(
                     status_code=500,
                     detail=f"Deployment directory {source_dir} does not exist",
                 )
-            else:
+            pipeline_conf = None
+            if stage != "live-dev" and os.path.exists(source_dir):
                 pipeline_conf = read_pipeline_conf(source_dir)
-                automation_config = read_automation_config(source_dir)
 
             # Ensure services from automation config on disk are reflected in
             # the deployment conf so _merge_infra_services() can discover them.
