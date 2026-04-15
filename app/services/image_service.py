@@ -8,7 +8,7 @@ import zipfile
 import shutil
 from typing import Optional, AsyncGenerator, Dict
 
-from app.utils import calculate_git_tree_hash, save_image
+from app.utils import calculate_git_tree_hash, safe_zip_extractall, save_image
 from app.async_docker import get_async_docker_client, DockerError
 from app.event_broadcaster import event_broadcaster
 
@@ -400,7 +400,7 @@ class ImageService:
                             tar_ref.extractall(temp_dir_path, filter="data")
                     else:
                         with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
-                            zip_ref.extractall(temp_dir_path)
+                            safe_zip_extractall(zip_ref, temp_dir_path)
 
                     # Verify the checksum using git tree hash algorithm
                     calculated_hash = await calculate_git_tree_hash(temp_dir_path)

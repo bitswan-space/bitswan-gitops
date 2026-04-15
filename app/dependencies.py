@@ -1,3 +1,4 @@
+import hmac
 import os
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -8,7 +9,9 @@ from app.services.jupyter_service import JupyterService
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(HTTPBearer())):
     secret_token = os.environ.get("BITSWAN_GITOPS_SECRET")
-    if credentials.scheme != "Bearer" or credentials.credentials != secret_token:
+    if credentials.scheme != "Bearer" or not hmac.compare_digest(
+        credentials.credentials, secret_token or ""
+    ):
         raise HTTPException(
             status_code=401,
             detail="Unauthorized: Invalid or missing token",

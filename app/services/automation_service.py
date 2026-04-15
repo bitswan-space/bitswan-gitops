@@ -29,6 +29,7 @@ from app.utils import (
     call_git_command_with_output,
     copy_worktree,
     GitLockContext,
+    safe_zip_extractall,
 )
 from app.async_docker import get_async_docker_client, DockerError
 from app.services.image_service import ImageService
@@ -299,7 +300,7 @@ class AutomationService:
                         tar_ref.extractall(output_dir, filter="data")
                 else:
                     with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
-                        zip_ref.extractall(output_dir)
+                        safe_zip_extractall(zip_ref, output_dir)
 
                 # Verify the checksum using git tree hash algorithm
                 calculated_hash = await calculate_git_tree_hash(output_dir)

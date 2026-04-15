@@ -49,6 +49,14 @@ async def start_live_dev(
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     """Start a live-dev deployment. Server constructs the deployment ID."""
+    from app.utils import validate_relative_path
+
+    workspace_repo_dir = os.environ.get("BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo")
+    try:
+        validate_relative_path(workspace_repo_dir, body.relative_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     sources = _scan_automations(body.worktree)
     source = next(
         (s for s in sources if s["relative_path"] == body.relative_path), None
