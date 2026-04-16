@@ -57,7 +57,7 @@ class MinioService(InfraService):
             "command": "server /data --console-address :9001",
             "env_file": [self.secrets_file_path],
             "volumes": [f"{self.volume_name}-data:/data"],
-            "networks": ["bitswan_network"],
+            "networks": [self._get_stage_network()],
             "labels": {},
         }
 
@@ -73,7 +73,7 @@ class MinioService(InfraService):
             },
             "volumes": {f"{self.volume_name}-data": None},
             "networks": {
-                "bitswan_network": {"external": True},
+                self._get_stage_network(): {"external": True},
             },
         }
 

@@ -2329,6 +2329,15 @@ fi
                     networks_list = conf["networks"].copy()
                 elif "default-networks" in bs_yaml:
                     networks_list = bs_yaml["default-networks"].copy()
+                elif (
+                    os.environ.get("BITSWAN_STAGE_NETWORKS") == "true"
+                    and self.workspace_name
+                ):
+                    # Use per-stage network for isolation
+                    from app.services.infra_service import stage_for_deployment
+
+                    stage_net = f"{self.workspace_name}-{stage_for_deployment(stage)}"
+                    networks_list = [stage_net]
                 else:
                     networks_list = ["bitswan_network"]
 
