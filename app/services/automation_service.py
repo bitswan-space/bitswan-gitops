@@ -2397,6 +2397,22 @@ fi
             if expose_to_groups:
                 expose = True
 
+            # Determine ingress target for VPN routing
+            vpn_enabled = os.environ.get("BITSWAN_VPN_ENABLED", "") == "true"
+            if vpn_enabled:
+                if stage in ("live-dev", "dev"):
+                    ingress_target = "internal"
+                elif expose_to_groups and automation_config.expose_to_internet:
+                    ingress_target = "external"
+                elif expose_to_groups:
+                    ingress_target = "internal"
+                elif expose and stage in ("staging", "production"):
+                    ingress_target = "external"
+                else:
+                    ingress_target = "internal"
+            else:
+                ingress_target = ""
+
             if expose and port:
                 # Set URL env vars for exposed automations
                 # Shorten hostname if it would exceed DNS 63-char label limit
@@ -2457,6 +2473,7 @@ fi
                         dep_context,
                         dep_stage,
                         self.oauth2_proxy_port,
+                        ingress_target=ingress_target,
                     ):
                         logger.warning(
                             f"Failed to add ingress route for {deployment_id} (oauth2 proxy port)"
@@ -2465,7 +2482,11 @@ fi
                 else:
                     entry["labels"]["gitops.intended_exposed"] = "true"
                     if not add_workspace_route_to_ingress(
-                        dep_automation_name, dep_context, dep_stage, port
+                        dep_automation_name,
+                        dep_context,
+                        dep_stage,
+                        port,
+                        ingress_target=ingress_target,
                     ):
                         logger.warning(
                             f"Failed to add ingress route for {deployment_id} — "
