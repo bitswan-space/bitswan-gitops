@@ -192,14 +192,6 @@ async def create_worktree(body: CreateWorktreeRequest):
             detail=f"Worktree '{body.branch_name}' already exists",
         )
 
-    # Auto-detect base branch from current HEAD if not provided
-    base_branch = body.base_branch
-    if not base_branch:
-        stdout, _, rc = await call_git_command_with_output(
-            "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
-        )
-        base_branch = stdout.strip() if rc == 0 and stdout.strip() else "main"
-
     # Ensure worktrees directory exists
     os.makedirs(worktrees_base, exist_ok=True)
 
@@ -233,6 +225,16 @@ async def create_worktree(body: CreateWorktreeRequest):
                 "initial commit",
                 cwd=workspace_dir,
             )
+
+        # Auto-detect base branch AFTER ensuring there is at least one commit.
+        # Doing this before the initial commit would fail (no HEAD) and fall back
+        # to "main", while git may have created the first commit on "master".
+        base_branch = body.base_branch
+        if not base_branch:
+            stdout, _, rc = await call_git_command_with_output(
+                "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
+            )
+            base_branch = stdout.strip() if rc == 0 and stdout.strip() else "main"
 
         # Create the branch from base
         success = await call_git_command(
