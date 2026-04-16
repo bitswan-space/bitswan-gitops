@@ -2316,11 +2316,20 @@ fi
             if not network_mode:
                 network_mode = conf.get("network_mode")
 
-            # external-testing-network: isolated bridge with only outbound internet.
-            # No access to internal services — tests must use public URLs.
+            # Selenium / external-testing-network: when stage networks are
+            # enabled, testing containers go on the dev network so they can
+            # reach dev services directly while remaining isolated from
+            # staging/production. Without stage networks, falls back to a
+            # separate bridge with only outbound internet.
             if not network_mode and automation_config.external_testing_network:
-                networks_list = ["bitswan_external_testing"]
-                external_networks.add("bitswan_external_testing")
+                if (
+                    os.environ.get("BITSWAN_STAGE_NETWORKS") == "true"
+                    and self.workspace_name
+                ):
+                    networks_list = [f"{self.workspace_name}-dev"]
+                else:
+                    networks_list = ["bitswan_external_testing"]
+                    external_networks.add("bitswan_external_testing")
 
             if network_mode:
                 entry["network_mode"] = network_mode
@@ -2333,7 +2342,6 @@ fi
                     os.environ.get("BITSWAN_STAGE_NETWORKS") == "true"
                     and self.workspace_name
                 ):
-                    # Use per-stage network for isolation
                     from app.services.infra_service import stage_for_deployment
 
                     stage_net = f"{self.workspace_name}-{stage_for_deployment(stage)}"
