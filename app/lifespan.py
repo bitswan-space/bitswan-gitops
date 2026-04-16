@@ -229,10 +229,19 @@ async def lifespan(app: FastAPI):
         scheduler.start()
 
     # Warm the history cache in the background so first requests are fast
-    asyncio.create_task(get_automation_service().warm_history_cache())
+    _cache_task = asyncio.create_task(get_automation_service().warm_history_cache())
+    _cache_task.add_done_callback(
+        lambda t: (
+            logger.warning("warm_history_cache failed: %s", t.exception())
+            if not t.cancelled() and t.exception()
+            else None
+        )
+    )
 
     # Start Docker event watcher for SSE push updates
     watcher_task = asyncio.create_task(_docker_event_watcher())
+
+    docker_client = get_async_docker_client()
 
     try:
         yield
@@ -244,6 +253,10 @@ async def lifespan(app: FastAPI):
                 await watcher_task
             except asyncio.CancelledError:
                 pass
+
+        # Explicitly close the Docker client session so aiohttp doesn't report
+        # "Unclosed client session" warnings during interpreter shutdown
+        await docker_client.close()
 
         if observer:
             observer.stop()
