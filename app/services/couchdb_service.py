@@ -53,12 +53,12 @@ class CouchDBService(InfraService):
                     "restart": "unless-stopped",
                     "env_file": [self.secrets_file_path],
                     "volumes": [f"{self.volume_name}:/opt/couchdb/data"],
-                    "networks": ["bitswan_network"],
+                    "networks": [self._get_stage_network()],
                 },
             },
             "volumes": {self.volume_name: None},
             "networks": {
-                "bitswan_network": {"external": True},
+                self._get_stage_network(): {"external": True},
             },
         }
 

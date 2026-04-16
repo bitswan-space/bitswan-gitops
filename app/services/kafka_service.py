@@ -147,7 +147,7 @@ class KafkaService(InfraService):
                         "KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM": "PLAIN",
                     },
                     "env_file": [self.secrets_file_path],
-                    "networks": ["bitswan_network"],
+                    "networks": [self._get_stage_network()],
                 },
                 f"kafka{self.service_suffix}": {
                     "image": self.kafka_image,
@@ -176,12 +176,12 @@ class KafkaService(InfraService):
                     ],
                     "env_file": [self.secrets_file_path],
                     "restart": "unless-stopped",
-                    "networks": ["bitswan_network"],
+                    "networks": [self._get_stage_network()],
                 },
             },
             "volumes": {self.volume_name: None},
             "networks": {
-                "bitswan_network": {"external": True},
+                self._get_stage_network(): {"external": True},
             },
         }
 
