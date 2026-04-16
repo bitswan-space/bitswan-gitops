@@ -39,6 +39,7 @@ except ImportError:
 
 # ── Git tree-hash helpers (mirrors app/utils.py) ──────────────────────────────
 
+
 def _blob_hash(content: bytes) -> bytes:
     h = hashlib.sha1()
     h.update(f"blob {len(content)}\0".encode())
@@ -62,10 +63,7 @@ def compute_checksum(files: list[tuple[str, bytes]]) -> str:
     Compute the git tree hash for a flat list of (filename, content) pairs,
     matching the algorithm the server uses after extracting the archive.
     """
-    entries = [
-        (name, False, _blob_hash(content))
-        for name, content in files
-    ]
+    entries = [(name, False, _blob_hash(content)) for name, content in files]
     return _tree_hash_from_entries(entries).hex()
 
 
@@ -81,6 +79,7 @@ def build_tar_gz(files: list[tuple[str, bytes]]) -> bytes:
 
 
 # ── Automation templates ──────────────────────────────────────────────────────
+
 
 def _make_automation(template: str, pid: str) -> list[tuple[str, bytes]]:
     """Return a list of (filename, content) pairs for a named template."""
@@ -485,6 +484,7 @@ _AGG_SCHEMA = """\
 
 # ── Stats tracking ────────────────────────────────────────────────────────────
 
+
 @dataclass
 class Stats:
     label: str
@@ -506,16 +506,17 @@ class Stats:
         err_rate = 100 * len(self.errors) / (n + len(self.errors)) if self.errors else 0
         return (
             f"  {self.label}: n={n}  "
-            f"mean={statistics.mean(sorted_l)*1000:.0f}ms  "
-            f"p50={p(50)*1000:.0f}ms  "
-            f"p95={p(95)*1000:.0f}ms  "
-            f"p99={p(99)*1000:.0f}ms  "
-            f"max={max(sorted_l)*1000:.0f}ms  "
+            f"mean={statistics.mean(sorted_l) * 1000:.0f}ms  "
+            f"p50={p(50) * 1000:.0f}ms  "
+            f"p95={p(95) * 1000:.0f}ms  "
+            f"p99={p(99) * 1000:.0f}ms  "
+            f"max={max(sorted_l) * 1000:.0f}ms  "
             f"errors={len(self.errors)} ({err_rate:.1f}%)"
         )
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
+
 
 async def api_get(client: httpx.AsyncClient, path: str, stats: Stats, **kwargs):
     t0 = time.perf_counter()
@@ -558,9 +559,14 @@ async def api_delete(client: httpx.AsyncClient, path: str, stats: Stats):
 
 # ── Test phases ───────────────────────────────────────────────────────────────
 
-async def phase_rapid_list(client: httpx.AsyncClient, rounds: int, concurrency: int) -> Stats:
+
+async def phase_rapid_list(
+    client: httpx.AsyncClient, rounds: int, concurrency: int
+) -> Stats:
     """Fire GET /automations/ as fast as possible."""
-    print(f"\n[Phase 1] Rapid-fire GET /automations/ — {rounds} requests, concurrency {concurrency}")
+    print(
+        f"\n[Phase 1] Rapid-fire GET /automations/ — {rounds} requests, concurrency {concurrency}"
+    )
     stats = Stats("GET /automations/")
     sem = asyncio.Semaphore(concurrency)
 
@@ -581,7 +587,9 @@ async def phase_create(
     concurrency: int,
 ) -> tuple[Stats, dict[str, str]]:
     """Create automations concurrently; return stats and {deployment_id: checksum}."""
-    print(f"\n[Phase 2] Creating {len(deployment_ids)} automations, concurrency {concurrency}")
+    print(
+        f"\n[Phase 2] Creating {len(deployment_ids)} automations, concurrency {concurrency}"
+    )
     stats = Stats("POST /automations/{id} (create)")
     sem = asyncio.Semaphore(concurrency)
     checksums: dict[str, str] = {}
@@ -610,10 +618,9 @@ async def phase_create(
             print(f"  ✗ failed  {dep_id}")
 
     templates = [TEMPLATES[i % len(TEMPLATES)] for i in range(len(deployment_ids))]
-    await asyncio.gather(*[
-        create_one(dep_id, tmpl)
-        for dep_id, tmpl in zip(deployment_ids, templates)
-    ])
+    await asyncio.gather(
+        *[create_one(dep_id, tmpl) for dep_id, tmpl in zip(deployment_ids, templates)]
+    )
     print(f"  Created {len(checksums)}/{len(deployment_ids)}")
     return stats, checksums
 
@@ -624,7 +631,9 @@ async def phase_deploy(
     concurrency: int,
 ) -> tuple[Stats, dict[str, str]]:
     """Fire deploy for each created automation; return task_ids."""
-    print(f"\n[Phase 3] Deploying {len(checksums)} automations, concurrency {concurrency}")
+    print(
+        f"\n[Phase 3] Deploying {len(checksums)} automations, concurrency {concurrency}"
+    )
     stats = Stats("POST /automations/{id}/deploy")
     sem = asyncio.Semaphore(concurrency)
     task_ids: dict[str, str] = {}
@@ -652,10 +661,7 @@ async def phase_deploy(
         else:
             print(f"  ✗ failed   {dep_id}")
 
-    await asyncio.gather(*[
-        deploy_one(dep_id, cs)
-        for dep_id, cs in checksums.items()
-    ])
+    await asyncio.gather(*[deploy_one(dep_id, cs) for dep_id, cs in checksums.items()])
     return stats, task_ids
 
 
@@ -665,7 +671,9 @@ async def phase_poll_deploy_status(
     timeout: float = 60.0,
 ) -> Stats:
     """Poll deploy-status until all tasks complete or timeout."""
-    print(f"\n[Phase 4] Polling deploy-status for {len(task_ids)} tasks (timeout {timeout}s)")
+    print(
+        f"\n[Phase 4] Polling deploy-status for {len(task_ids)} tasks (timeout {timeout}s)"
+    )
     stats = Stats("GET /automations/deploy-status/{id}")
     pending = dict(task_ids)
     deadline = time.perf_counter() + timeout
@@ -696,12 +704,14 @@ async def phase_mixed_ops(
     concurrency: int,
 ) -> list[Stats]:
     """Mix of inspect, history, list, start, stop operations."""
-    print(f"\n[Phase 5] Mixed ops — {rounds} rounds against {len(deployment_ids)} automations")
+    print(
+        f"\n[Phase 5] Mixed ops — {rounds} rounds against {len(deployment_ids)} automations"
+    )
 
-    stat_list    = Stats("GET /automations/ (mixed)")
+    stat_list = Stats("GET /automations/ (mixed)")
     stat_inspect = Stats("GET /automations/{id}/inspect")
     stat_history = Stats("GET /automations/{id}/history")
-    stat_stop    = Stats("POST /automations/{id}/stop")
+    stat_stop = Stats("POST /automations/{id}/stop")
     stat_restart = Stats("POST /automations/{id}/restart")
 
     sem = asyncio.Semaphore(concurrency)
@@ -751,7 +761,9 @@ async def phase_cleanup(
     return stats
 
 
-async def phase_final_list(client: httpx.AsyncClient, rounds: int, concurrency: int) -> Stats:
+async def phase_final_list(
+    client: httpx.AsyncClient, rounds: int, concurrency: int
+) -> Stats:
     """Rapid-fire list after all the churning."""
     print(f"\n[Phase 7] Final rapid-fire GET /automations/ — {rounds} requests")
     stats = Stats("GET /automations/ (final)")
@@ -770,10 +782,11 @@ async def phase_final_list(client: httpx.AsyncClient, rounds: int, concurrency: 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
+
 async def run(args):
-    url   = args.url.rstrip("/")
+    url = args.url.rstrip("/")
     token = args.token
-    conc  = args.concurrency
+    conc = args.concurrency
 
     # Generate unique-per-run deployment IDs so parallel runs don't clash.
     run_id = uuid.uuid4().hex[:6]
@@ -813,7 +826,9 @@ async def run(args):
             # 4 — poll deploy status
             if task_ids:
                 all_stats.append(
-                    await phase_poll_deploy_status(client, task_ids, timeout=args.deploy_timeout)
+                    await phase_poll_deploy_status(
+                        client, task_ids, timeout=args.deploy_timeout
+                    )
                 )
 
             # 5 — mixed ops
@@ -841,14 +856,37 @@ async def run(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--url",   default=os.environ.get("BITSWAN_GITOPS_URL",    "http://localhost:8079"))
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--url", default=os.environ.get("BITSWAN_GITOPS_URL", "http://localhost:8079")
+    )
     p.add_argument("--token", default=os.environ.get("BITSWAN_GITOPS_SECRET", ""))
-    p.add_argument("--concurrency",    type=int, default=8,   help="max concurrent requests (default 8)")
-    p.add_argument("--automations",    type=int, default=12,  help="number of test automations to create (default 12)")
-    p.add_argument("--list-rounds",    type=int, default=60,  help="rapid-fire list rounds (default 60)")
-    p.add_argument("--mixed-rounds",   type=int, default=80,  help="mixed-ops rounds (default 80)")
-    p.add_argument("--deploy-timeout", type=float, default=45.0, help="seconds to wait for deploys (default 45)")
+    p.add_argument(
+        "--concurrency", type=int, default=8, help="max concurrent requests (default 8)"
+    )
+    p.add_argument(
+        "--automations",
+        type=int,
+        default=12,
+        help="number of test automations to create (default 12)",
+    )
+    p.add_argument(
+        "--list-rounds",
+        type=int,
+        default=60,
+        help="rapid-fire list rounds (default 60)",
+    )
+    p.add_argument(
+        "--mixed-rounds", type=int, default=80, help="mixed-ops rounds (default 80)"
+    )
+    p.add_argument(
+        "--deploy-timeout",
+        type=float,
+        default=45.0,
+        help="seconds to wait for deploys (default 45)",
+    )
     args = p.parse_args()
 
     if not args.token:
