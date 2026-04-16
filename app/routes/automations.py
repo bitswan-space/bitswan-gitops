@@ -29,6 +29,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/automations", tags=["automations"])
 
+# Strong references to background deploy tasks — prevents GC before completion
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_bg(coro) -> asyncio.Task:
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
+
 
 @router.get("/")
 async def get_automations(
@@ -84,7 +94,7 @@ async def start_live_dev(
         context=source["context"],
     )
 
-    asyncio.create_task(
+    _spawn_bg(
         _run_deploy_with_progress(
             task.task_id, deployment_id, automation_service, deploy_kwargs
         )
@@ -257,7 +267,7 @@ async def deploy_automation(
     )
 
     # Spawn background task — returns 202 immediately
-    asyncio.create_task(
+    _spawn_bg(
         _run_deploy_with_progress(
             task.task_id, deployment_id, automation_service, deploy_kwargs
         )

@@ -24,6 +24,17 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
+# Strong references to background deploy tasks — prevents GC before completion
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_bg(coro) -> asyncio.Task:
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
+
+
 security = HTTPBearer()
 
 # Pattern for valid worktree live-dev deployment IDs
@@ -322,7 +333,7 @@ async def start_agent_deployment(
                 task.task_id, error=str(exc), message="Deployment failed"
             )
 
-    asyncio.create_task(_run_deploy())
+    _spawn_bg(_run_deploy())
 
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "")
