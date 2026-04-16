@@ -156,9 +156,7 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
     # Parse allowed_domains as a list (for CORS in Keycloak client)
     allowed_domains = deployment.get("allowed_domains")
     if isinstance(allowed_domains, list):
-        allowed_domains = [
-            str(d).strip() for d in allowed_domains if str(d).strip()
-        ]
+        allowed_domains = [str(d).strip() for d in allowed_domains if str(d).strip()]
     else:
         allowed_domains = None
 
@@ -177,9 +175,7 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
     return AutomationConfig(
         id=deployment.get("id"),
         auth=deployment.get("auth", False),
-        image=deployment.get(
-            "image", "bitswan/pipeline-runtime-environment:latest"
-        ),
+        image=deployment.get("image", "bitswan/pipeline-runtime-environment:latest"),
         expose=deployment.get("expose", False),
         port=deployment.get("port", 8080),
         config_format="toml",
@@ -191,9 +187,7 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
         # Per-stage expose_to from [expose_to] section
         dev_expose_to=_parse_string_or_list(expose_to_section.get("dev")),
         staging_expose_to=_parse_string_or_list(expose_to_section.get("staging")),
-        production_expose_to=_parse_string_or_list(
-            expose_to_section.get("production")
-        ),
+        production_expose_to=_parse_string_or_list(expose_to_section.get("production")),
         allowed_domains=allowed_domains,
         services=services,
         external_testing_network=deployment.get("external-testing-network", False),
