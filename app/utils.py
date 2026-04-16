@@ -146,57 +146,58 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
         return None
     try:
         data = toml.loads(content)
-        deployment = data.get("deployment", {})
-        secrets = data.get("secrets", {})
-        expose_to_section = data.get("expose_to", {})
+    except toml.TomlDecodeError as e:
+        raise ValueError(f"Syntax error in automation.toml: {e}") from e
 
-        # Parse allowed_domains as a list (for CORS in Keycloak client)
-        allowed_domains = deployment.get("allowed_domains")
-        if isinstance(allowed_domains, list):
-            allowed_domains = [
-                str(d).strip() for d in allowed_domains if str(d).strip()
-            ]
-        else:
-            allowed_domains = None
+    deployment = data.get("deployment", {})
+    secrets = data.get("secrets", {})
+    expose_to_section = data.get("expose_to", {})
 
-        # Parse [services.*] sections
-        services_data = data.get("services", {})
-        services = None
-        if services_data and isinstance(services_data, dict):
-            services = {}
-            for svc_type, svc_conf in services_data.items():
-                if not isinstance(svc_conf, dict):
-                    continue
-                services[svc_type] = ServiceDependency(
-                    enabled=svc_conf.get("enabled", True),
-                )
+    # Parse allowed_domains as a list (for CORS in Keycloak client)
+    allowed_domains = deployment.get("allowed_domains")
+    if isinstance(allowed_domains, list):
+        allowed_domains = [
+            str(d).strip() for d in allowed_domains if str(d).strip()
+        ]
+    else:
+        allowed_domains = None
 
-        return AutomationConfig(
-            id=deployment.get("id"),
-            auth=deployment.get("auth", False),
-            image=deployment.get(
-                "image", "bitswan/pipeline-runtime-environment:latest"
-            ),
-            expose=deployment.get("expose", False),
-            port=deployment.get("port", 8080),
-            config_format="toml",
-            mount_path="/app/",
-            live_dev_groups=_parse_string_or_list(secrets.get("live-dev")),
-            dev_groups=_parse_string_or_list(secrets.get("dev")),
-            staging_groups=_parse_string_or_list(secrets.get("staging")),
-            production_groups=_parse_string_or_list(secrets.get("production")),
-            # Per-stage expose_to from [expose_to] section
-            dev_expose_to=_parse_string_or_list(expose_to_section.get("dev")),
-            staging_expose_to=_parse_string_or_list(expose_to_section.get("staging")),
-            production_expose_to=_parse_string_or_list(
-                expose_to_section.get("production")
-            ),
-            allowed_domains=allowed_domains,
-            services=services,
-            external_testing_network=deployment.get("external-testing-network", False),
-        )
-    except Exception:
-        return None
+    # Parse [services.*] sections
+    services_data = data.get("services", {})
+    services = None
+    if services_data and isinstance(services_data, dict):
+        services = {}
+        for svc_type, svc_conf in services_data.items():
+            if not isinstance(svc_conf, dict):
+                continue
+            services[svc_type] = ServiceDependency(
+                enabled=svc_conf.get("enabled", True),
+            )
+
+    return AutomationConfig(
+        id=deployment.get("id"),
+        auth=deployment.get("auth", False),
+        image=deployment.get(
+            "image", "bitswan/pipeline-runtime-environment:latest"
+        ),
+        expose=deployment.get("expose", False),
+        port=deployment.get("port", 8080),
+        config_format="toml",
+        mount_path="/app/",
+        live_dev_groups=_parse_string_or_list(secrets.get("live-dev")),
+        dev_groups=_parse_string_or_list(secrets.get("dev")),
+        staging_groups=_parse_string_or_list(secrets.get("staging")),
+        production_groups=_parse_string_or_list(secrets.get("production")),
+        # Per-stage expose_to from [expose_to] section
+        dev_expose_to=_parse_string_or_list(expose_to_section.get("dev")),
+        staging_expose_to=_parse_string_or_list(expose_to_section.get("staging")),
+        production_expose_to=_parse_string_or_list(
+            expose_to_section.get("production")
+        ),
+        allowed_domains=allowed_domains,
+        services=services,
+        external_testing_network=deployment.get("external-testing-network", False),
+    )
 
 
 def read_automation_toml(source_dir: str) -> AutomationConfig | None:
