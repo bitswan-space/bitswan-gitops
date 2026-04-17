@@ -669,12 +669,15 @@ async def docker_compose_up(
     extra_services: list[str] | None = None,
 ) -> None:
     async def setup_asyncio_process(cmd: list[Any]) -> dict[str, Any]:
+        # Pass DOCKER_HOST so docker compose uses the container-manager proxy
+        env = os.environ.copy()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=bitswan_dir,
+            env=env,
         )
 
         stdout, stderr = await proc.communicate(input=docker_compose.encode())
