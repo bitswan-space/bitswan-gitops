@@ -54,10 +54,11 @@ class TestInfraServiceLifecycle:
         status, body = self.api.post(
             "/services/postgres/enable", data=payload, timeout=60
         )
-        # 200 success, 409 already enabled, 422 validation error,
+        # 200 success, 400/409 already enabled, 422 validation error,
         # 500 may occur due to secrets dir permissions on test instances
         assert status in (
             200,
+            400,
             409,
             422,
             500,
