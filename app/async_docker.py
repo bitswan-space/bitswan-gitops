@@ -390,7 +390,7 @@ def get_async_docker_client() -> AsyncDockerClient:
 
         docker_host = os.environ.get("DOCKER_HOST", "")
         if docker_host.startswith("unix://"):
-            socket_path = docker_host[len("unix://"):]
+            socket_path = docker_host[len("unix://") :]
         else:
             socket_path = "/var/run/docker.sock"
         _client = AsyncDockerClient(socket_path=socket_path)
