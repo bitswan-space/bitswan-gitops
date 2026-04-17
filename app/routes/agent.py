@@ -565,6 +565,15 @@ async def build_and_restart_deployment(
 
         # Build image if image/ directory exists
         if relative_path:
+            from app.utils import validate_relative_path
+
+            try:
+                validate_relative_path(
+                    automation_service.workspace_repo_dir, relative_path
+                )
+            except ValueError:
+                yield _ndjson(error=f"Invalid relative_path: {relative_path}")
+                return
             source_dir = os.path.join(
                 automation_service.workspace_repo_dir, relative_path
             )

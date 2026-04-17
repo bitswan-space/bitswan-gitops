@@ -86,6 +86,39 @@ KNOWN_STAGES = {"live-dev", "dev", "staging", "production"}
 SERVICE_REALMS = {"dev", "staging", "production"}
 
 
+def safe_zip_extractall(zip_ref, target_dir: str) -> None:
+    """Extract a zip file safely, preventing zip slip (path traversal).
+
+    Validates that every extracted file resolves within the target directory.
+    """
+    target_resolved = os.path.realpath(target_dir)
+    for member in zip_ref.namelist():
+        member_path = os.path.realpath(os.path.join(target_dir, member))
+        if (
+            not member_path.startswith(target_resolved + os.sep)
+            and member_path != target_resolved
+        ):
+            raise ValueError(
+                f"Zip slip detected: '{member}' would extract outside '{target_dir}'"
+            )
+    zip_ref.extractall(target_dir)
+
+
+def validate_relative_path(base_dir: str, relative_path: str) -> str:
+    """Validate that a relative path resolves within the base directory.
+
+    Returns the resolved absolute path. Raises ValueError if the path
+    would escape the base directory (e.g., via ../ sequences).
+    """
+    resolved = os.path.realpath(os.path.join(base_dir, relative_path))
+    base_resolved = os.path.realpath(base_dir)
+    if not resolved.startswith(base_resolved + os.sep) and resolved != base_resolved:
+        raise ValueError(
+            f"Path traversal denied: '{relative_path}' resolves outside '{base_dir}'"
+        )
+    return resolved
+
+
 @dataclass
 class AutomationConfig:
     """Unified automation configuration from either automation.toml or pipelines.conf."""
