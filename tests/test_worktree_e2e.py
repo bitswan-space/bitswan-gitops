@@ -5,11 +5,10 @@ Tests the full worktree lifecycle: create → deploy → commit → merge.
 """
 
 import json
-import time
 
 import pytest
 
-from e2e_helpers import ssh_run, gitops_exec, WORKSPACE
+from e2e_helpers import gitops_exec
 
 pytestmark = pytest.mark.e2e
 
@@ -61,8 +60,10 @@ class TestWorktreeLifecycle:
 
     def test_worktree_directory_exists(self):
         """The worktree directory is created on disk."""
-        result = gitops_exec(f"test -d /workspace-repo/worktrees/{self.WORKTREE_NAME} && echo yes || echo no")
-        assert "yes" in result.stdout, f"Worktree directory not created"
+        result = gitops_exec(
+            f"test -d /workspace-repo/worktrees/{self.WORKTREE_NAME} && echo yes || echo no"
+        )
+        assert "yes" in result.stdout, "Worktree directory not created"
 
     def test_worktree_diff(self):
         """GET /worktrees/{name}/diff returns diff output."""
@@ -120,10 +121,16 @@ class TestWorktreeDeployment:
         if not toml_path:
             pytest.skip("No automations in worktree")
 
-        rel_path = toml_path.replace("/workspace-repo/", "").replace("/automation.toml", "")
+        rel_path = toml_path.replace("/workspace-repo/", "").replace(
+            "/automation.toml", ""
+        )
         payload = json.dumps({"relative_path": rel_path})
-        status, body = self.api.post("/automations/start-live-dev", data=payload, timeout=60)
-        assert status in (200, 202, 409), f"Deploy from worktree failed ({status}): {body}"
+        status, body = self.api.post(
+            "/automations/start-live-dev", data=payload, timeout=60
+        )
+        assert status in (200, 202, 409), (
+            f"Deploy from worktree failed ({status}): {body}"
+        )
 
     def teardown_method(self, method):
         """Clean up worktree."""
@@ -154,15 +161,17 @@ class TestMergeFlow:
 
         # 2. Make a change in the worktree
         gitops_exec(
-            f"bash -c 'echo \"# E2E test\" >> "
+            f'bash -c \'echo "# E2E test" >> '
             f"/workspace-repo/worktrees/{self.WORKTREE_NAME}/README.md'"
         )
 
         # 3. Commit via agent API
-        commit_payload = json.dumps({
-            "message": "E2E test: verify merge flow",
-            "paths": ["."],
-        })
+        commit_payload = json.dumps(
+            {
+                "message": "E2E test: verify merge flow",
+                "paths": ["."],
+            }
+        )
         result = gitops_exec(
             f"curl -s -w '\\n%{{http_code}}' "
             f"-H 'Authorization: Bearer {self.api.secret}' "
@@ -177,7 +186,9 @@ class TestMergeFlow:
             if code == "401":
                 pytest.skip("Agent secret not available (no coding-agent container)")
             # 200 success, 400 nothing to commit, 404 no worktree
-            assert code in ("200", "400", "404", "422"), f"Commit failed ({code}): {body}"
+            assert code in ("200", "400", "404", "422"), (
+                f"Commit failed ({code}): {body}"
+            )
 
         # 4. Attempt rebase-and-merge via the worktrees API (not agent)
         result = gitops_exec(
@@ -191,8 +202,9 @@ class TestMergeFlow:
         if len(lines) == 2:
             body, code = lines
             # 200 success, 409 conflict, 400 nothing to merge
-            assert code in ("200", "400", "404", "409", "422"), \
+            assert code in ("200", "400", "404", "409", "422"), (
                 f"Merge failed ({code}): {body}"
+            )
 
     def teardown_method(self, method):
         if hasattr(self, "api"):

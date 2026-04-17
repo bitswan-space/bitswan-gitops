@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from e2e_helpers import ssh_run, gitops_exec, WORKSPACE
+from e2e_helpers import ssh_run, WORKSPACE
 
 pytestmark = pytest.mark.e2e
 
@@ -43,16 +43,19 @@ class TestInfraServiceLifecycle:
     def test_enable_postgres(self):
         """POST /services/postgres/enable starts postgres."""
         payload = json.dumps({"stage": "dev"})
-        status, body = self.api.post("/services/postgres/enable", data=payload, timeout=60)
+        status, body = self.api.post(
+            "/services/postgres/enable", data=payload, timeout=60
+        )
         # 200 success, 409 already enabled, 422 validation error,
         # 500 may occur due to secrets dir permissions on test instances
-        assert status in (200, 409, 422, 500), f"Enable postgres failed ({status}): {body}"
+        assert status in (200, 409, 422, 500), (
+            f"Enable postgres failed ({status}): {body}"
+        )
 
     def test_postgres_on_dev_network(self):
         """Postgres dev container is on the dev network."""
         result = ssh_run(
-            "docker ps --filter name=postgres --filter name=dev "
-            "--format '{{.Names}}'"
+            "docker ps --filter name=postgres --filter name=dev --format '{{.Names}}'"
         )
         containers = [c.strip() for c in result.stdout.strip().split("\n") if c.strip()]
         if not containers:
@@ -65,8 +68,9 @@ class TestInfraServiceLifecycle:
             )
             if result.stdout.strip():
                 networks = json.loads(result.stdout.strip())
-                assert any(f"{WORKSPACE}-dev" in n for n in networks), \
+                assert any(f"{WORKSPACE}-dev" in n for n in networks), (
                     f"Postgres not on dev network: {list(networks.keys())}"
+                )
 
 
 class TestServiceIsolation:
@@ -78,18 +82,14 @@ class TestServiceIsolation:
 
     def test_dev_app_can_reach_dev_postgres(self):
         """Dev automation can resolve dev postgres via DNS."""
-        result = ssh_run(
-            "docker ps --filter name=live-dev --format '{{.Names}}'"
-        )
+        result = ssh_run("docker ps --filter name=live-dev --format '{{.Names}}'")
         containers = [c.strip() for c in result.stdout.strip().split("\n") if c.strip()]
         if not containers:
             pytest.skip("No dev containers running")
 
         container = containers[0]
         # Try DNS resolution of postgres on the dev network
-        result = ssh_run(
-            f"docker exec {container} nslookup postgres 2>&1 || true"
-        )
+        result = ssh_run(f"docker exec {container} nslookup postgres 2>&1 || true")
         # This will succeed if postgres is on the same network, fail otherwise
         # We don't assert success here since postgres may not be running
         # Just verify the DNS query doesn't crash

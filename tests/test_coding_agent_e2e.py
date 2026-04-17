@@ -8,12 +8,11 @@ worktree sync, and agent session management.
 from __future__ import annotations
 
 import json
-import time
 from typing import Optional
 
 import pytest
 
-from e2e_helpers import ssh_run, gitops_exec, WORKSPACE, GITOPS_CONTAINER
+from e2e_helpers import ssh_run, gitops_exec, WORKSPACE
 
 pytestmark = pytest.mark.e2e
 
@@ -39,8 +38,9 @@ class TestAgentDeployments:
         self._agent_secret = self.api.secret
         # Check if there's a coding agent container with its own secret
         result = ssh_run(
-            'docker inspect %s-coding-agent --format '
-            '"{{range .Config.Env}}{{println .}}{{end}}" 2>/dev/null || true' % WORKSPACE
+            "docker inspect %s-coding-agent --format "
+            '"{{range .Config.Env}}{{println .}}{{end}}" 2>/dev/null || true'
+            % WORKSPACE
         )
         for line in result.stdout.splitlines():
             if line.startswith("BITSWAN_GITOPS_AGENT_SECRET="):
@@ -149,8 +149,9 @@ class TestAgentDeployments:
         )
         output = result.stdout
         # Should get SSE events or at least metadata
-        assert "event:" in output or "data:" in output or len(output) == 0, \
+        assert "event:" in output or "data:" in output or len(output) == 0, (
             f"Unexpected log format: {output[:200]}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +225,9 @@ class TestCodingAgentSession:
         if len(lines) == 2:
             body, code = lines
             # 200 success, 404 not configured, 500 no coding agent image
-            assert code in ("200", "404", "500", "422"), \
+            assert code in ("200", "404", "500", "422"), (
                 f"Ensure coding agent failed ({code}): {body}"
+            )
 
 
 # ---------------------------------------------------------------------------

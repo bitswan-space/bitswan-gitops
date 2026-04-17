@@ -65,18 +65,21 @@ class TestPromotionFlow:
         automation_name = rel_path.split("/")[-1]
 
         # The dev deployment ID format: {automation_name}-{bp}-dev
-        payload = json.dumps({
-            "relative_path": rel_path,
-            "stage": "dev",
-        })
+        payload = json.dumps(
+            {
+                "relative_path": rel_path,
+                "stage": "dev",
+            }
+        )
         status, body = self.api.post(
             f"/automations/{automation_name}-dev/deploy",
             data=payload,
             timeout=60,
         )
         # Various success/already-deployed codes
-        assert status in (200, 201, 202, 409, 422), \
+        assert status in (200, 201, 202, 409, 422), (
             f"Deploy to dev failed ({status}): {body}"
+        )
 
     def test_promote_to_staging(self):
         """Promote from dev to staging."""
@@ -91,24 +94,25 @@ class TestPromotionFlow:
         checksum = dep.get("version_hash") or dep.get("checksum", "")
 
         staging_id = f"{automation_name}-staging"
-        payload = json.dumps({
-            "relative_path": dep.get("relative_path", ""),
-            "stage": "staging",
-            "checksum": checksum,
-        })
+        payload = json.dumps(
+            {
+                "relative_path": dep.get("relative_path", ""),
+                "stage": "staging",
+                "checksum": checksum,
+            }
+        )
         status, body = self.api.post(
             f"/automations/{staging_id}/deploy",
             data=payload,
             timeout=60,
         )
-        assert status in (200, 201, 202, 409, 422), \
+        assert status in (200, 201, 202, 409, 422), (
             f"Promote to staging failed ({status}): {body}"
+        )
 
     def test_staging_on_staging_network(self):
         """Staging containers are on the staging network."""
-        result = ssh_run(
-            "docker ps --filter name=staging --format '{{.Names}}'"
-        )
+        result = ssh_run("docker ps --filter name=staging --format '{{.Names}}'")
         containers = [c.strip() for c in result.stdout.strip().split("\n") if c.strip()]
         if not containers:
             pytest.skip("No staging containers running")
@@ -119,21 +123,27 @@ class TestPromotionFlow:
                 % container
             )
             networks = json.loads(result.stdout.strip())
-            assert any(f"{WORKSPACE}-staging" in n for n in networks), \
+            assert any(f"{WORKSPACE}-staging" in n for n in networks), (
                 f"Staging container {container} not on staging network: {list(networks.keys())}"
+            )
 
     def test_dev_cannot_reach_staging(self):
         """Dev containers cannot communicate with staging containers."""
-        dev_result = ssh_run(
-            "docker ps --filter name=dev --format '{{.Names}}'"
-        )
-        dev_containers = [c.strip() for c in dev_result.stdout.strip().split("\n")
-                         if c.strip() and "live-dev" in c]
+        dev_result = ssh_run("docker ps --filter name=dev --format '{{.Names}}'")
+        dev_containers = [
+            c.strip()
+            for c in dev_result.stdout.strip().split("\n")
+            if c.strip() and "live-dev" in c
+        ]
 
         staging_result = ssh_run(
             r"docker ps --filter name=staging --format '{{.Names}}\t{{.ID}}'"
         )
-        staging_lines = [l.strip() for l in staging_result.stdout.strip().split("\n") if l.strip()]
+        staging_lines = [
+            line.strip()
+            for line in staging_result.stdout.strip().split("\n")
+            if line.strip()
+        ]
 
         if not dev_containers or not staging_lines:
             pytest.skip("Need both dev and staging containers")
@@ -154,10 +164,12 @@ class TestPromotionFlow:
             f"docker exec {dev_container} timeout 3 wget -q -O /dev/null http://{staging_ip}:80 2>&1 || true"
         )
         # Connection should fail (timeout, refused, or no route)
-        assert result.returncode != 0 or "timed out" in result.stdout.lower() or \
-            "connection refused" in result.stdout.lower() or \
-            "no route" in result.stdout.lower(), \
-            f"Dev container could reach staging: {result.stdout}"
+        assert (
+            result.returncode != 0
+            or "timed out" in result.stdout.lower()
+            or "connection refused" in result.stdout.lower()
+            or "no route" in result.stdout.lower()
+        ), f"Dev container could reach staging: {result.stdout}"
 
 
 # ---------------------------------------------------------------------------

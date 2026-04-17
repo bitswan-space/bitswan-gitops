@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
 from typing import Optional, Tuple
 
-import httpx
 import pytest
 
 
@@ -44,7 +42,15 @@ GITOPS_CONTAINER = os.environ.get(
 def ssh_run(cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a command on the test host via SSH."""
     result = subprocess.run(
-        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", f"ConnectTimeout={timeout}", TEST_HOST, cmd],
+        [
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            f"ConnectTimeout={timeout}",
+            TEST_HOST,
+            cmd,
+        ],
         capture_output=True,
         text=True,
         timeout=timeout + 10,
@@ -52,7 +58,9 @@ def ssh_run(cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
     return result
 
 
-def docker_exec(container: str, cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
+def docker_exec(
+    container: str, cmd: str, timeout: int = 30
+) -> subprocess.CompletedProcess:
     """Run a command inside a Docker container on the test host."""
     return ssh_run(f"docker exec {container} {cmd}", timeout=timeout)
 
@@ -75,15 +83,27 @@ class GitOpsAPI:
         self.secret = secret
         self.container = container
 
-    def _curl(self, method: str, path: str, data: Optional[str] = None,
-              timeout: int = 30, raw: bool = False) -> Tuple[int, str]:
+    def _curl(
+        self,
+        method: str,
+        path: str,
+        data: Optional[str] = None,
+        timeout: int = 30,
+        raw: bool = False,
+    ) -> Tuple[int, str]:
         """Execute a curl request inside the gitops container."""
         url = f"{self.base_url}{path}"
         cmd_parts = [
-            "curl", "-s", "-w", "'\\n%{http_code}'",
-            "-X", method,
-            "-H", f"'Authorization: Bearer {self.secret}'",
-            "-H", "'Content-Type: application/json'",
+            "curl",
+            "-s",
+            "-w",
+            "'\\n%{http_code}'",
+            "-X",
+            method,
+            "-H",
+            f"'Authorization: Bearer {self.secret}'",
+            "-H",
+            "'Content-Type: application/json'",
         ]
         if data:
             cmd_parts.extend(["-d", f"'{data}'"])
@@ -104,7 +124,9 @@ class GitOpsAPI:
     def get(self, path: str, timeout: int = 30) -> Tuple[int, str]:
         return self._curl("GET", path, timeout=timeout)
 
-    def post(self, path: str, data: Optional[str] = None, timeout: int = 30) -> Tuple[int, str]:
+    def post(
+        self, path: str, data: Optional[str] = None, timeout: int = 30
+    ) -> Tuple[int, str]:
         return self._curl("POST", path, data=data, timeout=timeout)
 
     def delete(self, path: str, timeout: int = 30) -> Tuple[int, str]:
@@ -138,6 +160,8 @@ def check_server_accessible():
 @pytest.fixture(scope="session")
 def check_gitops_running(check_server_accessible):
     """Verify gitops container is running."""
-    result = ssh_run(f"docker inspect {GITOPS_CONTAINER} --format '{{{{.State.Running}}}}'")
+    result = ssh_run(
+        f"docker inspect {GITOPS_CONTAINER} --format '{{{{.State.Running}}}}'"
+    )
     if "true" not in result.stdout:
         pytest.skip(f"Gitops container {GITOPS_CONTAINER} not running")
