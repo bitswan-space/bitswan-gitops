@@ -2406,21 +2406,19 @@ fi
             if expose_to_groups:
                 expose = True
 
-            # Determine ingress target for VPN routing
-            vpn_enabled = os.environ.get("BITSWAN_VPN_ENABLED", "") == "true"
-            if vpn_enabled:
-                if stage in ("live-dev", "dev"):
-                    ingress_target = "internal"
-                elif expose_to_groups and automation_config.expose_to_internet:
-                    ingress_target = "external"
-                elif expose_to_groups:
-                    ingress_target = "internal"
-                elif expose and stage in ("staging", "production"):
-                    ingress_target = "external"
-                else:
-                    ingress_target = "internal"
+            # Determine ingress target for VPN routing.
+            # Default to VPN-aware routing (secure default). The daemon will
+            # fall back to external-only if VPN is not actually enabled.
+            if stage in ("live-dev", "dev"):
+                ingress_target = "internal"
+            elif expose_to_groups and automation_config.expose_to_internet:
+                ingress_target = "external"
+            elif expose_to_groups:
+                ingress_target = "internal"
+            elif expose and stage in ("staging", "production"):
+                ingress_target = "external"
             else:
-                ingress_target = ""
+                ingress_target = "internal"
 
             if expose and port:
                 # Set URL env vars for exposed automations
