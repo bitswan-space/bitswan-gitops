@@ -77,9 +77,13 @@ class TestPromotionFlow:
             timeout=60,
         )
         # Various success/already-deployed codes
-        assert status in (200, 201, 202, 409, 422), (
-            f"Deploy to dev failed ({status}): {body}"
-        )
+        assert status in (
+            200,
+            201,
+            202,
+            409,
+            422,
+        ), f"Deploy to dev failed ({status}): {body}"
 
     def test_promote_to_staging(self):
         """Promote from dev to staging."""
@@ -106,9 +110,13 @@ class TestPromotionFlow:
             data=payload,
             timeout=60,
         )
-        assert status in (200, 201, 202, 409, 422), (
-            f"Promote to staging failed ({status}): {body}"
-        )
+        assert status in (
+            200,
+            201,
+            202,
+            409,
+            422,
+        ), f"Promote to staging failed ({status}): {body}"
 
     def test_staging_on_staging_network(self):
         """Staging containers are on the staging network."""
@@ -123,9 +131,9 @@ class TestPromotionFlow:
                 % container
             )
             networks = json.loads(result.stdout.strip())
-            assert any(f"{WORKSPACE}-staging" in n for n in networks), (
-                f"Staging container {container} not on staging network: {list(networks.keys())}"
-            )
+            assert any(
+                f"{WORKSPACE}-staging" in n for n in networks
+            ), f"Staging container {container} not on staging network: {list(networks.keys())}"
 
     def test_dev_cannot_reach_staging(self):
         """Dev containers cannot communicate with staging containers."""

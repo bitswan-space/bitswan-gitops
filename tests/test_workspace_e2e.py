@@ -40,9 +40,9 @@ class TestWorkspaceState:
         required_fields = {"deployment_id", "stage", "active", "automation_name"}
         for item in data:
             missing = required_fields - set(item.keys())
-            assert not missing, (
-                f"Missing fields {missing} in {item.get('deployment_id', '?')}"
-            )
+            assert (
+                not missing
+            ), f"Missing fields {missing} in {item.get('deployment_id', '?')}"
 
     def test_unauthenticated_request_rejected(self, check_gitops_running):
         """Requests without a valid token get 401 or 403."""
@@ -171,9 +171,9 @@ class TestLogStreaming:
         # Empty output means the container may not be running yet
         if not output:
             pytest.skip("No log output (container may still be starting)")
-        assert "event:" in output or "data:" in output, (
-            f"Expected SSE format, got: {output[:500]}"
-        )
+        assert (
+            "event:" in output or "data:" in output
+        ), f"Expected SSE format, got: {output[:500]}"
 
     def test_log_stream_has_metadata_event(self):
         """Log stream starts with a metadata event."""
@@ -194,9 +194,9 @@ class TestLogStreaming:
         if not output:
             pytest.skip("No log output (container may still be starting)")
         # metadata or error events are both valid SSE responses
-        assert "event: metadata" in output or "event: error" in output, (
-            f"Missing metadata/error event in: {output[:500]}"
-        )
+        assert (
+            "event: metadata" in output or "event: error" in output
+        ), f"Missing metadata/error event in: {output[:500]}"
 
     def test_log_stream_distinguishes_stderr(self):
         """Log events include stream field (stdout/stderr)."""
@@ -217,12 +217,13 @@ class TestLogStreaming:
         for line in result.stdout.split("\n"):
             if line.startswith("data: ") and '"line"' in line:
                 event_data = json.loads(line[6:])
-                assert "stream" in event_data, (
-                    f"Missing 'stream' field in log event: {line}"
-                )
-                assert event_data["stream"] in ("stdout", "stderr"), (
-                    f"Invalid stream value: {event_data['stream']}"
-                )
+                assert (
+                    "stream" in event_data
+                ), f"Missing 'stream' field in log event: {line}"
+                assert event_data["stream"] in (
+                    "stdout",
+                    "stderr",
+                ), f"Invalid stream value: {event_data['stream']}"
                 break  # One check is sufficient
 
 
@@ -305,9 +306,9 @@ class TestNetworkIsolation:
             assert output, f"Empty inspect output for {container}"
             networks = json.loads(output)
             network_names = list(networks.keys())
-            assert any(f"{WORKSPACE}-dev" in n for n in network_names), (
-                f"Container {container} not on dev network. Networks: {network_names}"
-            )
+            assert any(
+                f"{WORKSPACE}-dev" in n for n in network_names
+            ), f"Container {container} not on dev network. Networks: {network_names}"
 
     def test_cross_stage_isolation(self):
         """Dev containers cannot resolve staging/production services."""

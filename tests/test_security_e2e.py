@@ -70,25 +70,37 @@ class TestPathTraversal:
         payload = json.dumps({"relative_path": "../../../etc/passwd"})
         status, body = self.api.post("/automations/start-live-dev", data=payload)
         # Should be 400/403/404, NOT 200. 429 means rate-limited (not a traversal success).
-        assert status in (400, 403, 404, 422, 429), (
-            f"Path traversal not blocked ({status}): {body}"
-        )
+        assert status in (
+            400,
+            403,
+            404,
+            422,
+            429,
+        ), f"Path traversal not blocked ({status}): {body}"
         assert status != 200, f"Path traversal returned 200: {body}"
 
     def test_deployment_id_traversal_blocked(self):
         """Path traversal in deployment_id URL is blocked."""
         status, body = self.api.get("/automations/../../../etc/passwd/inspect")
-        assert status in (400, 403, 404, 422, 429), (
-            f"Deployment ID traversal not blocked ({status}): {body}"
-        )
+        assert status in (
+            400,
+            403,
+            404,
+            422,
+            429,
+        ), f"Deployment ID traversal not blocked ({status}): {body}"
 
     def test_worktree_name_traversal_blocked(self):
         """Path traversal in worktree name is blocked."""
         payload = json.dumps({"branch_name": "../../etc"})
         status, body = self.api.post("/worktrees/create", data=payload)
-        assert status in (400, 403, 404, 422, 429), (
-            f"Worktree traversal not blocked ({status}): {body}"
-        )
+        assert status in (
+            400,
+            403,
+            404,
+            422,
+            429,
+        ), f"Worktree traversal not blocked ({status}): {body}"
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +128,9 @@ class TestContainerSecurity:
         result = ssh_run(
             f"docker exec {container} ls /var/run/docker.sock 2>&1 || true"
         )
-        assert "No such file" in result.stdout or result.returncode != 0, (
-            "Docker socket accessible in automation container!"
-        )
+        assert (
+            "No such file" in result.stdout or result.returncode != 0
+        ), "Docker socket accessible in automation container!"
 
     def test_no_host_mount(self):
         """Automation containers don't mount host filesystem."""
@@ -154,17 +166,17 @@ class TestContainerSecurity:
     def test_gitops_no_docker_socket(self):
         """Gitops container does NOT have real Docker socket."""
         result = gitops_exec("ls /var/run/docker.sock 2>&1 || true")
-        assert "No such file" in result.stdout or result.returncode != 0, (
-            "Real Docker socket accessible in gitops container!"
-        )
+        assert (
+            "No such file" in result.stdout or result.returncode != 0
+        ), "Real Docker socket accessible in gitops container!"
 
     def test_gitops_uses_proxy_socket(self):
         """Gitops container uses the container-manager proxy socket."""
         result = gitops_exec("sh -c 'echo $DOCKER_HOST'")
         docker_host = result.stdout.strip()
-        assert "container-manager" in docker_host or "bitswan" in docker_host, (
-            f"Gitops not using proxy socket: DOCKER_HOST={docker_host}"
-        )
+        assert (
+            "container-manager" in docker_host or "bitswan" in docker_host
+        ), f"Gitops not using proxy socket: DOCKER_HOST={docker_host}"
 
     def test_metadata_service_blocked(self):
         """Cloud metadata service (169.254.169.254) is not reachable from dev containers."""
@@ -179,9 +191,9 @@ class TestContainerSecurity:
         # If blocked by iptables, wget hangs and timeout kills it (exit 143)
         # or wget gets connection refused (exit 4)
         # Empty output with exit 0 from the outer ssh means the || true ate the error
-        assert "EXIT:0" not in output or output == "", (
-            f"Metadata service reachable from dev container: {output}"
-        )
+        assert (
+            "EXIT:0" not in output or output == ""
+        ), f"Metadata service reachable from dev container: {output}"
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +231,10 @@ class TestRateLimiting:
                 break
 
         # Should eventually get 429 (Too Many Requests)
-        assert last_code in ("429", "401"), (
-            f"Unexpected response after rate limit: {last_code}"
-        )
+        assert last_code in (
+            "429",
+            "401",
+        ), f"Unexpected response after rate limit: {last_code}"
 
         # Restart gitops to clear the rate limit state for other tests
         ssh_run(f"docker restart {GITOPS_CONTAINER}", timeout=30)

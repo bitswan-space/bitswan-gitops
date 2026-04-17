@@ -48,9 +48,12 @@ class TestInfraServiceLifecycle:
         )
         # 200 success, 409 already enabled, 422 validation error,
         # 500 may occur due to secrets dir permissions on test instances
-        assert status in (200, 409, 422, 500), (
-            f"Enable postgres failed ({status}): {body}"
-        )
+        assert status in (
+            200,
+            409,
+            422,
+            500,
+        ), f"Enable postgres failed ({status}): {body}"
 
     def test_postgres_on_dev_network(self):
         """Postgres dev container is on the dev network."""
@@ -68,9 +71,9 @@ class TestInfraServiceLifecycle:
             )
             if result.stdout.strip():
                 networks = json.loads(result.stdout.strip())
-                assert any(f"{WORKSPACE}-dev" in n for n in networks), (
-                    f"Postgres not on dev network: {list(networks.keys())}"
-                )
+                assert any(
+                    f"{WORKSPACE}-dev" in n for n in networks
+                ), f"Postgres not on dev network: {list(networks.keys())}"
 
 
 class TestServiceIsolation:

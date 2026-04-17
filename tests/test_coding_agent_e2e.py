@@ -149,9 +149,9 @@ class TestAgentDeployments:
         )
         output = result.stdout
         # Should get SSE events or at least metadata
-        assert "event:" in output or "data:" in output or len(output) == 0, (
-            f"Unexpected log format: {output[:200]}"
-        )
+        assert (
+            "event:" in output or "data:" in output or len(output) == 0
+        ), f"Unexpected log format: {output[:200]}"
 
 
 # ---------------------------------------------------------------------------
@@ -225,9 +225,12 @@ class TestCodingAgentSession:
         if len(lines) == 2:
             body, code = lines
             # 200 success, 404 not configured, 500 no coding agent image
-            assert code in ("200", "404", "500", "422"), (
-                f"Ensure coding agent failed ({code}): {body}"
-            )
+            assert code in (
+                "200",
+                "404",
+                "500",
+                "422",
+            ), f"Ensure coding agent failed ({code}): {body}"
 
 
 # ---------------------------------------------------------------------------
