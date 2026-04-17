@@ -22,5 +22,5 @@ jobs:
         ruff check app
         ruff format --check
 
-    - name: Run tests
-      run: pytest tests -v
+    - name: Run tests (excluding E2E)
+      run: pytest tests -v -m "not e2e"

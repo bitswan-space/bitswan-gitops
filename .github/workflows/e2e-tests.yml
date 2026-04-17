@@ -1,0 +1,65 @@
+name: E2E Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_host:
+        description: "SSH host (user@ip)"
+        required: true
+        default: "root@88.99.15.208"
+      workspace_name:
+        description: "BitSwan workspace name"
+        required: true
+        default: "editor-network-test"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install dependencies
+      run: pip install pytest httpx
+
+    - name: Configure SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.E2E_SSH_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H $(echo "${{ inputs.test_host }}" | cut -d@ -f2) >> ~/.ssh/known_hosts 2>/dev/null
+
+    - name: Discover gitops config
+      id: config
+      run: |
+        HOST="${{ inputs.test_host }}"
+        WS="${{ inputs.workspace_name }}"
+        CONTAINER=$(ssh -o StrictHostKeyChecking=no $HOST \
+          "docker ps --filter name=${WS}-site-bitswan-gitops --format '{{.Names}}'" | head -1)
+        SECRET=$(ssh $HOST \
+          "docker inspect $CONTAINER --format '{{range .Config.Env}}{{println .}}{{end}}'" \
+          | grep BITSWAN_GITOPS_SECRET | cut -d= -f2)
+        echo "container=$CONTAINER" >> $GITHUB_OUTPUT
+        echo "secret=$SECRET" >> $GITHUB_OUTPUT
+
+    - name: Run E2E tests
+      env:
+        BITSWAN_TEST_HOST: ${{ inputs.test_host }}
+        BITSWAN_TEST_WORKSPACE: ${{ inputs.workspace_name }}
+        BITSWAN_TEST_CONTAINER: ${{ steps.config.outputs.container }}
+        BITSWAN_TEST_SECRET: ${{ steps.config.outputs.secret }}
+      run: |
+        pytest tests -v -m e2e --tb=short --junitxml=e2e-results.xml
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-test-results
+        path: e2e-results.xml
