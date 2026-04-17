@@ -11,11 +11,15 @@ on:
         description: "BitSwan workspace name"
         required: true
         default: "editor-network-test"
+      setup:
+        description: "Run setup_test_env.sh first (provisions infrastructure)"
+        type: boolean
+        default: false
 
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
     - uses: actions/checkout@v4
@@ -35,13 +39,23 @@ jobs:
         chmod 600 ~/.ssh/id_rsa
         ssh-keyscan -H $(echo "${{ inputs.test_host }}" | cut -d@ -f2) >> ~/.ssh/known_hosts 2>/dev/null
 
+    - name: Provision test infrastructure
+      if: ${{ inputs.setup }}
+      run: |
+        bash tests/setup_test_env.sh "${{ inputs.test_host }}" "${{ inputs.workspace_name }}"
+
     - name: Discover gitops config
       id: config
       run: |
         HOST="${{ inputs.test_host }}"
         WS="${{ inputs.workspace_name }}"
+        # Find gitops container (name format varies by compose project)
         CONTAINER=$(ssh -o StrictHostKeyChecking=no $HOST \
-          "docker ps --filter name=${WS}-site-bitswan-gitops --format '{{.Names}}'" | head -1)
+          "docker ps --filter name=gitops --format '{{.Names}}'" | grep "$WS" | head -1)
+        if [ -z "$CONTAINER" ]; then
+          CONTAINER=$(ssh $HOST "docker ps --filter name=gitops --format '{{.Names}}'" | head -1)
+        fi
+        echo "Gitops container: $CONTAINER"
         SECRET=$(ssh $HOST \
           "docker inspect $CONTAINER --format '{{range .Config.Env}}{{println .}}{{end}}'" \
           | grep BITSWAN_GITOPS_SECRET | cut -d= -f2)
