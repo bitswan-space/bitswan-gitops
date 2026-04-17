@@ -3,7 +3,7 @@ import logging
 import os
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Security
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -96,9 +96,20 @@ def _resolve_agent_secret() -> str:
 
 def verify_agent_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
+    request: Request = None,
 ):
+    import hmac
+    from app.dependencies import _check_rate_limit, _auth_failures
+    import time
+
+    client_ip = request.client.host if request and request.client else "unknown"
+    _check_rate_limit(client_ip)
+
     agent_secret = _resolve_agent_secret()
-    if not agent_secret or credentials.credentials != agent_secret:
+    if not agent_secret or not hmac.compare_digest(
+        credentials.credentials, agent_secret
+    ):
+        _auth_failures[client_ip].append(time.time())
         raise HTTPException(status_code=401, detail="Invalid agent token")
 
 
