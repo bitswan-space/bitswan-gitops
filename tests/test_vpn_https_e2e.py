@@ -155,8 +155,33 @@ class TestVPNHTTPSRouting:
             pytest.skip("No live-dev route found in VPN Traefik")
 
         code = _vpn_curl(self.vpn_ip, hostname, "/")
-        # 200 or 502 (automation may not be reachable from VPN Traefik's network)
-        assert code in ("200", "502"), f"Automation HTTPS unexpected: {code}"
+        assert (
+            code == "200"
+        ), f"Automation HTTPS failed ({code}) — may need workspace sub-Traefik for two-tier routing"
+
+    def test_two_tier_routing_via_sub_traefik(self):
+        """VPN routes for dev containers go through workspace sub-Traefik."""
+        # Check that a workspace sub-Traefik exists
+        result = ssh_run("docker ps --filter name=__traefik --format '{{.Names}}'")
+        containers = [c.strip() for c in result.stdout.strip().split("\n") if c.strip()]
+        if not containers:
+            pytest.skip("No workspace sub-Traefik running")
+
+        # Check the VPN Traefik routes point to the sub-Traefik, not directly to containers
+        result = ssh_run(
+            'curl -s "http://%s:8080/api/http/services" 2>/dev/null '
+            "| python3 -c 'import json,sys; "
+            '[print(s["name"], s.get("loadBalancer",{}).get("servers",[])) '
+            'for s in json.load(sys.stdin) if "live-dev" in s.get("name","")]'
+            "'" % self.vpn_ip
+        )
+        if not result.stdout.strip():
+            pytest.skip("No live-dev services in VPN Traefik")
+
+        # The upstream should point to __traefik, not directly to the container
+        assert (
+            "__traefik" in result.stdout
+        ), f"VPN routes not using two-tier routing: {result.stdout.strip()}"
 
     def test_vpn_traefik_has_websecure(self):
         """VPN Traefik has websecure entrypoint configured."""
