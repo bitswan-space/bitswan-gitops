@@ -2160,6 +2160,16 @@ fi
                 entry["container_name"] = f"{service_name}"
             entry["restart"] = "always"
             entry["ulimits"] = {"nofile": {"soft": 65536, "hard": 65536}}
+            # Default resource limits to prevent fork bombs, OOM, and CPU exhaustion.
+            entry["deploy"] = {
+                "resources": {
+                    "limits": {
+                        "memory": "2G",
+                        "cpus": "2.0",
+                        "pids": 512,
+                    }
+                }
+            }
             entry["labels"] = {
                 "gitops.deployment_id": deployment_id,
                 "gitops.workspace": self.workspace_name,
