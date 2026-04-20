@@ -417,8 +417,30 @@ class AutomationService:
         checksum: Pre-calculated git tree hash that will be verified.
         """
         output_dir = os.path.join(self.gitops_dir, checksum)
-        # Clean any stale files from a previous extraction attempt
         if os.path.exists(output_dir):
+            # If the tree is already in git, the asset was extracted and committed
+            # on a previous request — treat re-upload as a no-op. The automation
+            # container may have written build artifacts (dist/, node_modules/)
+            # into output_dir as root, which would make rmtree fail, but we don't
+            # need to clean: the asset is already stored.
+            # Use "HEAD:<path>" rather than bare "<checksum>" because our
+            # checksum is a normalized tree hash (all files forced to 100644),
+            # which differs from git's actual tree SHA when any file is +x
+            # (e.g. entrypoint.sh → 100755). The path-in-HEAD check is
+            # mode-agnostic.
+            _, _, rc = await call_git_command_with_output(
+                "git", "cat-file", "-e", f"HEAD:{checksum}", cwd=self.gitops_dir
+            )
+            if rc == 0:
+                logger.info(
+                    "Asset %s already committed; skipping re-extraction", checksum
+                )
+                return {
+                    "message": "Asset already uploaded",
+                    "output_directory": output_dir,
+                    "checksum": checksum,
+                }
+            # Stale files from a failed previous extraction — clean them.
             shutil.rmtree(output_dir)
         os.makedirs(output_dir)
 
