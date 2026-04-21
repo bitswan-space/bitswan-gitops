@@ -926,8 +926,10 @@ async def rebase_and_merge(
             )
         default_branch = stdout.strip()
 
-        # Stash workspace changes
-        stash_created = await _stash_workspace(workspace_dir)
+        # Stash workspace changes so ff-only merge can proceed on a clean index.
+        # The stash is left intentionally — main branch dirt (live-dev deploy
+        # artifacts) doesn't need restoring and popping it risks conflicts.
+        await _stash_workspace(workspace_dir)
 
         # Start rebase
         stdout, stderr, rc = await call_git_command_with_output(
@@ -942,14 +944,10 @@ async def rebase_and_merge(
             conflicted_files = [f for f in conflict_stdout.strip().splitlines() if f]
 
             if not conflicted_files:
-                # Not a conflict — abort the rebase and restore stash
+                # Not a conflict — abort the rebase
                 await call_git_command_with_output(
                     "git", "rebase", "--abort", cwd=worktree_path
                 )
-                if stash_created:
-                    await call_git_command_with_output(
-                        "git", "stash", "pop", cwd=workspace_dir
-                    )
                 rebase_output = f"{stdout.strip()}\n{stderr.strip()}".strip()
                 raise HTTPException(
                     status_code=500,
@@ -962,7 +960,6 @@ async def rebase_and_merge(
                 "conflicted_files": conflicted_files,
                 "rebase_output": f"{stdout.strip()}\n{stderr.strip()}".strip(),
                 "default_branch": default_branch,
-                "stash_created": stash_created,
             }
 
         # No conflicts — complete the merge (stash left intentionally)
