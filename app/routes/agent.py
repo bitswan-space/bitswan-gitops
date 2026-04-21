@@ -824,10 +824,39 @@ async def _stash_workspace(workspace_dir: str) -> bool:
     return count_after > count_before
 
 
+async def _clean_workspace_conflicts(workspace_dir: str):
+    """Clean up any leftover unmerged/conflict state in the workspace directory.
+
+    This handles the case where a previous stash pop or merge left unmerged
+    files. Without cleanup, every subsequent merge attempt fails permanently
+    with 'Merging is not possible because you have unmerged files'.
+    """
+    stdout, _, _ = await call_git_command_with_output(
+        "git", "diff", "--name-only", "--diff-filter=U", cwd=workspace_dir
+    )
+    unmerged = [f for f in stdout.strip().splitlines() if f]
+    if not unmerged:
+        return
+
+    logger.warning(
+        "Workspace has %d unmerged files from previous operation, "
+        "resolving by resetting to HEAD: %s",
+        len(unmerged),
+        unmerged,
+    )
+    # Reset the index and working tree to HEAD, clearing the merge state
+    await call_git_command_with_output(
+        "git", "reset", "--hard", "HEAD", cwd=workspace_dir
+    )
+
+
 async def _complete_merge(
     workspace_dir: str, worktree_path: str, stash_created: bool
 ) -> dict:
     """After a successful rebase, fast-forward the default branch and pop stash."""
+    # Clean up any leftover conflict state from a previous failed operation
+    await _clean_workspace_conflicts(workspace_dir)
+
     # Get default branch
     stdout, stderr, rc = await call_git_command_with_output(
         "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
@@ -866,6 +895,9 @@ async def _complete_merge(
         if pop_rc != 0:
             stash_conflict = True
             stash_message = pop_stderr.strip()
+            # If stash pop conflicts, clean up immediately so we don't leave
+            # the workspace in a broken state for the next operation
+            await _clean_workspace_conflicts(workspace_dir)
 
     return {
         "status": "success",
@@ -893,6 +925,11 @@ async def rebase_and_merge(
         )
 
     async with GitLockContext(timeout=30.0):
+        # Clean up any leftover conflict state from a previous failed operation.
+        # Without this, a single stash-pop conflict permanently breaks all
+        # subsequent merge attempts.
+        await _clean_workspace_conflicts(workspace_dir)
+
         # Detect default branch
         stdout, stderr, rc = await call_git_command_with_output(
             "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
@@ -1167,16 +1204,25 @@ async def rebase_abort(
         )
 
     async with GitLockContext(timeout=15.0):
+        # Abort the worktree rebase (if one is in progress)
         await call_git_command_with_output(
             "git", "rebase", "--abort", cwd=worktree_path
         )
+
+        # Clean up any leftover conflict state in the workspace dir
+        await _clean_workspace_conflicts(workspace_dir)
 
         # Pop stash if we created one
         stash_list, _, _ = await call_git_command_with_output(
             "git", "stash", "list", cwd=workspace_dir
         )
         if "rebase-merge-stash" in stash_list:
-            await call_git_command_with_output("git", "stash", "pop", cwd=workspace_dir)
+            _, pop_stderr, pop_rc = await call_git_command_with_output(
+                "git", "stash", "pop", cwd=workspace_dir
+            )
+            if pop_rc != 0:
+                # Stash pop conflicted — clean up to avoid leaving broken state
+                await _clean_workspace_conflicts(workspace_dir)
 
     return {"status": "aborted", "message": "Rebase aborted and stash restored."}
 
