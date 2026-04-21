@@ -850,10 +850,13 @@ async def _clean_workspace_conflicts(workspace_dir: str):
     )
 
 
-async def _complete_merge(
-    workspace_dir: str, worktree_path: str, stash_created: bool
-) -> dict:
-    """After a successful rebase, fast-forward the default branch and pop stash."""
+async def _complete_merge(workspace_dir: str, worktree_path: str, **_kwargs) -> dict:
+    """After a successful rebase, fast-forward the default branch.
+
+    Any stashed workspace changes are left stashed — the "dirt" in main
+    (e.g. live-dev config changes written by deploys) doesn't need to be
+    restored and popping it is what caused the permanent-stuck-conflict bug.
+    """
     # Clean up any leftover conflict state from a previous failed operation
     await _clean_workspace_conflicts(workspace_dir)
 
@@ -881,30 +884,12 @@ async def _complete_merge(
         "git", "merge", "--ff-only", tip_sha, cwd=workspace_dir
     )
     if rc != 0:
-        if stash_created:
-            await call_git_command_with_output("git", "stash", "pop", cwd=workspace_dir)
         return {"status": "error", "detail": f"Fast-forward failed: {stderr.strip()}"}
-
-    # Pop stash
-    stash_conflict = False
-    stash_message = ""
-    if stash_created:
-        _, pop_stderr, pop_rc = await call_git_command_with_output(
-            "git", "stash", "pop", cwd=workspace_dir
-        )
-        if pop_rc != 0:
-            stash_conflict = True
-            stash_message = pop_stderr.strip()
-            # If stash pop conflicts, clean up immediately so we don't leave
-            # the workspace in a broken state for the next operation
-            await _clean_workspace_conflicts(workspace_dir)
 
     return {
         "status": "success",
         "merged_into": default_branch,
         "tip": tip_sha[:12],
-        "stash_conflict": stash_conflict,
-        "stash_message": stash_message,
     }
 
 
@@ -980,8 +965,8 @@ async def rebase_and_merge(
                 "stash_created": stash_created,
             }
 
-        # No conflicts — complete the merge
-        result = await _complete_merge(workspace_dir, worktree_path, stash_created)
+        # No conflicts — complete the merge (stash left intentionally)
+        result = await _complete_merge(workspace_dir, worktree_path)
         if result["status"] == "error":
             raise HTTPException(status_code=500, detail=result["detail"])
         return result
@@ -1040,13 +1025,8 @@ async def rebase_continue(
                 detail=f"Rebase continue failed: {stderr.strip()}\n{stdout.strip()}",
             )
 
-        # Rebase complete — check if there was a stash
-        stash_list, _, _ = await call_git_command_with_output(
-            "git", "stash", "list", cwd=workspace_dir
-        )
-        stash_created = "rebase-merge-stash" in stash_list
-
-        result = await _complete_merge(workspace_dir, worktree_path, stash_created)
+        # Rebase complete — stash (if any) is left stashed intentionally
+        result = await _complete_merge(workspace_dir, worktree_path)
         if result["status"] == "error":
             raise HTTPException(status_code=500, detail=result["detail"])
         return result
@@ -1212,19 +1192,9 @@ async def rebase_abort(
         # Clean up any leftover conflict state in the workspace dir
         await _clean_workspace_conflicts(workspace_dir)
 
-        # Pop stash if we created one
-        stash_list, _, _ = await call_git_command_with_output(
-            "git", "stash", "list", cwd=workspace_dir
-        )
-        if "rebase-merge-stash" in stash_list:
-            _, pop_stderr, pop_rc = await call_git_command_with_output(
-                "git", "stash", "pop", cwd=workspace_dir
-            )
-            if pop_rc != 0:
-                # Stash pop conflicted — clean up to avoid leaving broken state
-                await _clean_workspace_conflicts(workspace_dir)
+        # Stash is left intentionally — the "dirt" in main doesn't need restoring
 
-    return {"status": "aborted", "message": "Rebase aborted and stash restored."}
+    return {"status": "aborted", "message": "Rebase aborted."}
 
 
 # --- Docker exec endpoint ---
