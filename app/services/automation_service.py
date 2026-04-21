@@ -1275,6 +1275,41 @@ fi
             dep_conf.get("stage", "production") or "production",
         )
 
+        # Pre-flight: check whether a container with this name already exists.
+        # Two scenarios:
+        #   A) It's ours (correct gitops.deployment_id label) → remove it so
+        #      compose can recreate it cleanly (redeployment / update).
+        #   B) It's foreign (no matching label) → reject with a clear 409 so
+        #      the user knows to clean it up manually instead of seeing a
+        #      cryptic "Error deploying services".
+        docker_client = get_async_docker_client()
+        try:
+            existing = await docker_client.get_container(compose_service_name)
+            existing_labels = existing.get("Config", {}).get("Labels", {})
+            existing_dep_id = existing_labels.get("gitops.deployment_id", "")
+            if existing_dep_id == deployment_id:
+                # Scenario A: our container — remove so compose recreates it.
+                logger.info(
+                    "Removing existing container '%s' for redeployment of '%s'",
+                    compose_service_name,
+                    deployment_id,
+                )
+                await docker_client.remove_container(compose_service_name, force=True)
+            else:
+                # Scenario B: foreign container occupying our name.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"A container named '{compose_service_name}' already exists "
+                        f"but is not managed by this GitOps instance "
+                        f"(deployment_id '{existing_dep_id or 'none'}'). "
+                        f"Remove it manually and retry."
+                    ),
+                )
+        except DockerError as e:
+            if e.status_code != 404:
+                raise  # unexpected Docker API error — propagate
+
         # deploy the automation and its infra services
         await _report("docker_compose_up", "Starting containers...")
         deployment_result = await docker_compose_up(
@@ -1294,9 +1329,24 @@ fi
 
         for result in deployment_result.values():
             if result["return_code"] != 0:
+                stderr = result.get("stderr", "")
+                # Surface Docker name-conflict errors as a 409 rather than a
+                # generic 500 — this handles races where the pre-flight check
+                # passed but a container appeared between check and compose up.
+                if "already in use by container" in stderr or (
+                    "Conflict" in stderr and "container name" in stderr.lower()
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Deployment failed: a container named "
+                            f"'{compose_service_name}' already exists. "
+                            f"Docker error: {stderr.strip()}"
+                        ),
+                    )
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Error deploying services: \ndocker-compose:\n {dc_yaml}\n\nstdout:\n {result['stdout']}\nstderr:\n{result['stderr']}\n",
+                    detail=f"Error deploying services:\nstdout:\n{result['stdout']}\nstderr:\n{stderr}\n",
                 )
 
         await _report("installing_certs", "Installing certificates...")
