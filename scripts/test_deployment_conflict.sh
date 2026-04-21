@@ -129,6 +129,21 @@ wait_for_label() {
     return 1
 }
 
+# ── wait for a deploy task to reach completed or failed ───────────────────────
+wait_for_task() {
+    local task_id="$1" timeout="${2:-60}"
+    local i=0 status=""
+    while (( i < timeout )); do
+        status=$(curl -s "$GITOPS_URL/automations/deploy-status/$task_id" \
+            -H "$AUTH_HEADER" 2>/dev/null \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+        [[ "$status" == "completed" || "$status" == "failed" ]] && return 0
+        sleep 2; ((i += 2))
+    done
+    echo "    (task $task_id still '$status' after ${timeout}s)"
+    return 1
+}
+
 # ── Scenario A ────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Scenario A: redeployment of our own automation ==="
@@ -137,20 +152,39 @@ echo "    Two deploys of '$REL_PATH' — second should succeed (202)."
 http_post "$GITOPS_URL/automations/start-live-dev" "$DEPLOY_BODY"
 echo "  First deploy: HTTP $RESP_STATUS  body: $RESP_BODY"
 
-# Wait for the first deploy's container to appear before firing the second.
-if [[ -n "$DEP_ID" ]]; then
-    echo "    Waiting for container (label gitops.deployment_id=$DEP_ID)..."
-    wait_for_label "gitops.deployment_id=$DEP_ID" 25 || echo "    (container not seen — continuing anyway)"
+# Extract deployment_id from the response if the scan didn't return one.
+if [[ -z "$DEP_ID" ]]; then
+    DEP_ID=$(echo "$RESP_BODY" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin).get('deployment_id',''))" 2>/dev/null || echo "")
+fi
+TASK1_ID=$(echo "$RESP_BODY" | python3 -c \
+    "import sys,json; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null || echo "")
+
+# Wait for the first deploy to finish before firing the second.
+if [[ -n "$TASK1_ID" ]]; then
+    echo "    Waiting for first deploy to complete (task $TASK1_ID)..."
+    wait_for_task "$TASK1_ID" 60 || echo "    (timed out — continuing anyway)"
+elif [[ -n "$DEP_ID" ]]; then
+    wait_for_label "gitops.deployment_id=$DEP_ID" 30 || echo "    (container not seen — continuing anyway)"
 else
-    sleep 6
+    sleep 8
 fi
 
 http_post "$GITOPS_URL/automations/start-live-dev" "$DEPLOY_BODY"
 check "Second deploy of same automation succeeds (no 409)" "202" "$RESP_STATUS" "$RESP_BODY"
+TASK2_ID=$(echo "$RESP_BODY" | python3 -c \
+    "import sys,json; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null || echo "")
 
 # ── Scenario B ────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Scenario B: foreign container blocking the deployment name ==="
+
+# Wait for the second deploy to finish so the deploy slot is free and the
+# container exists with its label before we replace it with a foreign one.
+if [[ -n "$TASK2_ID" ]]; then
+    echo "    Waiting for second deploy to complete (task $TASK2_ID)..."
+    wait_for_task "$TASK2_ID" 60 || echo "    (timed out — continuing anyway)"
+fi
 
 # Get the actual container name via the gitops.deployment_id label — this accounts
 # for the 4-char context hash that the simplified name derivation misses.
