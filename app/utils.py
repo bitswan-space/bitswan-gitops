@@ -601,19 +601,49 @@ async def update_git(
         "git", "remote", "show", "origin", cwd=bitswan_dir
     )
 
+    # Resolve the current branch so we can push/pull explicitly even when no
+    # upstream is configured (e.g. on freshly-created worktree branches).
+    current_branch = None
+    if has_remote:
+        stdout, _, rc = await call_git_command_with_output(
+            "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=bitswan_dir
+        )
+        if rc == 0:
+            current_branch = stdout.strip() or None
+
     # Use async lock with shorter timeout - operations should be fast
     async with GitLockContext(timeout=10.0):
-        # Pull latest changes if we have a remote
-        if has_remote:
-            res = await call_git_command(
-                "git", "pull", "--rebase=false", cwd=bitswan_dir
+        # Pull latest changes if we have a remote and the remote tracking
+        # branch exists. Skip the pull for branches that only live locally
+        # (e.g. new worktree branches that have never been pushed).
+        if has_remote and current_branch:
+            await call_git_command(
+                "git", "fetch", "origin", current_branch, cwd=bitswan_dir
             )
-            if not res:
-                # Try to recover from merge conflicts by accepting ours for bitswan.yaml
-                await call_git_command(
-                    "git", "checkout", "--ours", bitswan_yaml_path, cwd=bitswan_dir
+            _, _, rc = await call_git_command_with_output(
+                "git",
+                "rev-parse",
+                "--verify",
+                f"refs/remotes/origin/{current_branch}",
+                cwd=bitswan_dir,
+            )
+            if rc == 0:
+                res = await call_git_command(
+                    "git",
+                    "pull",
+                    "--rebase=false",
+                    "origin",
+                    current_branch,
+                    cwd=bitswan_dir,
                 )
-                await call_git_command("git", "add", bitswan_yaml_path, cwd=bitswan_dir)
+                if not res:
+                    # Try to recover from merge conflicts by accepting ours for bitswan.yaml
+                    await call_git_command(
+                        "git", "checkout", "--ours", bitswan_yaml_path, cwd=bitswan_dir
+                    )
+                    await call_git_command(
+                        "git", "add", bitswan_yaml_path, cwd=bitswan_dir
+                    )
 
         # Stage and commit changes
         await call_git_command("git", "add", bitswan_yaml_path, cwd=bitswan_dir)
@@ -643,9 +673,21 @@ async def update_git(
 
         subprocess.run(["chown", "-R", "1000:1000", "/gitops/gitops"], check=False)
 
-        # Push changes if we have a remote
+        # Push changes if we have a remote. Use -u with an explicit branch so
+        # the first push from a new branch sets its upstream instead of failing
+        # with "no upstream branch".
         if has_remote:
-            res = await call_git_command("git", "push", cwd=bitswan_dir)
+            if current_branch:
+                res = await call_git_command(
+                    "git",
+                    "push",
+                    "-u",
+                    "origin",
+                    current_branch,
+                    cwd=bitswan_dir,
+                )
+            else:
+                res = await call_git_command("git", "push", cwd=bitswan_dir)
             if not res:
                 raise Exception("Error pushing to git")
 
