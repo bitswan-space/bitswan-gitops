@@ -1275,40 +1275,26 @@ fi
             dep_conf.get("stage", "production") or "production",
         )
 
-        # Pre-flight: check whether a container with this name already exists.
-        # Two scenarios:
-        #   A) It's ours (correct gitops.deployment_id label) → remove it so
-        #      compose can recreate it cleanly (redeployment / update).
-        #   B) It's foreign (no matching label) → reject with a clear 409 so
-        #      the user knows to clean it up manually instead of seeing a
-        #      cryptic "Error deploying services".
+        # Scenario A race-condition guard: if a container reappeared between the
+        # route-handler pre-flight and now, remove it so compose can recreate it.
+        # Foreign-container conflicts (Scenario B) are caught in the route handler
+        # before the task is created, so we only need to handle our own containers here.
         docker_client = get_async_docker_client()
         try:
             existing = await docker_client.get_container(compose_service_name)
-            existing_labels = existing.get("Config", {}).get("Labels", {})
-            existing_dep_id = existing_labels.get("gitops.deployment_id", "")
+            existing_dep_id = (
+                existing.get("Config", {}).get("Labels", {}).get("gitops.deployment_id", "")
+            )
             if existing_dep_id == deployment_id:
-                # Scenario A: our container — remove so compose recreates it.
                 logger.info(
-                    "Removing existing container '%s' for redeployment of '%s'",
+                    "Race-condition guard: removing container '%s' before redeployment of '%s'",
                     compose_service_name,
                     deployment_id,
                 )
                 await docker_client.remove_container(compose_service_name, force=True)
-            else:
-                # Scenario B: foreign container occupying our name.
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"A container named '{compose_service_name}' already exists "
-                        f"but is not managed by this GitOps instance "
-                        f"(deployment_id '{existing_dep_id or 'none'}'). "
-                        f"Remove it manually and retry."
-                    ),
-                )
         except DockerError as e:
             if e.status_code != 404:
-                raise  # unexpected Docker API error — propagate
+                raise
 
         # deploy the automation and its infra services
         await _report("docker_compose_up", "Starting containers...")
