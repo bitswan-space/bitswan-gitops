@@ -1275,6 +1275,27 @@ fi
             dep_conf.get("stage", "production") or "production",
         )
 
+        # Scenario A race-condition guard: if a container reappeared between the
+        # route-handler pre-flight and now, remove it so compose can recreate it.
+        # Foreign-container conflicts (Scenario B) are caught in the route handler
+        # before the task is created, so we only need to handle our own containers here.
+        docker_client = get_async_docker_client()
+        try:
+            existing = await docker_client.get_container(compose_service_name)
+            existing_dep_id = (
+                existing.get("Config", {}).get("Labels", {}).get("gitops.deployment_id", "")
+            )
+            if existing_dep_id == deployment_id:
+                logger.info(
+                    "Race-condition guard: removing container '%s' before redeployment of '%s'",
+                    compose_service_name,
+                    deployment_id,
+                )
+                await docker_client.remove_container(compose_service_name, force=True)
+        except DockerError as e:
+            if e.status_code != 404:
+                raise
+
         # deploy the automation and its infra services
         await _report("docker_compose_up", "Starting containers...")
         deployment_result = await docker_compose_up(
@@ -1294,9 +1315,24 @@ fi
 
         for result in deployment_result.values():
             if result["return_code"] != 0:
+                stderr = result.get("stderr", "")
+                # Surface Docker name-conflict errors as a 409 rather than a
+                # generic 500 — this handles races where the pre-flight check
+                # passed but a container appeared between check and compose up.
+                if "already in use by container" in stderr or (
+                    "Conflict" in stderr and "container name" in stderr.lower()
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Deployment failed: a container named "
+                            f"'{compose_service_name}' already exists. "
+                            f"Docker error: {stderr.strip()}"
+                        ),
+                    )
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Error deploying services: \ndocker-compose:\n {dc_yaml}\n\nstdout:\n {result['stdout']}\nstderr:\n{result['stderr']}\n",
+                    detail=f"Error deploying services:\nstdout:\n{result['stdout']}\nstderr:\n{stderr}\n",
                 )
 
         await _report("installing_certs", "Installing certificates...")
