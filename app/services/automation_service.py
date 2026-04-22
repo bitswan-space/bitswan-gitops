@@ -1501,14 +1501,31 @@ fi
         }
 
     async def start_automation(self, deployment_id: str):
-        """Start all containers for a deployment using async Docker client."""
+        """Start all containers for a deployment using async Docker client.
+
+        If no container exists for the deployment, re-runs the full deploy
+        flow (regenerate compose, docker compose up) to create it fresh.
+        """
         containers = await self.get_container(deployment_id)
 
         if not containers:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No container found for deployment ID: {deployment_id}",
+            # No container found — check if the deployment exists in bitswan.yaml
+            bs_yaml = read_bitswan_yaml(self.gitops_dir)
+            deployments = bs_yaml.get("deployments", {}) if bs_yaml else {}
+            if deployment_id not in deployments:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Deployment '{deployment_id}' not found in bitswan.yaml",
+                )
+
+            logger.info(
+                "No container for %s, running deploy to create it", deployment_id
             )
+            await self.deploy_automations()
+            return {
+                "status": "success",
+                "message": f"Container for deployment {deployment_id} created and started",
+            }
 
         docker_client = get_async_docker_client()
         for container in containers:
@@ -1599,14 +1616,32 @@ fi
         }
 
     async def restart_automation(self, deployment_id: str):
-        """Restart all containers for a deployment using async Docker client."""
+        """Restart all containers for a deployment using async Docker client.
+
+        If no container exists for the deployment, re-runs the full deploy
+        flow (regenerate compose, docker compose up) to create it fresh.
+        """
         containers = await self.get_container(deployment_id)
 
         if not containers:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No container found for deployment ID: {deployment_id}",
+            # No container found — check if the deployment exists in bitswan.yaml
+            bs_yaml = read_bitswan_yaml(self.gitops_dir)
+            deployments = bs_yaml.get("deployments", {}) if bs_yaml else {}
+            if deployment_id not in deployments:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Deployment '{deployment_id}' not found in bitswan.yaml",
+                )
+
+            # Deployment exists but container is missing — start it fresh
+            logger.info(
+                "No container for %s, running deploy to create it", deployment_id
             )
+            await self.deploy_automations()
+            return {
+                "status": "success",
+                "message": f"Container for deployment {deployment_id} created and started",
+            }
 
         docker_client = get_async_docker_client()
         for container in containers:
