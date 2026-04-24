@@ -700,6 +700,9 @@ async def ensure_coding_agent(body: EnsureCodingAgentRequest | None = None):
         "Image": image,
         "Hostname": agent_container_name,
         "Env": env_vars,
+        "Labels": {
+            "gitops.workspace": workspace_name,
+        },
         "HostConfig": {
             "Binds": binds,
             "RestartPolicy": {"Name": "always"},

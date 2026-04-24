@@ -378,8 +378,20 @@ _client: Optional[AsyncDockerClient] = None
 
 
 def get_async_docker_client() -> AsyncDockerClient:
-    """Get the singleton async Docker client."""
+    """Get the singleton async Docker client.
+
+    Reads DOCKER_HOST env var for the socket path. When the container-manager
+    proxy is configured, this points to the proxy socket instead of the real
+    Docker socket, restricting operations to the current workspace.
+    """
     global _client
     if _client is None:
-        _client = AsyncDockerClient()
+        import os
+
+        docker_host = os.environ.get("DOCKER_HOST", "")
+        if docker_host.startswith("unix://"):
+            socket_path = docker_host[len("unix://") :]
+        else:
+            socket_path = "/var/run/docker.sock"
+        _client = AsyncDockerClient(socket_path=socket_path)
     return _client

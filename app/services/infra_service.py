@@ -68,6 +68,16 @@ class InfraService(ABC):
         self.secrets_dir_host = os.path.join(bs_home_host, "secrets")
         self.gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "")
 
+    def _get_stage_network(self) -> str:
+        """Return the Docker network for this service's stage.
+
+        When stage networks are enabled, returns '{workspace}-{stage}'.
+        Otherwise falls back to 'bitswan_network' for backward compatibility.
+        """
+        if os.environ.get("BITSWAN_STAGE_NETWORKS") == "true" and self.workspace_name:
+            return f"{self.workspace_name}-{self.stage}"
+        return "bitswan_network"
+
     @property
     @abstractmethod
     def service_type(self) -> str:

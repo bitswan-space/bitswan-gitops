@@ -72,7 +72,7 @@ class PostgresService(InfraService):
             "volumes": [
                 f"{os.path.join(self.secrets_dir, 'pgadmin-servers.json')}:/pgadmin4/servers.json:ro",
             ],
-            "networks": ["bitswan_network"],
+            "networks": [self._get_stage_network()],
             "labels": {},
         }
 
@@ -92,13 +92,13 @@ class PostgresService(InfraService):
                     "restart": "unless-stopped",
                     "env_file": [self.secrets_file_path],
                     "volumes": [f"{self.volume_name}-data:/var/lib/postgresql/data"],
-                    "networks": ["bitswan_network"],
+                    "networks": [self._get_stage_network()],
                 },
                 f"postgres{self.service_suffix}-pgadmin": pgadmin_entry,
             },
             "volumes": {f"{self.volume_name}-data": None},
             "networks": {
-                "bitswan_network": {"external": True},
+                self._get_stage_network(): {"external": True},
             },
         }
 

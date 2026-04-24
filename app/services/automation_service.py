@@ -29,6 +29,7 @@ from app.utils import (
     call_git_command_with_output,
     copy_worktree,
     GitLockContext,
+    safe_zip_extractall,
 )
 from app.async_docker import get_async_docker_client, DockerError
 from app.services.image_service import ImageService
@@ -299,7 +300,7 @@ class AutomationService:
                         tar_ref.extractall(output_dir, filter="data")
                 else:
                     with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
-                        zip_ref.extractall(output_dir)
+                        safe_zip_extractall(zip_ref, output_dir)
 
                 # Verify the checksum using git tree hash algorithm
                 calculated_hash = await calculate_git_tree_hash(output_dir)
@@ -2216,6 +2217,11 @@ fi
                 entry["container_name"] = f"{service_name}"
             entry["restart"] = "always"
             entry["ulimits"] = {"nofile": {"soft": 65536, "hard": 65536}}
+            # Default resource limits to prevent fork bombs, OOM, and CPU exhaustion.
+            # Use top-level keys (not deploy.resources) for standalone docker-compose.
+            entry["mem_limit"] = "2g"
+            entry["cpus"] = 2.0
+            entry["pids_limit"] = 512
             entry["labels"] = {
                 "gitops.deployment_id": deployment_id,
                 "gitops.workspace": self.workspace_name,
@@ -2373,11 +2379,20 @@ fi
             if not network_mode:
                 network_mode = conf.get("network_mode")
 
-            # external-testing-network: isolated bridge with only outbound internet.
-            # No access to internal services — tests must use public URLs.
+            # Selenium / external-testing-network: when stage networks are
+            # enabled, testing containers go on the dev network so they can
+            # reach dev services directly while remaining isolated from
+            # staging/production. Without stage networks, falls back to a
+            # separate bridge with only outbound internet.
             if not network_mode and automation_config.external_testing_network:
-                networks_list = ["bitswan_external_testing"]
-                external_networks.add("bitswan_external_testing")
+                if (
+                    os.environ.get("BITSWAN_STAGE_NETWORKS") == "true"
+                    and self.workspace_name
+                ):
+                    networks_list = [f"{self.workspace_name}-dev"]
+                else:
+                    networks_list = ["bitswan_external_testing"]
+                    external_networks.add("bitswan_external_testing")
 
             if network_mode:
                 entry["network_mode"] = network_mode
@@ -2386,6 +2401,14 @@ fi
                     networks_list = conf["networks"].copy()
                 elif "default-networks" in bs_yaml:
                     networks_list = bs_yaml["default-networks"].copy()
+                elif (
+                    os.environ.get("BITSWAN_STAGE_NETWORKS") == "true"
+                    and self.workspace_name
+                ):
+                    from app.services.infra_service import stage_for_deployment
+
+                    stage_net = f"{self.workspace_name}-{stage_for_deployment(stage)}"
+                    networks_list = [stage_net]
                 else:
                     networks_list = ["bitswan_network"]
 
@@ -2444,6 +2467,20 @@ fi
             # If expose_to_groups is set, automatically enable exposure
             if expose_to_groups:
                 expose = True
+
+            # Determine ingress target for VPN routing.
+            # Default to VPN-aware routing (secure default). The daemon will
+            # fall back to external-only if VPN is not actually enabled.
+            if stage in ("live-dev", "dev"):
+                ingress_target = "internal"
+            elif expose_to_groups and automation_config.expose_to_internet:
+                ingress_target = "external"
+            elif expose_to_groups:
+                ingress_target = "internal"
+            elif expose and stage in ("staging", "production"):
+                ingress_target = "external"
+            else:
+                ingress_target = "internal"
 
             if expose and port:
                 # Set URL env vars for exposed automations
@@ -2505,6 +2542,7 @@ fi
                         dep_context,
                         dep_stage,
                         self.oauth2_proxy_port,
+                        ingress_target=ingress_target,
                     ):
                         logger.warning(
                             f"Failed to add ingress route for {deployment_id} (oauth2 proxy port)"
@@ -2513,7 +2551,11 @@ fi
                 else:
                     entry["labels"]["gitops.intended_exposed"] = "true"
                     if not add_workspace_route_to_ingress(
-                        dep_automation_name, dep_context, dep_stage, port
+                        dep_automation_name,
+                        dep_context,
+                        dep_stage,
+                        port,
+                        ingress_target=ingress_target,
                     ):
                         logger.warning(
                             f"Failed to add ingress route for {deployment_id} — "

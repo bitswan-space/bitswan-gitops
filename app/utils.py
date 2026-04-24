@@ -86,6 +86,39 @@ KNOWN_STAGES = {"live-dev", "dev", "staging", "production"}
 SERVICE_REALMS = {"dev", "staging", "production"}
 
 
+def safe_zip_extractall(zip_ref, target_dir: str) -> None:
+    """Extract a zip file safely, preventing zip slip (path traversal).
+
+    Validates that every extracted file resolves within the target directory.
+    """
+    target_resolved = os.path.realpath(target_dir)
+    for member in zip_ref.namelist():
+        member_path = os.path.realpath(os.path.join(target_dir, member))
+        if (
+            not member_path.startswith(target_resolved + os.sep)
+            and member_path != target_resolved
+        ):
+            raise ValueError(
+                f"Zip slip detected: '{member}' would extract outside '{target_dir}'"
+            )
+    zip_ref.extractall(target_dir)
+
+
+def validate_relative_path(base_dir: str, relative_path: str) -> str:
+    """Validate that a relative path resolves within the base directory.
+
+    Returns the resolved absolute path. Raises ValueError if the path
+    would escape the base directory (e.g., via ../ sequences).
+    """
+    resolved = os.path.realpath(os.path.join(base_dir, relative_path))
+    base_resolved = os.path.realpath(base_dir)
+    if not resolved.startswith(base_resolved + os.sep) and resolved != base_resolved:
+        raise ValueError(
+            f"Path traversal denied: '{relative_path}' resolves outside '{base_dir}'"
+        )
+    return resolved
+
+
 @dataclass
 class AutomationConfig:
     """Unified automation configuration from either automation.toml or pipelines.conf."""
@@ -112,6 +145,9 @@ class AutomationConfig:
     allowed_domains: list[str] | None = None
     # Infrastructure service dependencies
     services: dict[str, ServiceDependency] | None = None
+    # When True, expose_to automations are also routed via the external
+    # (internet-facing) ingress, not just the VPN ingress.
+    expose_to_internet: bool = False
     # Use host network for external access (Selenium testing)
     external_testing_network: bool = False
 
@@ -184,12 +220,12 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
         dev_groups=_parse_string_or_list(secrets.get("dev")),
         staging_groups=_parse_string_or_list(secrets.get("staging")),
         production_groups=_parse_string_or_list(secrets.get("production")),
-        # Per-stage expose_to from [expose_to] section
         dev_expose_to=_parse_string_or_list(expose_to_section.get("dev")),
         staging_expose_to=_parse_string_or_list(expose_to_section.get("staging")),
         production_expose_to=_parse_string_or_list(expose_to_section.get("production")),
         allowed_domains=allowed_domains,
         services=services,
+        expose_to_internet=deployment.get("expose_to_internet", False),
         external_testing_network=deployment.get("external-testing-network", False),
     )
 
@@ -377,7 +413,11 @@ def generate_workspace_url(
 
 
 def add_workspace_route_to_ingress(
-    automation_name: str, context: str, stage: str, port: str
+    automation_name: str,
+    context: str,
+    stage: str,
+    port: str,
+    ingress_target: str = "",
 ) -> bool:
     from app.services.automation_service import make_hostname_label
 
@@ -388,7 +428,7 @@ def add_workspace_route_to_ingress(
     )
     svc_name = make_hostname_label(workspace_name, automation_name, context, stage)
     upstream = f"{svc_name}:{port}"
-    return add_route_to_ingress(hostname, upstream, workspace_name)
+    return add_route_to_ingress(hostname, upstream, workspace_name, ingress_target)
 
 
 def _ingress_client_and_base() -> tuple:
@@ -413,13 +453,18 @@ def _ingress_client_and_base() -> tuple:
 
 
 def add_route_to_ingress(
-    hostname: str, upstream: str, workspace_name: str = ""
+    hostname: str,
+    upstream: str,
+    workspace_name: str = "",
+    ingress_target: str = "",
 ) -> bool:
     body = {
         "hostname": hostname,
         "upstream": upstream,
         "workspace_name": workspace_name,
     }
+    if ingress_target:
+        body["ingress_target"] = ingress_target
     try:
         client, base = _ingress_client_and_base()
         with client:
@@ -699,12 +744,15 @@ async def docker_compose_up(
     extra_services: list[str] | None = None,
 ) -> None:
     async def setup_asyncio_process(cmd: list[Any]) -> dict[str, Any]:
+        # Pass DOCKER_HOST so docker compose uses the container-manager proxy
+        env = os.environ.copy()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=bitswan_dir,
+            env=env,
         )
 
         stdout, stderr = await proc.communicate(input=docker_compose.encode())
