@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -439,6 +440,73 @@ async def merge_worktree(name: str):
     }
 
 
+def _own_container_id() -> str | None:
+    """Detect the Docker container ID of our own process.
+
+    `$HOSTNAME` is unreliable — docker-compose commonly sets `hostname:` which
+    overrides it, so it no longer matches the container name/ID. Parse
+    /proc/self/cgroup and /proc/self/mountinfo instead, which expose the real
+    64-char ID put there by the Docker runtime.
+    """
+    id_re = re.compile(r"([0-9a-f]{64})")
+    try:
+        with open("/proc/self/cgroup") as f:
+            for line in f:
+                m = id_re.search(line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    try:
+        with open("/proc/self/mountinfo") as f:
+            for line in f:
+                m = id_re.search(line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return None
+
+
+async def _rm_rf_as_root_in_container(path: str) -> bool:
+    """Wipe `path` as root by `docker exec`'ing into our own container.
+
+    The gitops server runs as uid 1000, but worktree contents are populated by
+    other containers (editor, live-dev automations, build outputs) that run as
+    root or other uids. uid 1000 often can't unlink those files because the
+    containing directories aren't writable by it. We have access to the Docker
+    socket, so we re-enter our own container as root to do the removal.
+
+    Returns True on success, False otherwise (caller should treat failure as
+    hard error). Stderr is logged.
+    """
+    container_id = _own_container_id()
+    if not container_id:
+        logger.warning(
+            "rm -rf %s: could not determine own container ID from /proc; "
+            "cannot docker exec as root",
+            path,
+        )
+        return False
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "exec", "--user", "0", container_id, "rm", "-rf", path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.warning(
+                "rm -rf %s via docker exec failed (%s): %s",
+                path, proc.returncode, stderr.decode(errors="replace").strip(),
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.warning("rm -rf %s via docker exec raised: %s", path, e)
+        return False
+
+
 @router.delete("/{name}")
 async def delete_worktree(name: str):
     workspace_dir = _get_workspace_dir()
@@ -456,10 +524,20 @@ async def delete_worktree(name: str):
             "git", "worktree", "remove", worktree_path, "--force", cwd=workspace_dir
         )
         if not success:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to remove worktree '{name}'",
+            # Fallback: worktree contents often include files owned by other
+            # uids (live-dev containers, editor, build artifacts) that user1000
+            # can't unlink. Wipe the tree as root via docker exec, then prune
+            # the git metadata that `worktree remove` normally maintains.
+            logger.info(
+                "`git worktree remove` failed for '%s'; retrying with privileged rm -rf",
+                name,
             )
+            if not await _rm_rf_as_root_in_container(worktree_path):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to remove worktree '{name}'",
+                )
+            await call_git_command("git", "worktree", "prune", cwd=workspace_dir)
 
         # Delete the branch
         await call_git_command("git", "branch", "-D", name, cwd=workspace_dir)
