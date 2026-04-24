@@ -490,7 +490,14 @@ async def _rm_rf_as_root_in_container(path: str) -> bool:
         return False
     try:
         proc = await asyncio.create_subprocess_exec(
-            "docker", "exec", "--user", "0", container_id, "rm", "-rf", path,
+            "docker",
+            "exec",
+            "--user",
+            "0",
+            container_id,
+            "rm",
+            "-rf",
+            path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -498,7 +505,9 @@ async def _rm_rf_as_root_in_container(path: str) -> bool:
         if proc.returncode != 0:
             logger.warning(
                 "rm -rf %s via docker exec failed (%s): %s",
-                path, proc.returncode, stderr.decode(errors="replace").strip(),
+                path,
+                proc.returncode,
+                stderr.decode(errors="replace").strip(),
             )
             return False
         return True
