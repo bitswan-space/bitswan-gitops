@@ -165,8 +165,67 @@ def _get_workspace_dir() -> str:
     return os.environ.get("BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo")
 
 
+def _ensure_gitignore_patterns(gitignore_path: str, patterns: list[str]) -> bool:
+    """Append any of `patterns` that aren't already listed in the .gitignore.
+
+    Returns True when the file was modified, False otherwise. Best-effort:
+    filesystem errors are swallowed so worktree creation isn't blocked by a
+    flaky mount. Existing entries are kept; we only append.
+    """
+    try:
+        existing = ""
+        if os.path.exists(gitignore_path):
+            with open(gitignore_path) as f:
+                existing = f.read()
+        existing_lines = {line.strip() for line in existing.splitlines()}
+        to_add = [p for p in patterns if p not in existing_lines]
+        if not to_add:
+            return False
+        with open(gitignore_path, "a") as f:
+            if existing and not existing.endswith("\n"):
+                f.write("\n")
+            f.write("\n".join(to_add) + "\n")
+        return True
+    except OSError:
+        return False
+
+
 def _get_worktrees_base() -> str:
     return os.path.join(_get_workspace_dir(), "worktrees")
+
+
+# Worktree names are used to construct filesystem paths AND are passed as
+# positional args to git commands. The charset must rule out:
+#   - path traversal (no `/`, no `.`, no `..`)
+#   - leading `-` (git would parse it as an option)
+#   - empty strings
+_WORKTREE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-]*$")
+
+
+def _validate_worktree_name(name: str) -> None:
+    if not name or not _WORKTREE_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid worktree name: must be alphanumeric with hyphens only "
+                "and must not start with a hyphen."
+            ),
+        )
+
+
+def _resolve_worktree_path(name: str) -> str:
+    """Validate `name` and return the realpath to the worktree.
+
+    Belt-and-suspenders against path traversal: even though the regex blocks
+    `..`/`/`, we re-check via realpath so a malicious symlink inside the
+    worktrees base can't redirect us elsewhere.
+    """
+    _validate_worktree_name(name)
+    base = os.path.realpath(_get_worktrees_base())
+    candidate = os.path.realpath(os.path.join(base, name))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid worktree name")
+    return candidate
 
 
 class CreateWorktreeRequest(BaseModel):
@@ -176,12 +235,7 @@ class CreateWorktreeRequest(BaseModel):
 
 @router.post("/create")
 async def create_worktree(body: CreateWorktreeRequest):
-    # Validate branch_name: alphanumeric + hyphens only
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9\-]*$", body.branch_name):
-        raise HTTPException(
-            status_code=400,
-            detail="branch_name must be alphanumeric with hyphens only",
-        )
+    _validate_worktree_name(body.branch_name)
 
     workspace_dir = _get_workspace_dir()
     worktrees_base = _get_worktrees_base()
@@ -196,21 +250,6 @@ async def create_worktree(body: CreateWorktreeRequest):
     # Ensure worktrees directory exists
     os.makedirs(worktrees_base, exist_ok=True)
 
-    # Ensure worktrees/ is in .gitignore so worktree contents aren't tracked
-    gitignore_path = os.path.join(workspace_dir, ".gitignore")
-    try:
-        existing = ""
-        if os.path.exists(gitignore_path):
-            with open(gitignore_path) as f:
-                existing = f.read()
-        if "worktrees/" not in existing:
-            with open(gitignore_path, "a") as f:
-                if existing and not existing.endswith("\n"):
-                    f.write("\n")
-                f.write("worktrees/\n")
-    except OSError:
-        pass  # best-effort
-
     async with GitLockContext(timeout=15.0):
         # Ensure there is at least one commit — git worktree requires it
         _, _, rev_rc = await call_git_command_with_output(
@@ -224,6 +263,39 @@ async def create_worktree(body: CreateWorktreeRequest):
                 "--allow-empty",
                 "-m",
                 "initial commit",
+                cwd=workspace_dir,
+            )
+
+        # Ensure the workspace .gitignore covers the worktrees tree and the
+        # container-generated scratch files that shouldn't ever be committed.
+        # Live-dev/automation containers create these inside the worktree and
+        # they clutter `git status` (and block `git worktree remove` later).
+        # Commit the update so the new worktree branches off a HEAD that
+        # already has the ignores in place.
+        gitignore_changed = _ensure_gitignore_patterns(
+            os.path.join(workspace_dir, ".gitignore"),
+            [
+                "worktrees/",
+                "__pycache__/",
+                "*.pyc",
+                "node_modules/",
+                "node_modules",
+                ".pytest_cache/",
+                ".venv/",
+                "dist/",
+                "package.json",
+                "!*/*/image/package.json",
+                "config.js",
+                "vite.config.live-dev.js",
+            ],
+        )
+        if gitignore_changed:
+            await call_git_command("git", "add", ".gitignore", cwd=workspace_dir)
+            await call_git_command(
+                "git",
+                "commit",
+                "-m",
+                "gitops: ignore container-generated paths in worktrees",
                 cwd=workspace_dir,
             )
 
@@ -389,7 +461,7 @@ class MergeWorktreeResponse(BaseModel):
 @router.post("/{name}/merge")
 async def merge_worktree(name: str):
     workspace_dir = _get_workspace_dir()
-    worktree_path = os.path.join(_get_worktrees_base(), name)
+    worktree_path = _resolve_worktree_path(name)
 
     if not os.path.exists(worktree_path):
         raise HTTPException(status_code=404, detail=f"Worktree '{name}' not found")
@@ -414,7 +486,8 @@ async def merge_worktree(name: str):
                 detail=f"Failed to checkout '{main_branch}'",
             )
 
-        # Merge the worktree branch
+        # Merge the worktree branch (validated above to be alnum + hyphens, no
+        # leading hyphen, so it can't be parsed as a flag).
         stdout, stderr, rc = await call_git_command_with_output(
             "git", "merge", name, cwd=workspace_dir
         )
@@ -440,32 +513,70 @@ async def merge_worktree(name: str):
     }
 
 
-def _own_container_id() -> str | None:
-    """Detect the Docker container ID of our own process.
+def _own_container_id_from_proc() -> str | None:
+    """Scrape our own container ID from /proc entries.
 
     `$HOSTNAME` is unreliable — docker-compose commonly sets `hostname:` which
-    overrides it, so it no longer matches the container name/ID. Parse
-    /proc/self/cgroup and /proc/self/mountinfo instead, which expose the real
-    64-char ID put there by the Docker runtime.
+    overrides it, so it no longer matches the container name/ID.
     """
-    id_re = re.compile(r"([0-9a-f]{64})")
+    # cgroup v1:       `12:pids:/docker/<id>`
+    # cgroup v2+systemd: `0::/system.slice/docker-<id>.scope`
+    # The `docker[-/]<id>` prefix disambiguates from other 64-hex strings.
+    cgroup_re = re.compile(r"docker[-/]([0-9a-f]{64})")
     try:
         with open("/proc/self/cgroup") as f:
             for line in f:
-                m = id_re.search(line)
+                m = cgroup_re.search(line)
                 if m:
                     return m.group(1)
     except OSError:
         pass
+    # mountinfo: Docker always bind-mounts /etc/hostname, /etc/hosts and
+    # /etc/resolv.conf from /var/lib/docker/containers/<id>/…, so the ID
+    # appears as `/containers/<id>/` there. This discriminates against
+    # overlay layer SHAs which use `/overlay2/<sha>/…`.
     try:
         with open("/proc/self/mountinfo") as f:
             for line in f:
-                m = id_re.search(line)
+                m = re.search(r"/containers/([0-9a-f]{64})/", line)
                 if m:
                     return m.group(1)
     except OSError:
         pass
     return None
+
+
+async def _own_container_id_from_api() -> str | None:
+    """Ask the Docker daemon for a container whose hostname matches ours.
+
+    Last-resort fallback when /proc parsing doesn't yield a usable ID (e.g.
+    nested container runtimes, rootless Docker, unusual cgroup layout).
+    """
+    hostname = os.uname().nodename
+    if not hostname:
+        return None
+    try:
+        client = get_async_docker_client()
+        containers = await client.list_containers(filters={"status": ["running"]})
+        for c in containers:
+            # Config lives under /json; the list endpoint exposes HostConfig but
+            # not Config. Inspect each candidate — there shouldn't be many.
+            cid = c.get("Id")
+            if not cid:
+                continue
+            try:
+                info = await client.get_container(cid)
+                if info.get("Config", {}).get("Hostname") == hostname:
+                    return cid
+            except DockerError:
+                continue
+    except Exception as e:
+        logger.debug("Docker API container lookup failed: %s", e)
+    return None
+
+
+async def _own_container_id() -> str | None:
+    return _own_container_id_from_proc() or await _own_container_id_from_api()
 
 
 async def _rm_rf_as_root_in_container(path: str) -> bool:
@@ -480,10 +591,11 @@ async def _rm_rf_as_root_in_container(path: str) -> bool:
     Returns True on success, False otherwise (caller should treat failure as
     hard error). Stderr is logged.
     """
-    container_id = _own_container_id()
+    container_id = await _own_container_id()
     if not container_id:
         logger.warning(
-            "rm -rf %s: could not determine own container ID from /proc; "
+            "rm -rf %s: could not determine own container ID "
+            "(tried /proc/self/cgroup, /proc/self/mountinfo, Docker API by hostname); "
             "cannot docker exec as root",
             path,
         )
@@ -516,10 +628,72 @@ async def _rm_rf_as_root_in_container(path: str) -> bool:
         return False
 
 
+class CommitRequest(BaseModel):
+    message: str
+    worktree: str | None = None  # None = commit on the master workspace
+    paths: list[str] | None = None  # None/empty = stage all changes (-A)
+
+
+@router.post("/commit")
+async def commit_changes(body: CommitRequest):
+    """Stage and commit changes in either the master workspace or a worktree.
+
+    Used by the editor UI to record file-system changes it just made
+    (creating a business process, copying an automation template, etc.) so
+    they don't sit as untracked files indefinitely.
+    """
+    if body.worktree:
+        repo_path = _resolve_worktree_path(body.worktree)
+        if not os.path.exists(repo_path):
+            raise HTTPException(
+                status_code=404, detail=f"Worktree '{body.worktree}' not found"
+            )
+    else:
+        repo_path = _get_workspace_dir()
+
+    # Reject path traversal / absolute paths in user-supplied paths.
+    safe_paths: list[str] | None = None
+    if body.paths:
+        for p in body.paths:
+            if os.path.isabs(p) or any(part == ".." for part in p.split(os.sep)):
+                raise HTTPException(status_code=400, detail=f"Invalid path: {p}")
+        safe_paths = body.paths
+
+    async with GitLockContext(timeout=15.0):
+        if safe_paths:
+            success = await call_git_command(
+                "git", "add", "--", *safe_paths, cwd=repo_path
+            )
+        else:
+            success = await call_git_command("git", "add", "-A", cwd=repo_path)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to stage changes")
+
+        stdout, stderr, rc = await call_git_command_with_output(
+            "git", "commit", "-m", body.message, cwd=repo_path
+        )
+        if rc != 0:
+            combined = (stdout or "") + (stderr or "")
+            if "nothing to commit" in combined:
+                return {"status": "noop", "message": "Nothing to commit"}
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to commit: {(stderr or stdout).strip()}",
+            )
+
+    hash_stdout, _, hash_rc = await call_git_command_with_output(
+        "git", "rev-parse", "HEAD", cwd=repo_path
+    )
+    return {
+        "status": "success",
+        "commit_hash": hash_stdout.strip() if hash_rc == 0 else "unknown",
+    }
+
+
 @router.delete("/{name}")
 async def delete_worktree(name: str):
     workspace_dir = _get_workspace_dir()
-    worktree_path = os.path.join(_get_worktrees_base(), name)
+    worktree_path = _resolve_worktree_path(name)
 
     if not os.path.exists(worktree_path):
         raise HTTPException(status_code=404, detail=f"Worktree '{name}' not found")
@@ -556,7 +730,7 @@ async def delete_worktree(name: str):
 
 @router.get("/{name}/diff")
 async def get_worktree_diff(name: str):
-    worktree_path = os.path.join(_get_worktrees_base(), name)
+    worktree_path = _resolve_worktree_path(name)
 
     if not os.path.exists(worktree_path):
         raise HTTPException(status_code=404, detail=f"Worktree '{name}' not found")
