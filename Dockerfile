@@ -22,6 +22,7 @@ USER user1000
 
 RUN git config --global user.name "gitops"
 RUN git config --global user.email "gitops@gitops.com"
+RUN git config --global init.defaultBranch main
 
 USER root
 
