@@ -893,14 +893,15 @@ async def _complete_merge(workspace_dir: str, worktree_path: str, **_kwargs) -> 
     }
 
 
-@router.post("/worktrees/{worktree_name}/rebase-and-merge")
-async def rebase_and_merge(
+@router.post("/worktrees/{worktree_name}/sync")
+async def sync_worktree(
     worktree_name: str,
     _token=Depends(verify_agent_token),
 ):
-    """Start rebase of worktree onto default branch. If no conflicts, completes the merge.
-    If conflicts occur, returns status='conflicts' with conflict details — resolve the
-    files and call rebase-continue."""
+    """Sync the worktree with the default branch: rebase the worktree onto the
+    default branch, then fast-forward the default branch to the worktree tip.
+    If conflicts occur, returns status='conflicts' with conflict details —
+    resolve the files and call sync-continue."""
     workspace_dir = _get_workspace_dir()
     worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
 
@@ -956,7 +957,7 @@ async def rebase_and_merge(
 
             return {
                 "status": "conflicts",
-                "message": "Rebase paused due to conflicts. Resolve the files and run rebase-continue.",
+                "message": "Sync paused due to conflicts. Resolve the files and run sync-continue.",
                 "conflicted_files": conflicted_files,
                 "rebase_output": f"{stdout.strip()}\n{stderr.strip()}".strip(),
                 "default_branch": default_branch,
@@ -969,14 +970,14 @@ async def rebase_and_merge(
         return result
 
 
-@router.post("/worktrees/{worktree_name}/rebase-continue")
-async def rebase_continue(
+@router.post("/worktrees/{worktree_name}/sync-continue")
+async def sync_continue(
     worktree_name: str,
     _token=Depends(verify_agent_token),
 ):
-    """After resolving conflicts, stage resolved files and continue the rebase.
+    """After resolving conflicts, stage resolved files and continue the sync rebase.
     If more conflicts arise, returns status='conflicts' again.
-    When rebase completes, fast-forwards the default branch."""
+    When the rebase completes, fast-forwards the default branch."""
     workspace_dir = _get_workspace_dir()
     worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
 
@@ -1011,7 +1012,7 @@ async def rebase_continue(
             if conflicted_files:
                 return {
                     "status": "conflicts",
-                    "message": "More conflicts encountered. Resolve and run rebase-continue again.",
+                    "message": "More conflicts encountered. Resolve and run sync-continue again.",
                     "conflicted_files": conflicted_files,
                     "rebase_output": f"{stdout.strip()}\n{stderr.strip()}".strip(),
                 }
@@ -1019,7 +1020,7 @@ async def rebase_continue(
             # rebase --continue failed but no conflict markers — something else went wrong
             raise HTTPException(
                 status_code=500,
-                detail=f"Rebase continue failed: {stderr.strip()}\n{stdout.strip()}",
+                detail=f"Sync continue failed: {stderr.strip()}\n{stdout.strip()}",
             )
 
         # Rebase complete — stash (if any) is left stashed intentionally
@@ -1029,149 +1030,12 @@ async def rebase_continue(
         return result
 
 
-@router.post("/worktrees/{worktree_name}/sync")
-async def sync_worktree(
+@router.post("/worktrees/{worktree_name}/sync-abort")
+async def sync_abort(
     worktree_name: str,
     _token=Depends(verify_agent_token),
 ):
-    """Rebase the worktree branch onto the default branch without modifying the
-    default branch.  This brings the worktree up-to-date with main/master.
-
-    If conflicts occur, returns status='conflicts' with the list of files.
-    Resolve them and call sync-continue."""
-    workspace_dir = _get_workspace_dir()
-    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
-
-    if not os.path.exists(worktree_path):
-        raise HTTPException(
-            status_code=404, detail=f"Worktree '{worktree_name}' not found"
-        )
-
-    async with GitLockContext(timeout=30.0):
-        # Detect default branch
-        stdout, stderr, rc = await call_git_command_with_output(
-            "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
-        )
-        if rc != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to detect default branch: {stderr.strip()}",
-            )
-        default_branch = stdout.strip()
-
-        # Start rebase
-        stdout, stderr, rc = await call_git_command_with_output(
-            "git", "rebase", default_branch, cwd=worktree_path
-        )
-
-        if rc != 0:
-            conflict_stdout, _, _ = await call_git_command_with_output(
-                "git", "diff", "--name-only", "--diff-filter=U", cwd=worktree_path
-            )
-            conflicted_files = [f for f in conflict_stdout.strip().splitlines() if f]
-
-            if not conflicted_files:
-                # Not a conflict — abort the rebase
-                await call_git_command_with_output(
-                    "git", "rebase", "--abort", cwd=worktree_path
-                )
-                rebase_output = f"{stdout.strip()}\n{stderr.strip()}".strip()
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Rebase failed: {rebase_output}",
-                )
-
-            return {
-                "status": "conflicts",
-                "message": "Rebase paused due to conflicts. Resolve the files and run sync-continue.",
-                "conflicted_files": conflicted_files,
-                "rebase_output": f"{stdout.strip()}\n{stderr.strip()}".strip(),
-            }
-
-        # Rebase succeeded — worktree is now up-to-date
-        tip_stdout, tip_stderr, tip_rc = await call_git_command_with_output(
-            "git", "rev-parse", "HEAD", cwd=worktree_path
-        )
-        if tip_rc != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to get worktree HEAD after rebase: {tip_stderr.strip()}",
-            )
-        return {
-            "status": "success",
-            "tip": tip_stdout.strip()[:12],
-        }
-
-
-@router.post("/worktrees/{worktree_name}/sync-continue")
-async def sync_continue(
-    worktree_name: str,
-    _token=Depends(verify_agent_token),
-):
-    """Continue a sync rebase after conflicts have been resolved.
-    Unlike rebase-continue, this does NOT fast-forward the default branch."""
-    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
-
-    if not os.path.exists(worktree_path):
-        raise HTTPException(
-            status_code=404, detail=f"Worktree '{worktree_name}' not found"
-        )
-
-    async with GitLockContext(timeout=30.0):
-        # Stage all resolved files
-        _, add_stderr, add_rc = await call_git_command_with_output(
-            "git", "add", "-A", cwd=worktree_path
-        )
-        if add_rc != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to stage resolved files: {add_stderr.strip()}",
-            )
-
-        # Continue rebase
-        stdout, stderr, rc = await call_git_command_with_output(
-            "git", "-c", "core.editor=true", "rebase", "--continue", cwd=worktree_path
-        )
-
-        if rc != 0:
-            conflict_stdout, _, _ = await call_git_command_with_output(
-                "git", "diff", "--name-only", "--diff-filter=U", cwd=worktree_path
-            )
-            conflicted_files = [f for f in conflict_stdout.strip().splitlines() if f]
-
-            if conflicted_files:
-                return {
-                    "status": "conflicts",
-                    "message": "More conflicts encountered. Resolve and run sync-continue again.",
-                    "conflicted_files": conflicted_files,
-                    "rebase_output": f"{stdout.strip()}\n{stderr.strip()}".strip(),
-                }
-
-            raise HTTPException(
-                status_code=500,
-                detail=f"Rebase continue failed: {stderr.strip()}\n{stdout.strip()}",
-            )
-
-        tip_stdout, tip_stderr, tip_rc = await call_git_command_with_output(
-            "git", "rev-parse", "HEAD", cwd=worktree_path
-        )
-        if tip_rc != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to get worktree HEAD after rebase: {tip_stderr.strip()}",
-            )
-        return {
-            "status": "success",
-            "tip": tip_stdout.strip()[:12],
-        }
-
-
-@router.post("/worktrees/{worktree_name}/rebase-abort")
-async def rebase_abort(
-    worktree_name: str,
-    _token=Depends(verify_agent_token),
-):
-    """Abort an in-progress rebase and pop the stash if one was created."""
+    """Abort an in-progress sync (rebase) and clean up any leftover conflict state."""
     workspace_dir = _get_workspace_dir()
     worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
 
@@ -1191,7 +1055,7 @@ async def rebase_abort(
 
         # Stash is left intentionally — the "dirt" in main doesn't need restoring
 
-    return {"status": "aborted", "message": "Rebase aborted."}
+    return {"status": "aborted", "message": "Sync aborted."}
 
 
 # --- Docker exec endpoint ---
