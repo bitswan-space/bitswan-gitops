@@ -120,6 +120,40 @@ def _get_worktrees_base() -> str:
     return os.path.join(_get_workspace_dir(), "worktrees")
 
 
+# Worktree name validation. The route param can never contain a path
+# separator (FastAPI splits on `/`), but values like `..` or `..foo` would
+# still escape the worktrees base when joined. The regex matches the one
+# in app/routes/worktrees.py — keep them in sync.
+_WORKTREE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-]*$")
+
+
+def _validate_worktree_name(name: str) -> None:
+    if not name or not _WORKTREE_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid worktree name: must be alphanumeric with hyphens "
+                "only and must not start with a hyphen."
+            ),
+        )
+
+
+def _resolve_worktree_path(name: str) -> str:
+    """Validate `name` and return the realpath to the worktree directory.
+
+    Belt-and-suspenders: even though the regex blocks `..` and `/`,
+    realpath containment ensures a malicious symlink inside the worktrees
+    base can't redirect git operations elsewhere. Mirrors the helper of
+    the same name in app/routes/worktrees.py.
+    """
+    _validate_worktree_name(name)
+    base = os.path.realpath(_get_worktrees_base())
+    candidate = os.path.realpath(os.path.join(base, name))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid worktree name")
+    return candidate
+
+
 # --- Deployment endpoints ---
 
 
@@ -688,7 +722,7 @@ async def commit_worktree(
     body: CommitRequest,
     _token=Depends(verify_agent_token),
 ):
-    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+    worktree_path = _resolve_worktree_path(worktree_name)
 
     if not os.path.exists(worktree_path):
         raise HTTPException(
@@ -738,7 +772,7 @@ async def worktree_status(
     worktree_name: str,
     _token=Depends(verify_agent_token),
 ):
-    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+    worktree_path = _resolve_worktree_path(worktree_name)
     if not os.path.exists(worktree_path):
         raise HTTPException(
             status_code=404, detail=f"Worktree '{worktree_name}' not found"
@@ -760,7 +794,7 @@ async def worktree_log(
     n: int = Query(20, ge=1, le=200),
     _token=Depends(verify_agent_token),
 ):
-    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+    worktree_path = _resolve_worktree_path(worktree_name)
     if not os.path.exists(worktree_path):
         raise HTTPException(
             status_code=404, detail=f"Worktree '{worktree_name}' not found"
@@ -780,7 +814,7 @@ async def worktree_diff(
     path: str = Query(None),
     _token=Depends(verify_agent_token),
 ):
-    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+    worktree_path = _resolve_worktree_path(worktree_name)
     if not os.path.exists(worktree_path):
         raise HTTPException(
             status_code=404, detail=f"Worktree '{worktree_name}' not found"
@@ -903,7 +937,7 @@ async def sync_worktree(
     If conflicts occur, returns status='conflicts' with conflict details —
     resolve the files and call sync-continue."""
     workspace_dir = _get_workspace_dir()
-    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+    worktree_path = _resolve_worktree_path(worktree_name)
 
     if not os.path.exists(worktree_path):
         raise HTTPException(
@@ -979,7 +1013,7 @@ async def sync_continue(
     If more conflicts arise, returns status='conflicts' again.
     When the rebase completes, fast-forwards the default branch."""
     workspace_dir = _get_workspace_dir()
-    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+    worktree_path = _resolve_worktree_path(worktree_name)
 
     if not os.path.exists(worktree_path):
         raise HTTPException(
@@ -1037,7 +1071,7 @@ async def sync_abort(
 ):
     """Abort an in-progress sync (rebase) and clean up any leftover conflict state."""
     workspace_dir = _get_workspace_dir()
-    worktree_path = os.path.join(_get_worktrees_base(), worktree_name)
+    worktree_path = _resolve_worktree_path(worktree_name)
 
     if not os.path.exists(worktree_path):
         raise HTTPException(
