@@ -16,6 +16,7 @@ from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_ingress,
     AutomationConfig,
+    bitswan_extract_filter,
     get_expose_to_for_stage,
     calculate_git_tree_hash,
     docker_compose_up,
@@ -296,7 +297,7 @@ class AutomationService:
                 os.makedirs(output_dir)
                 if tarfile.is_tarfile(temp_file.name):
                     with tarfile.open(temp_file.name, "r:gz") as tar_ref:
-                        tar_ref.extractall(output_dir, filter="data")
+                        tar_ref.extractall(output_dir, filter=bitswan_extract_filter)
                 else:
                     with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
                         zip_ref.extractall(output_dir)
@@ -447,7 +448,7 @@ class AutomationService:
         try:
             if tarfile.is_tarfile(file_path):
                 with tarfile.open(file_path, "r:gz") as tar_ref:
-                    tar_ref.extractall(output_dir, filter="data")
+                    tar_ref.extractall(output_dir, filter=bitswan_extract_filter)
             else:
                 with zipfile.ZipFile(file_path, "r") as zip_ref:
                     zip_ref.extractall(output_dir)
