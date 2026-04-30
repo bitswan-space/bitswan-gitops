@@ -397,7 +397,9 @@ class ImageService:
                     # Extract the archive to the temporary directory
                     if tarfile.is_tarfile(temp_file.name):
                         with tarfile.open(temp_file.name, "r:gz") as tar_ref:
-                            tar_ref.extractall(temp_dir_path, filter=bitswan_extract_filter)
+                            tar_ref.extractall(
+                                temp_dir_path, filter=bitswan_extract_filter
+                            )
                     else:
                         with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
                             zip_ref.extractall(temp_dir_path)

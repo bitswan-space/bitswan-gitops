@@ -569,9 +569,7 @@ def _calculate_git_tree_hash_recursive(
 
         if is_symlink:
             target = os.readlink(item_path)
-            blob_hash = _calculate_git_blob_hash_from_content(
-                target.encode("utf-8")
-            )
+            blob_hash = _calculate_git_blob_hash_from_content(target.encode("utf-8"))
             entries.append({"mode": "120000", "name": name, "hash": blob_hash})
             if logger:
                 logger.info(
