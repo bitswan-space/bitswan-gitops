@@ -278,15 +278,9 @@ async def create_worktree(body: CreateWorktreeRequest):
                 "worktrees/",
                 "__pycache__/",
                 "*.pyc",
-                "node_modules/",
-                "node_modules",
                 ".pytest_cache/",
                 ".venv/",
                 "dist/",
-                "package.json",
-                "!*/*/image/package.json",
-                "config.js",
-                "vite.config.live-dev.js",
             ],
         )
         if gitignore_changed:
