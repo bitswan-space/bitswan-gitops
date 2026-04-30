@@ -587,12 +587,17 @@ def _calculate_git_tree_hash_recursive(
             if logger:
                 logger.info(f"CHECKSUM DIR:  {entry_relative_path}/ -> {tree_hash}")
         else:
-            # Always use 100644 mode - tar extraction doesn't preserve executable bits reliably
             blob_hash = _calculate_git_blob_hash(item_path)
-            entries.append({"mode": "100644", "name": name, "hash": blob_hash})
+            # Match git's executable detection: any of u/g/o +x flips the
+            # mode to 100755. Mirrors the editor-side checksum so the
+            # deploy cache reacts to chmod +x/-x on files whose bits
+            # round-trip through the tarball intact.
+            file_mode = os.stat(item_path).st_mode
+            mode = "100755" if file_mode & 0o111 else "100644"
+            entries.append({"mode": mode, "name": name, "hash": blob_hash})
             if logger:
                 logger.info(
-                    f"CHECKSUM FILE: {entry_relative_path} -> 100644 {blob_hash}"
+                    f"CHECKSUM FILE: {entry_relative_path} -> {mode} {blob_hash}"
                 )
 
     # Build tree object: "tree <size>\\0<entries>"
