@@ -2277,12 +2277,6 @@ fi
                 wt_db = "postgres_wt_" + re.sub(r"[^a-z0-9_]", "_", wt_name.lower())
                 entry["environment"]["POSTGRES_DB"] = wt_db
 
-            # The live-dev source mount is read-only; tell Python not to write
-            # __pycache__/*.pyc next to imported modules. No-op for non-Python
-            # automations.
-            if stage == "live-dev":
-                entry["environment"]["PYTHONDONTWRITEBYTECODE"] = "1"
-
             if self.workspace_name and self.gitops_domain:
                 if dep_context:
                     h = _short_hash(dep_context)
@@ -2576,21 +2570,19 @@ fi
                 entry["environment"]["UPDATE_CA_CERTIFICATES"] = "true"
                 entry["labels"]["gitops.certs.enabled"] = "true"
 
-            # For live-dev stage, mount source from workspace (for live editing)
-            # Otherwise, mount from gitops deployment directory (checksum dir)
+            # Source mount is always read-only: live-dev binds the workspace
+            # worktree directly, other stages bind the checksum-extracted
+            # deployment dir. Each template is configured to write its
+            # scratch files to writable image layers (e.g. `/deps`, `/tmp`,
+            # `$PYTHONPYCACHEPREFIX`) rather than into the source tree.
             if stage == "live-dev" and relative_path:
-                # Mount the original source code for live development.
-                # Read-only: each template is configured to write its scratch
-                # files to the image's writable layer (e.g. `/deps`, `/tmp`)
-                # rather than into the source tree, so the worktree stays
-                # pristine and `git worktree remove` works cleanly.
                 source_mount_path = os.path.join(self.workspace_dir_host, relative_path)
                 entry["volumes"].append(
                     f"{source_mount_path}:{automation_config.mount_path}:ro"
                 )
             else:
                 entry["volumes"].append(
-                    f"{deployment_dir}:{automation_config.mount_path}"
+                    f"{deployment_dir}:{automation_config.mount_path}:ro"
                 )
 
             if conf.get("enabled", True):
