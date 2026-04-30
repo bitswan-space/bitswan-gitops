@@ -8,7 +8,7 @@ import zipfile
 import shutil
 from typing import Optional, AsyncGenerator, Dict
 
-from app.utils import calculate_git_tree_hash, save_image
+from app.utils import bitswan_extract_filter, calculate_git_tree_hash, save_image
 from app.async_docker import get_async_docker_client, DockerError
 from app.event_broadcaster import event_broadcaster
 
@@ -397,7 +397,7 @@ class ImageService:
                     # Extract the archive to the temporary directory
                     if tarfile.is_tarfile(temp_file.name):
                         with tarfile.open(temp_file.name, "r:gz") as tar_ref:
-                            tar_ref.extractall(temp_dir_path, filter="data")
+                            tar_ref.extractall(temp_dir_path, filter=bitswan_extract_filter)
                     else:
                         with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
                             zip_ref.extractall(temp_dir_path)

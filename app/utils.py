@@ -11,6 +11,7 @@ from typing import Any, Optional
 import shlex
 import subprocess
 import shutil
+import tarfile
 import tempfile
 import httpx
 
@@ -459,17 +460,63 @@ def calculate_checksum(file_path):
     return sha256_hash.hexdigest()
 
 
+# Symlink targets we accept inside deploy-archive tarballs. Anything outside
+# this allowlist (or any relative path that data_filter rejects) is dropped.
+# Currently only React templates use absolute-target symlinks (committed
+# `package.json` and `node_modules` pointing at /deps/...).
+_ALLOWED_LINK_PREFIXES: tuple[str, ...] = ("/deps/",)
+
+
+def bitswan_extract_filter(
+    member: tarfile.TarInfo, dest_path: str
+) -> tarfile.TarInfo | None:
+    """Tar extraction filter for deploy archives.
+
+    Wraps ``tarfile.data_filter`` (which rejects path traversal, absolute
+    paths, hardlinks, special files, etc.) and additionally permits symlinks
+    whose target is an absolute path under ``_ALLOWED_LINK_PREFIXES``.
+    """
+    if member.issym():
+        target = member.linkname or ""
+        normalized = os.path.normpath(target)
+        # Reject any '..' segment in the resolved target — even within an
+        # allowlisted prefix, traversal back out is unsafe.
+        if any(part == ".." for part in normalized.split(os.sep)):
+            return None
+        if os.path.isabs(normalized):
+            allowed = any(
+                normalized == p.rstrip("/") or normalized.startswith(p)
+                for p in _ALLOWED_LINK_PREFIXES
+            )
+            if not allowed:
+                return None
+            # Strip ownership and special permissions; keep mode predictable.
+            member.uid = member.gid = 0
+            member.uname = member.gname = ""
+            member.mode = 0o755
+            return member
+        # Relative target: defer to data_filter, which checks that the
+        # resolved path stays inside the extraction root.
+    # Hardlinks fall through to data_filter, which rejects them entirely.
+    return tarfile.data_filter(member, dest_path)
+
+
+def _calculate_git_blob_hash_from_content(content: bytes) -> str:
+    """
+    Calculate git blob hash from in-memory bytes. Used for symlinks, whose
+    "blob content" is the link target string.
+    """
+    header = f"blob {len(content)}\0".encode("utf-8")
+    return hashlib.sha1(header + content).hexdigest()
+
+
 def _calculate_git_blob_hash(file_path: str) -> str:
     """
     Calculate git blob hash for a file (SHA1 of "blob <size>\\0<content>").
     """
     with open(file_path, "rb") as f:
         content = f.read()
-
-    size = len(content)
-    header = f"blob {size}\0".encode("utf-8")
-    blob = header + content
-    return hashlib.sha1(blob).hexdigest()
+    return _calculate_git_blob_hash_from_content(content)
 
 
 def _calculate_git_tree_hash_recursive(
@@ -488,40 +535,49 @@ def _calculate_git_tree_hash_recursive(
         if item == ".git":
             continue
         item_path = os.path.join(dir_path, item)
-        # Skip symlinks - they should not be included in deployments
-        if os.path.islink(item_path):
-            if logger:
-                entry_relative_path = (
-                    f"{relative_path}/{item}" if relative_path else item
-                )
-                logger.info(f"Skipping symlink: {entry_relative_path}")
-            continue
-        # Skip unreadable files/directories (e.g. root-owned __pycache__ from containers)
-        if not os.access(item_path, os.R_OK):
+        # lstat-style check: symlinks must be detected before any os.path.is*
+        # call that follows them. Symlinks are hashed git-style (mode 120000)
+        # so the deploy archive's checksum reflects them faithfully — the
+        # client-side calculation does the same.
+        is_symlink = os.path.islink(item_path)
+        if not is_symlink and not os.access(item_path, os.R_OK):
             if logger:
                 entry_relative_path = (
                     f"{relative_path}/{item}" if relative_path else item
                 )
                 logger.info(f"Skipping unreadable: {entry_relative_path}")
             continue
+        if is_symlink:
+            items.append((item, False, True))
+            continue
         is_dir = os.path.isdir(item_path)
         # Skip anything that's not a regular file or directory
         if not is_dir and not os.path.isfile(item_path):
             continue
-        items.append((item, is_dir))
+        items.append((item, is_dir, False))
 
     def _git_sort_key(name: str, is_dir: bool) -> bytes:
         key = f"{name}/" if is_dir else name
         return key.encode("utf-8")
 
-    # Git-style ordering
+    # Git-style ordering: symlinks sort like regular files (no trailing slash).
     items.sort(key=lambda x: _git_sort_key(x[0], x[1]))
 
-    for name, is_dir in items:
+    for name, is_dir, is_symlink in items:
         item_path = os.path.join(dir_path, name)
         entry_relative_path = f"{relative_path}/{name}" if relative_path else name
 
-        if is_dir:
+        if is_symlink:
+            target = os.readlink(item_path)
+            blob_hash = _calculate_git_blob_hash_from_content(
+                target.encode("utf-8")
+            )
+            entries.append({"mode": "120000", "name": name, "hash": blob_hash})
+            if logger:
+                logger.info(
+                    f"CHECKSUM LINK: {entry_relative_path} -> 120000 {blob_hash} (target: {target})"
+                )
+        elif is_dir:
             tree_hash = _calculate_git_tree_hash_recursive(
                 item_path, entry_relative_path, logger
             )
@@ -529,7 +585,7 @@ def _calculate_git_tree_hash_recursive(
             if logger:
                 logger.info(f"CHECKSUM DIR:  {entry_relative_path}/ -> {tree_hash}")
         else:
-            # Always use 100644 mode - zip extraction doesn't preserve executable bits reliably
+            # Always use 100644 mode - tar extraction doesn't preserve executable bits reliably
             blob_hash = _calculate_git_blob_hash(item_path)
             entries.append({"mode": "100644", "name": name, "hash": blob_hash})
             if logger:
