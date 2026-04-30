@@ -472,33 +472,37 @@ def bitswan_extract_filter(
 ) -> tarfile.TarInfo | None:
     """Tar extraction filter for deploy archives.
 
-    Wraps ``tarfile.data_filter`` (which rejects path traversal, absolute
-    paths, hardlinks, special files, etc.) and additionally permits symlinks
-    whose target is an absolute path under ``_ALLOWED_LINK_PREFIXES``.
+    Always runs ``tarfile.data_filter`` first so the member's *name* (and
+    every other piece of metadata) goes through PEP 706's traversal /
+    absolute-path / mode / hardlink checks. The only policy we widen is
+    on symlinks: ``data_filter`` rejects every absolute symlink target,
+    but we permit those whose target is under ``_ALLOWED_LINK_PREFIXES``.
     """
-    if member.issym():
+    try:
+        return tarfile.data_filter(member, dest_path)
+    except tarfile.AbsoluteLinkError:
+        # data_filter raises AbsoluteLinkError only after the member name
+        # has already been validated (no traversal, not absolute, stays
+        # inside dest). We override its decision strictly for symlinks
+        # whose target is in the allowlist; hardlinks are never widened.
+        if not member.issym():
+            return None
         target = member.linkname or ""
         normalized = os.path.normpath(target)
-        # Reject any '..' segment in the resolved target — even within an
-        # allowlisted prefix, traversal back out is unsafe.
+        # Reject '..' segments even inside an allowlisted prefix — they
+        # let the link reach back out of the allowed subtree.
         if any(part == ".." for part in normalized.split(os.sep)):
             return None
-        if os.path.isabs(normalized):
-            allowed = any(
-                normalized == p.rstrip("/") or normalized.startswith(p)
-                for p in _ALLOWED_LINK_PREFIXES
-            )
-            if not allowed:
-                return None
-            # Strip ownership and special permissions; keep mode predictable.
-            member.uid = member.gid = 0
-            member.uname = member.gname = ""
-            member.mode = 0o755
-            return member
-        # Relative target: defer to data_filter, which checks that the
-        # resolved path stays inside the extraction root.
-    # Hardlinks fall through to data_filter, which rejects them entirely.
-    return tarfile.data_filter(member, dest_path)
+        if not any(
+            normalized == p.rstrip("/") or normalized.startswith(p)
+            for p in _ALLOWED_LINK_PREFIXES
+        ):
+            return None
+        # Strip ownership and special permissions; keep mode predictable.
+        member.uid = member.gid = 0
+        member.uname = member.gname = ""
+        member.mode = 0o755
+        return member
 
 
 def _calculate_git_blob_hash_from_content(content: bytes) -> str:
