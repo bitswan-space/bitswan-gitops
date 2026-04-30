@@ -284,12 +284,17 @@ async def create_worktree(body: CreateWorktreeRequest):
             ],
         )
         if gitignore_changed:
-            await call_git_command("git", "add", ".gitignore", cwd=workspace_dir)
+            # Pin the commit to the .gitignore pathspec so any unrelated
+            # already-staged changes in the index don't get swept into this
+            # gitops-managed commit. With a pathspec, `git commit` records
+            # only those paths (akin to --only), not the whole index.
             await call_git_command(
                 "git",
                 "commit",
                 "-m",
                 "gitops: ignore container-generated paths in worktrees",
+                "--",
+                ".gitignore",
                 cwd=workspace_dir,
             )
 
