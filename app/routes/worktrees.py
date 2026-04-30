@@ -213,6 +213,34 @@ def _validate_worktree_name(name: str) -> None:
         )
 
 
+# Allowed character set for arbitrary git refs (branches, tags). Stricter
+# than `git check-ref-format` but accepts every legitimate name we expect
+# (e.g. `main`, `feature/foo`, `v1.0`).
+_REF_NAME_RE = re.compile(r"^[A-Za-z0-9._/\-]+$")
+
+
+def _validate_ref_name(name: str) -> None:
+    """Validate `name` looks like a safe git ref before passing it to git.
+
+    Defends against option injection (leading `-`), shell metacharacters,
+    and the common git ref pitfalls listed in `git check-ref-format(1)`:
+    `..`, `@{`, leading/trailing `/` or `.`, `.lock` suffix, `//`. The
+    `_validate_worktree_name` regex is too strict for refs (which may
+    contain `/` and `.`), so this is a separate, slightly looser check.
+    """
+    if (
+        not name
+        or name.startswith("-")
+        or not _REF_NAME_RE.match(name)
+        or ".." in name
+        or "@{" in name
+        or name.startswith(("/", "."))
+        or name.endswith(("/", ".", ".lock"))
+        or "//" in name
+    ):
+        raise HTTPException(status_code=400, detail="Invalid ref name")
+
+
 def _resolve_worktree_path(name: str) -> str:
     """Validate `name` and return the realpath to the worktree.
 
@@ -301,16 +329,22 @@ async def create_worktree(body: CreateWorktreeRequest):
         # Auto-detect base branch AFTER ensuring there is at least one commit.
         # Doing this before the initial commit would fail (no HEAD) and fall back
         # to "main", while git may have created the first commit on "master".
-        base_branch = body.base_branch
-        if not base_branch:
+        # Validate any client-supplied base_branch up front so we never hand
+        # something like `-D` (or any other option-shaped value) to `git branch`.
+        # Auto-detected refs come from `git rev-parse` and are already trusted.
+        if body.base_branch:
+            _validate_ref_name(body.base_branch)
+            base_branch = body.base_branch
+        else:
             stdout, _, rc = await call_git_command_with_output(
                 "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=workspace_dir
             )
             base_branch = stdout.strip() if rc == 0 and stdout.strip() else "main"
 
-        # Create the branch from base
+        # Create the branch from base. `--` ends option processing as a
+        # belt-and-suspenders against any future arg that slips by validation.
         success = await call_git_command(
-            "git", "branch", body.branch_name, base_branch, cwd=workspace_dir
+            "git", "branch", "--", body.branch_name, base_branch, cwd=workspace_dir
         )
         if not success:
             raise HTTPException(
