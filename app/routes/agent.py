@@ -13,6 +13,8 @@ from app.dependencies import get_automation_service
 from app.services.automation_service import (
     AutomationService,
     make_hostname_label,
+    sanitize_automation_name,
+    scan_workspace_sources,
 )
 from app.utils import (
     call_git_command,
@@ -158,65 +160,22 @@ def _resolve_worktree_path(name: str) -> str:
 
 
 def _sanitize_name(name: str) -> str:
-    """Sanitize an automation source name for use in deployment IDs."""
-    return re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
+    """Sanitize an automation source name for use in deployment IDs.
+
+    Backwards-compatible alias kept so older call sites in this module keep
+    working. New code should call `sanitize_automation_name` from
+    `app.services.automation_service` directly.
+    """
+    return sanitize_automation_name(name)
 
 
 def _scan_automations(worktree: str | None = None) -> list[dict]:
     """Scan the filesystem for automation sources (automation.toml).
 
-    If *worktree* is given, scans the worktree directory.
-    Otherwise scans the main workspace directory.
+    Thin wrapper over `scan_workspace_sources` that keeps the existing
+    `_get_workspace_dir()` resolution behaviour.
     """
-    workspace_dir = _get_workspace_dir()
-    if worktree:
-        scan_root = os.path.join(workspace_dir, "worktrees", worktree)
-    else:
-        scan_root = workspace_dir
-    if not os.path.isdir(scan_root):
-        return []
-
-    skip_dirs = {"templates", "worktrees", ".git"}
-    results = []
-    seen_ids: set[str] = set()
-    for root, dirs, files in os.walk(scan_root):
-        dirs[:] = [d for d in dirs if d not in skip_dirs]
-        if "automation.toml" in files:
-            rel_path = os.path.relpath(root, scan_root)
-            source_name = os.path.basename(root)
-            sanitized = _sanitize_name(source_name)
-            rel_parts = rel_path.replace("\\", "/").split("/")
-            bp_name = _sanitize_name(rel_parts[0]) if len(rel_parts) >= 2 else ""
-            bp_prefix = f"{bp_name}-" if bp_name else ""
-
-            if worktree:
-                bp_suffix = f"-{bp_name}" if bp_name else ""
-                context = f"wt-{worktree}{bp_suffix}"
-                deployment_id = f"{sanitized}-{context}-live-dev"
-                relative_path = f"worktrees/{worktree}/{rel_path}"
-                deploy_stage = "live-dev"
-            else:
-                context = bp_name  # just the BP name (or empty)
-                deployment_id = f"{sanitized}-{bp_prefix}live-dev"
-                relative_path = rel_path
-                deploy_stage = "live-dev"
-
-            if deployment_id in seen_ids:
-                continue
-            seen_ids.add(deployment_id)
-            results.append(
-                {
-                    "deployment_id": deployment_id,
-                    "automation_name": sanitized,
-                    "display_name": source_name,
-                    "context": context,
-                    "stage": deploy_stage,
-                    "relative_path": relative_path,
-                    "source_path": root,
-                    "worktree": worktree,
-                }
-            )
-    return results
+    return scan_workspace_sources(_get_workspace_dir(), worktree)
 
 
 @router.get("/deployments")

@@ -380,12 +380,24 @@ async def create_worktree(body: CreateWorktreeRequest):
     return result
 
 
-@router.get("/")
-async def list_worktrees():
+# In-memory cache for the worktree list. Refreshed by the filesystem watcher
+# in `lifespan.py` whenever something under `worktrees/` changes, and
+# broadcast over the `/events/stream` SSE feed as a `worktrees` event so the
+# dashboard never has to poll. `None` means "never computed yet" — the route
+# will compute on demand.
+_worktrees_cache: list[dict] | None = None
+
+
+async def _compute_worktrees() -> list[dict]:
+    """Heavy work: shell out to git (per-worktree) and assemble the listing.
+
+    Same data the `GET /worktrees/` route used to return inline; lifted to a
+    function so both the route and the watcher-driven cache refresh share
+    the implementation.
+    """
     workspace_dir = _get_workspace_dir()
     worktrees_base = _get_worktrees_base()
 
-    # Get worktree list from git
     stdout, stderr, rc = await call_git_command_with_output(
         "git", "worktree", "list", "--porcelain", cwd=workspace_dir
     )
@@ -484,6 +496,27 @@ async def list_worktrees():
         )
 
     return result
+
+
+async def get_cached_worktrees() -> list[dict]:
+    """Return the cached worktree list, computing on first call."""
+    global _worktrees_cache
+    if _worktrees_cache is None:
+        _worktrees_cache = await _compute_worktrees()
+    return _worktrees_cache
+
+
+async def refresh_worktrees() -> list[dict]:
+    """Re-run the worktree scan and update the cache. Used by the filesystem
+    watcher whenever something under `worktrees/` changes."""
+    global _worktrees_cache
+    _worktrees_cache = await _compute_worktrees()
+    return _worktrees_cache
+
+
+@router.get("/")
+async def list_worktrees():
+    return await get_cached_worktrees()
 
 
 class MergeWorktreeResponse(BaseModel):

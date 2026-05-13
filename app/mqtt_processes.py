@@ -4,6 +4,7 @@ import toml
 import re
 import base64
 import asyncio
+import uuid
 from typing import Dict, Any, Optional, Match, Coroutine
 from paho.mqtt import client as mqtt_client
 
@@ -43,33 +44,51 @@ class ProcessService:
         self.workspace_repo_dir = os.environ.get(
             "BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo"
         )
+        # Per-scope cache of discovered processes. Key is the worktree name,
+        # or None for the main repo. Kept fresh by the file-system watchers
+        # in `lifespan.py` (see `WorkspaceChangeHandler` and
+        # `WorktreeChangeHandler`) so REST/SSE consumers don't pay the cost
+        # of a filesystem walk on every request.
+        self._cache: Dict[Optional[str], Dict[str, ProcessInfo]] = {}
 
-    def discover_processes(self) -> Dict[str, ProcessInfo]:
-        """Discover all business processes in the workspace."""
-        processes = {}
+    def _scope_root(self, worktree: Optional[str] = None) -> str:
+        """Filesystem root for a discovery scope."""
+        if worktree:
+            return os.path.join(self.workspace_repo_dir, "worktrees", worktree)
+        return self.workspace_repo_dir
 
-        if not os.path.exists(self.workspace_repo_dir):
-            logger.warning(
-                f"Workspace repository directory does not exist: {self.workspace_repo_dir}"
-            )
+    def discover_processes(
+        self, worktree: Optional[str] = None
+    ) -> Dict[str, ProcessInfo]:
+        """Discover business processes in the main repo or a single worktree.
+
+        A directory qualifies as a BP when it contains both `process.toml`
+        and `README.md`, and the toml declares a `process-id` (matches the
+        existing MQTT contract).
+        """
+        processes: Dict[str, ProcessInfo] = {}
+        root = self._scope_root(worktree)
+
+        if not os.path.exists(root):
             return processes
 
-        for item in os.listdir(self.workspace_repo_dir):
-            process_path = os.path.join(self.workspace_repo_dir, item)
+        for item in os.listdir(root):
+            # Never descend into the worktrees tree when scanning the main repo.
+            if worktree is None and item == "worktrees":
+                continue
+            process_path = os.path.join(root, item)
             if not os.path.isdir(process_path):
                 continue
 
             process_toml_path = os.path.join(process_path, "process.toml")
             process_md_path = os.path.join(process_path, "README.md")
 
-            # Check if this is a valid process directory
             if not (
                 os.path.exists(process_toml_path) and os.path.exists(process_md_path)
             ):
                 continue
 
             try:
-                # Read process.toml to get process-id
                 with open(process_toml_path, "r") as f:
                     process_config = toml.load(f)
                     process_id = process_config.get("process-id")
@@ -85,10 +104,92 @@ class ProcessService:
                 )
 
             except Exception as e:
-                logger.error(f"Error reading process {item}: {e}")
+                logger.error(
+                    f"Error reading process {item} "
+                    f"(worktree={worktree or 'main'}): {e}"
+                )
                 continue
 
         return processes
+
+    # --- In-memory cache + refresh -----------------------------------------
+
+    def refresh(self, worktree: Optional[str] = None) -> Dict[str, ProcessInfo]:
+        """Re-scan one scope and update the cache. Returns the new mapping."""
+        result = self.discover_processes(worktree)
+        self._cache[worktree] = result
+        return result
+
+    def refresh_all(self) -> None:
+        """Warm the cache from scratch: main repo + every worktree on disk."""
+        self.refresh(None)
+        worktrees_root = os.path.join(self.workspace_repo_dir, "worktrees")
+        if not os.path.isdir(worktrees_root):
+            # Drop any stale worktree entries (e.g. all worktrees removed).
+            for key in [k for k in self._cache.keys() if k is not None]:
+                self._cache.pop(key, None)
+            return
+        live = set()
+        for entry in os.listdir(worktrees_root):
+            if entry.startswith("."):
+                continue
+            full = os.path.join(worktrees_root, entry)
+            if not os.path.isdir(full):
+                continue
+            live.add(entry)
+            self.refresh(entry)
+        # Forget worktrees that have disappeared since the last refresh.
+        for stale in [k for k in self._cache.keys() if k and k not in live]:
+            self._cache.pop(stale, None)
+
+    def forget_worktree(self, worktree: str) -> None:
+        """Drop a worktree's cache entry (used when the worktree is removed)."""
+        self._cache.pop(worktree, None)
+
+    def get_all_processes(self) -> list[dict]:
+        """Flat, dedup-by-directory-name list of every known BP.
+
+        Each entry:
+            {
+              "id":        process-id (from toml),
+              "name":      directory name (filesystem-safe),
+              "in_main":   bool — present in the main repo,
+              "worktrees": list of worktree names where the same directory
+                           name has a valid BP,
+              "has_worktrees": derived (worktrees != []),
+            }
+
+        Worktree-only BPs surface as `in_main: false, worktrees: [<wt>]`.
+        """
+        # Build directory-name -> {in_main, worktrees, process_id} aggregations.
+        by_name: Dict[str, dict] = {}
+        for scope, processes in self._cache.items():
+            for info in processes.values():
+                entry = by_name.setdefault(
+                    info.name,
+                    {"id": info.id, "in_main": False, "worktrees": []},
+                )
+                if scope is None:
+                    entry["in_main"] = True
+                    # Main always wins as the canonical id source.
+                    entry["id"] = info.id
+                else:
+                    entry["worktrees"].append(scope)
+
+        out: list[dict] = []
+        for name in sorted(by_name):
+            entry = by_name[name]
+            entry["worktrees"].sort()
+            out.append(
+                {
+                    "id": entry["id"],
+                    "name": name,
+                    "in_main": entry["in_main"],
+                    "worktrees": entry["worktrees"],
+                    "has_worktrees": bool(entry["worktrees"]),
+                }
+            )
+        return out
 
     def get_process_attachments(self, process_id: str) -> list[str]:
         """Get attachments for a specific process."""
@@ -302,26 +403,77 @@ class ProcessService:
         return False
 
     def create_process(self, process_id: str, process_name: str) -> bool:
-        """Create a new process."""
-        # Sanitize process_name to prevent path traversal
-        process_name = os.path.basename(process_name.strip())
-        if not process_name:
-            logger.error(
-                f"Failed to create process {process_id}: process_name is empty or invalid"
-            )
-            return False
+        """Create a new process (MQTT-callable, main-repo only).
 
+        Thin wrapper around `create_business_process` kept for backwards
+        compatibility with the existing MQTT handler.
+        """
         try:
-            process_dir = os.path.join(self.workspace_repo_dir, process_name)
-            os.makedirs(process_dir)
-            with open(os.path.join(process_dir, "process.toml"), "w") as f:
-                f.write(f'process-id = "{process_id}"\n')
-            with open(os.path.join(process_dir, "README.md"), "w") as f:
-                f.write(f"# {process_name}\n")
+            self.create_business_process(
+                name=process_name, worktree=None, process_id=process_id
+            )
             return True
         except Exception as e:
             logger.error(f"Error creating process {process_name}: {e}")
             return False
+
+    def create_business_process(
+        self,
+        name: str,
+        worktree: Optional[str] = None,
+        process_id: Optional[str] = None,
+    ) -> dict:
+        """Create a new business-process directory with a `process.toml` +
+        `README.md` template inside the main repo or a specific worktree.
+
+        Returns the entry as it appears in `get_all_processes()`.
+        """
+        # Strip + basename to defend against path traversal. The HTTP route
+        # additionally validates the input against a regex, but this keeps
+        # the MQTT call path safe too.
+        clean = os.path.basename((name or "").strip())
+        if not clean:
+            raise ValueError("process name is empty or invalid")
+
+        if worktree:
+            scope_root = os.path.join(
+                self.workspace_repo_dir, "worktrees", worktree
+            )
+            if not os.path.isdir(scope_root):
+                raise FileNotFoundError(
+                    f"worktree '{worktree}' does not exist"
+                )
+        else:
+            scope_root = self.workspace_repo_dir
+
+        process_dir = os.path.join(scope_root, clean)
+        if os.path.exists(process_dir):
+            raise FileExistsError(
+                f"a directory named '{clean}' already exists in "
+                f"{'worktree ' + worktree if worktree else 'main'}"
+            )
+
+        pid = process_id or str(uuid.uuid4())
+
+        os.makedirs(process_dir)
+        with open(os.path.join(process_dir, "process.toml"), "w") as f:
+            f.write(f'process-id = "{pid}"\n')
+        with open(os.path.join(process_dir, "README.md"), "w") as f:
+            f.write(f"# {clean}\n")
+
+        # Refresh just the affected scope so the next discovery call sees
+        # the new BP. The HTTP route is expected to broadcast the snapshot
+        # over SSE after this returns; we keep the cache update local to
+        # avoid coupling the service to the broadcaster.
+        self.refresh(worktree)
+
+        return {
+            "id": pid,
+            "name": clean,
+            "in_main": worktree is None,
+            "worktrees": [worktree] if worktree else [],
+            "has_worktrees": bool(worktree),
+        }
 
 
 # Global process service instance
@@ -386,9 +538,17 @@ def match_topic(topic: str) -> tuple[str, Match[str] | None]:
 
 
 async def publish_processes(client: mqtt_client.Client) -> ProcessList:
-    """Publish the list of processes to MQTT."""
+    """Publish the list of (main-repo) processes to MQTT.
+
+    Driven by the cached main-repo entry — `WorkspaceChangeHandler` refreshes
+    that entry before invoking us. Worktree processes are not (yet) published
+    via this MQTT topic; they're surfaced over the new SSE `processes` event
+    for the dashboard.
+    """
     topic = "/processes/list"
-    processes = process_service.discover_processes()
+    processes = process_service._cache.get(None)
+    if processes is None:
+        processes = process_service.refresh(None)
 
     process_list = ProcessList(processes=processes)
 

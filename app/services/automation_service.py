@@ -19,6 +19,7 @@ from app.utils import (
     bitswan_extract_filter,
     get_expose_to_for_stage,
     calculate_git_tree_hash,
+    calculate_merged_git_tree_hash,
     docker_compose_up,
     generate_workspace_url,
     read_bitswan_yaml,
@@ -32,6 +33,7 @@ from app.utils import (
     GitLockContext,
 )
 from app.async_docker import get_async_docker_client, DockerError
+from app.deploy_manager import deploy_manager
 from app.services.image_service import ImageService
 from app.services.oauth2_helpers import (
     OAUTH2_PROXY_PATH,
@@ -50,6 +52,142 @@ OAUTH2_COOKIE_REFRESH = "14m"
 def _short_hash(context: str) -> str:
     """Deterministic 4-char hash for a context string."""
     return hashlib.sha256(context.encode()).hexdigest()[:4]
+
+
+def sanitize_automation_name(name: str) -> str:
+    """Lowercase + replace anything outside [a-z0-9-] with '-', trim hyphens."""
+    return re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
+
+
+def update_automation_toml_image(toml_path: str, new_image_value: str) -> None:
+    """Rewrite the `image` field under `[deployment]` in `automation.toml`,
+    preserving the rest of the file's formatting. Creates the file (and the
+    section) if missing. Mirrors `updateAutomationTomlImageValue` in
+    `bitswan-editor/Extension/src/utils/automationImageBuilder.ts`.
+    """
+    if not os.path.exists(toml_path):
+        os.makedirs(os.path.dirname(toml_path), exist_ok=True)
+        with open(toml_path, "w") as f:
+            f.write(f'[deployment]\nimage = "{new_image_value}"\n')
+        return
+
+    with open(toml_path, "r") as f:
+        content = f.read()
+
+    newline = "\r\n" if "\r\n" in content else "\n"
+    lines = content.split(newline) if newline in content else content.split("\n")
+
+    section_re = re.compile(r"^\s*\[(.+?)\]\s*$")
+    image_re = re.compile(r"^\s*image\s*=\s*")
+
+    in_deployment = False
+    image_line_idx = -1
+    deployment_section_idx = -1
+    for i, raw in enumerate(lines):
+        m = section_re.match(raw)
+        if m:
+            in_deployment = m.group(1).strip().lower() == "deployment"
+            if in_deployment:
+                deployment_section_idx = i
+            continue
+        if in_deployment and image_re.match(raw):
+            image_line_idx = i
+            break
+
+    expected_line = f'image = "{new_image_value}"'
+
+    if image_line_idx >= 0:
+        existing = lines[image_line_idx].strip()
+        if existing == expected_line:
+            return
+        # Preserve leading whitespace.
+        leading_ws_len = len(lines[image_line_idx]) - len(lines[image_line_idx].lstrip())
+        lines[image_line_idx] = lines[image_line_idx][:leading_ws_len] + expected_line
+    elif deployment_section_idx >= 0:
+        lines.insert(deployment_section_idx + 1, expected_line)
+    else:
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.append("[deployment]")
+        lines.append(expected_line)
+
+    with open(toml_path, "w") as f:
+        f.write(newline.join(lines))
+
+
+# Directories never considered as automation sources during workspace scans.
+_SCAN_SKIP_DIRS = {"templates", "worktrees", ".git"}
+
+
+def scan_workspace_sources(
+    workspace_root: str, worktree: str | None = None
+) -> list[dict]:
+    """Walk the filesystem for automation sources marked by `automation.toml`.
+
+    Scans the main workspace when `worktree` is None, or the named worktree's
+    subtree otherwise. Returns one dict per automation directory with enough
+    metadata for both deploy-time use and dashboard discovery.
+
+    Each entry:
+        deployment_id  — id matching the editor's existing live-dev format
+        automation_name — sanitized basename
+        display_name    — original directory name (unsanitized)
+        context         — BP name (or "wt-{worktree}-{bp}" for worktree scans)
+        stage           — always "live-dev" (caller may override)
+        relative_path   — workspace-relative path (with "worktrees/<wt>/" prefix
+                          for worktree scans)
+        source_path     — absolute filesystem path
+        worktree        — the worktree name or None
+    """
+    if worktree:
+        scan_root = os.path.join(workspace_root, "worktrees", worktree)
+    else:
+        scan_root = workspace_root
+    if not os.path.isdir(scan_root):
+        return []
+
+    results: list[dict] = []
+    seen_ids: set[str] = set()
+    for root, dirs, files in os.walk(scan_root):
+        dirs[:] = [d for d in dirs if d not in _SCAN_SKIP_DIRS]
+        if "automation.toml" not in files:
+            continue
+
+        rel_path = os.path.relpath(root, scan_root)
+        source_name = os.path.basename(root)
+        sanitized = sanitize_automation_name(source_name)
+        rel_parts = rel_path.replace("\\", "/").split("/")
+        bp_name = (
+            sanitize_automation_name(rel_parts[0]) if len(rel_parts) >= 2 else ""
+        )
+        bp_prefix = f"{bp_name}-" if bp_name else ""
+
+        if worktree:
+            bp_suffix = f"-{bp_name}" if bp_name else ""
+            context = f"wt-{worktree}{bp_suffix}"
+            deployment_id = f"{sanitized}-{context}-live-dev"
+            relative_path = f"worktrees/{worktree}/{rel_path}"
+        else:
+            context = bp_name
+            deployment_id = f"{sanitized}-{bp_prefix}live-dev"
+            relative_path = rel_path
+
+        if deployment_id in seen_ids:
+            continue
+        seen_ids.add(deployment_id)
+        results.append(
+            {
+                "deployment_id": deployment_id,
+                "automation_name": sanitized,
+                "display_name": source_name,
+                "context": context,
+                "stage": "live-dev",
+                "relative_path": relative_path,
+                "source_path": root,
+                "worktree": worktree,
+            }
+        )
+    return results
 
 
 MAX_NAME_LEN = 24
@@ -170,12 +308,32 @@ class AutomationService:
         )
         return containers
 
+    def _discover_workspace_sources(self) -> list[dict]:
+        """List every `automation.toml` directory under the workspace repo.
+
+        Combines the main workspace with each worktree under
+        `<workspace_repo>/worktrees/`. Used by `get_automations()` to surface
+        automations that exist on disk but have not been deployed yet.
+        """
+        sources = scan_workspace_sources(self.workspace_repo_dir, worktree=None)
+        worktrees_root = os.path.join(self.workspace_repo_dir, "worktrees")
+        if os.path.isdir(worktrees_root):
+            for entry in os.listdir(worktrees_root):
+                if entry.startswith("."):
+                    continue
+                if not os.path.isdir(os.path.join(worktrees_root, entry)):
+                    continue
+                sources.extend(
+                    scan_workspace_sources(self.workspace_repo_dir, worktree=entry)
+                )
+        return sources
+
     async def get_automations(self):
         """Get all automations with their container status using async Docker client."""
         bs_yaml = read_bitswan_yaml(self.gitops_dir)
 
         if not bs_yaml:
-            return []
+            bs_yaml = {"deployments": {}}
 
         pres = {
             deployment_id: DeployedAutomation(
@@ -264,7 +422,334 @@ class AutomationService:
                     replicas=pres[deployment_id].replicas,
                 )
 
-        return list(pres.values())
+        # Discoverable entries — sources that exist on disk but aren't in
+        # `bitswan.yaml`. Surfaced so the dashboard can offer a Deploy button
+        # for them. Matched by automation_name + relative_path against any
+        # already-deployed entry; matched ones are dropped (the deployed entry
+        # already covers them).
+        deployed_keys = {
+            (
+                (p.automation_name or "").lower(),
+                (p.relative_path or "").rstrip("/"),
+            )
+            for p in pres.values()
+        }
+        discoverable: list[DeployedAutomation] = []
+        for src in self._discover_workspace_sources():
+            key = (src["automation_name"], src["relative_path"].rstrip("/"))
+            if key in deployed_keys:
+                continue
+            discoverable.append(
+                DeployedAutomation(
+                    container_id=None,
+                    endpoint_name=None,
+                    created_at=None,
+                    name=src["display_name"],
+                    state=None,
+                    status=None,
+                    deployment_id=None,
+                    active=False,
+                    automation_url=None,
+                    relative_path=src["relative_path"],
+                    stage=None,
+                    automation_name=src["automation_name"],
+                    context=src["context"],
+                    version_hash=None,
+                    replicas=1,
+                )
+            )
+
+        return list(pres.values()) + discoverable
+
+    async def materialize_merged_tree(
+        self, dirs: list[str], checksum: str
+    ) -> str:
+        """Copy `dirs` (later-wins-on-collision) into `gitops_dir/<checksum>/`
+        and commit. No-op if the target directory already exists. Returns the
+        absolute output path.
+
+        Mirrors `_upload_and_commit_asset`'s contract but sources files from
+        the workspace bind-mount instead of an upload stream. Symlinks are
+        preserved verbatim (same as the hash function), so the materialized
+        tree round-trips through `calculate_merged_git_tree_hash` to the same
+        digest.
+        """
+        output_dir = os.path.join(self.gitops_dir, checksum)
+        if os.path.exists(output_dir) and os.listdir(output_dir):
+            return output_dir
+
+        tmp_dir = output_dir + ".tmp"
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        try:
+            self._copy_merged_tree_sync(dirs, tmp_dir)
+            if os.path.exists(output_dir):
+                shutil.rmtree(output_dir)
+            os.rename(tmp_dir, output_dir)
+        except Exception:
+            if os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+
+        async with GitLockContext(timeout=10.0):
+            await call_git_command(
+                "git", "add", f"{checksum}", cwd=self.gitops_dir
+            )
+            await call_git_command(
+                "git",
+                "commit",
+                "-m",
+                f"Add asset {checksum} (workspace-mounted)",
+                cwd=self.gitops_dir,
+            )
+            # Push is best-effort — there may be no remote configured in dev.
+            try:
+                await call_git_command("git", "push", cwd=self.gitops_dir)
+            except Exception:
+                logger.warning(
+                    "git push failed after materialize_merged_tree; continuing"
+                )
+
+        return output_dir
+
+    @staticmethod
+    def _copy_merged_tree_sync(dirs: list[str], dest_root: str) -> None:
+        """Walk `dirs` in order, writing each entry into `dest_root` with
+        later-wins semantics. Mirrors the entry-map logic in
+        `calculate_merged_git_tree_hash` so the materialized tree hashes back
+        to the same checksum.
+        """
+
+        def walk(rel: str) -> None:
+            entries: dict[str, tuple[str, bool, bool]] = {}
+            for d in dirs:
+                full = os.path.join(d, rel) if rel else d
+                if not os.path.isdir(full):
+                    continue
+                for name in os.listdir(full):
+                    if name == ".git":
+                        continue
+                    src = os.path.join(full, name)
+                    is_symlink = os.path.islink(src)
+                    if is_symlink:
+                        entries[name] = (src, False, True)
+                        continue
+                    is_dir = os.path.isdir(src)
+                    if not is_dir and not os.path.isfile(src):
+                        continue
+                    if not os.access(src, os.R_OK):
+                        continue
+                    entries[name] = (src, is_dir, False)
+
+            for name, (src, is_dir, is_symlink) in entries.items():
+                dest = os.path.join(dest_root, rel, name) if rel else os.path.join(dest_root, name)
+                if is_symlink:
+                    target = os.readlink(src)
+                    if os.path.lexists(dest):
+                        os.unlink(dest)
+                    os.symlink(target, dest)
+                elif is_dir:
+                    os.makedirs(dest, exist_ok=True)
+                    walk(f"{rel}/{name}" if rel else name)
+                else:
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    shutil.copy2(src, dest, follow_symlinks=False)
+
+        walk("")
+
+    async def _ensure_automation_image(
+        self,
+        source_dir: str,
+    ) -> str | None:
+        """Build the automation's image from `<source_dir>/image/Dockerfile` and
+        write the resulting tag into `<source_dir>/automation.toml`.
+
+        Mirrors `ensureAutomationImageReady` in
+        `bitswan-editor/Extension/src/utils/automationImageBuilder.ts`:
+
+          * Image content-addressed by the git-tree hash of the `image/`
+            subdirectory.
+          * Tag template: `internal/{workspace}-{bp}-{automation}:sha{checksum}`.
+          * Skips the build if an image with the same tag is already present.
+          * Updates `automation.toml` so subsequent deploys (and the existing
+            editor flow) pick up the freshly-built tag.
+
+        Returns the resolved image tag, or `None` if the automation has no
+        `image/` directory (in which case `deploy_automation` falls back to
+        the runtime-environment default).
+        """
+        image_dir = os.path.join(source_dir, "image")
+        if not os.path.isfile(os.path.join(image_dir, "Dockerfile")):
+            return None
+
+        auto_name = sanitize_automation_name(
+            os.path.basename(source_dir.rstrip(os.sep))
+        )
+        parent = os.path.dirname(source_dir.rstrip(os.sep))
+        bp_name = sanitize_automation_name(os.path.basename(parent))
+        workspace = self.workspace_name or "workspace"
+        tag_root = f"{workspace}-{bp_name}-{auto_name}"
+
+        image_checksum = await calculate_git_tree_hash(image_dir)
+        full_tag = f"internal/{tag_root}:sha{image_checksum}"
+
+        image_service = ImageService()
+        existing_status = image_service._get_build_status(image_checksum)
+        images = await image_service.get_images()
+        already_built = any(
+            im.get("tag") == full_tag and im.get("build_status") in (None, "ready")
+            for im in images
+        )
+
+        if not already_built and existing_status != "building":
+            logger.info(
+                f"Building automation image {full_tag} from {image_dir}"
+            )
+            await image_service.create_image(
+                tag_root,
+                build_context_path=image_dir,
+                checksum=image_checksum,
+            )
+
+        if not already_built:
+            # Poll until the build finishes (or fails). The 5-minute deadline
+            # matches the editor-side helper.
+            deadline = asyncio.get_event_loop().time() + 5 * 60
+            while True:
+                status = image_service._get_build_status(image_checksum)
+                if status == "ready":
+                    break
+                if status == "failed":
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Image build failed for {full_tag}",
+                    )
+                if asyncio.get_event_loop().time() >= deadline:
+                    raise HTTPException(
+                        status_code=504,
+                        detail=f"Image build timed out for {full_tag}",
+                    )
+                await asyncio.sleep(2)
+
+        # Write the resolved tag into automation.toml so the rest of the
+        # deploy pipeline (and the editor) sees the up-to-date image.
+        update_automation_toml_image(
+            os.path.join(source_dir, "automation.toml"), full_tag
+        )
+        return full_tag
+
+    async def start_deploy_from_workspace(
+        self,
+        relative_path: str,
+        stage: str,
+        worktree: str | None = None,
+    ) -> dict:
+        """Deploy an automation directly from the bind-mounted workspace.
+
+        Replaces the editor's upload-and-deploy flow for the cases where the
+        workspace is always co-located with gitops (which it is in our
+        topology). Discovers the source via `scan_workspace_sources`, merges
+        `bitswan_lib` if present, computes a real merged-tree checksum,
+        materializes the merged tree under `<gitops_dir>/<checksum>/`, and
+        delegates to `deploy_automation`.
+
+        `stage="live-dev"` skips the materialization step and uses the literal
+        "live-dev" checksum, matching the existing `start-live-dev` endpoint.
+        """
+        if stage not in {"dev", "live-dev"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported stage '{stage}' (allowed: dev, live-dev)",
+            )
+
+        # Find the source via the same scan agent.py uses, so the
+        # deployment_id format matches. For dev stage we still scan from the
+        # main workspace (no worktree); for live-dev we honour `worktree`.
+        scan_worktree = worktree if stage == "live-dev" else None
+        sources = scan_workspace_sources(
+            self.workspace_repo_dir, worktree=scan_worktree
+        )
+        source = next(
+            (s for s in sources if s["relative_path"] == relative_path), None
+        )
+        if not source:
+            ctx = f" in worktree '{worktree}'" if worktree else ""
+            raise HTTPException(
+                status_code=404,
+                detail=f"No automation source at '{relative_path}'{ctx}",
+            )
+
+        # deployment_id: same template the editor uses for non-live-dev
+        # stage deploys (sanitized-{bp_prefix}{stage}). The scanner's
+        # `deployment_id` ends with `-live-dev`; rewrite the suffix for the
+        # dev stage so the IDs match what bitswan-editor produces.
+        if stage == "dev":
+            deployment_id = source["deployment_id"].removesuffix("-live-dev") + "-dev"
+        else:
+            deployment_id = source["deployment_id"]
+
+        if deploy_manager.is_deploying(deployment_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Deployment {deployment_id} is already in progress",
+            )
+
+        # Resolve source dir + optional bitswan_lib for the merge.
+        source_dir = os.path.realpath(os.path.join(self.workspace_repo_dir, relative_path))
+        ws_root_real = os.path.realpath(self.workspace_repo_dir)
+        if not (source_dir == ws_root_real or source_dir.startswith(ws_root_real + os.sep)):
+            raise HTTPException(status_code=400, detail="Source escapes workspace")
+        bitswan_lib_dir = os.path.join(self.workspace_repo_dir, "bitswan_lib")
+        dirs_to_merge = [source_dir]
+        if os.path.isdir(bitswan_lib_dir):
+            dirs_to_merge.append(bitswan_lib_dir)
+
+        if stage == "live-dev":
+            checksum = "live-dev"
+        else:
+            checksum = await calculate_merged_git_tree_hash(dirs_to_merge)
+            await self.materialize_merged_tree(dirs_to_merge, checksum)
+
+        # Build the per-automation runtime image if the source ships a
+        # Dockerfile under `image/`. Editor uploads do this client-side; for
+        # our workspace-mounted deploys gitops handles it itself, blocking
+        # on the build so `deploy_automation` reads the correct image tag
+        # from the (just-updated) `automation.toml`.
+        try:
+            await self._ensure_automation_image(source_dir)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Image build failed: {exc}",
+            )
+
+        task = await deploy_manager.create_task(deployment_id)
+        if task is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Deployment {deployment_id} is already in progress",
+            )
+
+        deploy_kwargs = dict(
+            deployment_id=deployment_id,
+            checksum=checksum,
+            stage=stage,
+            relative_path=source["relative_path"],
+            automation_name=source["automation_name"],
+            context=source["context"],
+        )
+
+        return {
+            "deployment_id": deployment_id,
+            "task_id": task.task_id,
+            "checksum": checksum,
+            "deploy_kwargs": deploy_kwargs,
+            "source": source,
+        }
 
     async def _upload_and_commit_asset(
         self,

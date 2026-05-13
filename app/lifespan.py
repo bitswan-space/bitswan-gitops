@@ -18,11 +18,44 @@ from .event_broadcaster import event_broadcaster
 from .mqtt import mqtt_resource
 from .mqtt_publish_automations import publish_automations
 from .mqtt_processes import (
+    process_service,
     publish_processes,
     setup_mqtt_subscriptions,
 )
+from .routes.worktrees import (
+    get_cached_worktrees,
+    refresh_worktrees,
+)
 
 logger = logging.getLogger(__name__)
+
+
+async def _broadcast_processes() -> None:
+    """Push the current `processes` snapshot over the SSE feed.
+
+    Consumed by the workspace dashboard so it never has to walk the
+    filesystem itself. Driven from both `WorkspaceChangeHandler` (main repo)
+    and `WorktreeChangeHandler` (per-worktree).
+    """
+    try:
+        await event_broadcaster.broadcast(
+            "processes", process_service.get_all_processes()
+        )
+    except Exception as e:
+        logger.warning("Failed to broadcast processes: %s", e)
+
+
+async def _broadcast_worktrees() -> None:
+    """Push the current `worktrees` snapshot over the SSE feed.
+
+    Carries the same payload as `GET /worktrees/`. Driven by
+    `WorktreeChangeHandler` so the dashboard never has to poll.
+    """
+    try:
+        worktrees = await refresh_worktrees()
+        await event_broadcaster.broadcast("worktrees", worktrees)
+    except Exception as e:
+        logger.warning("Failed to broadcast worktrees: %s", e)
 
 
 class WorkspaceChangeHandler(FileSystemEventHandler):
@@ -42,13 +75,16 @@ class WorkspaceChangeHandler(FileSystemEventHandler):
                 return
             self.update_scheduled = True
 
-        # Use asyncio.sleep to debounce updates
         async def delayed_update():
-            await asyncio.sleep(0.5)  # Wait 500ms for multiple events
+            await asyncio.sleep(0.5)  # debounce 500ms for bursts
             try:
+                # Refresh the main-repo BP cache before downstream publishers
+                # read from it.
+                process_service.refresh(None)
                 await publish_processes(self.client)
+                await _broadcast_processes()
             except Exception as e:
-                print(f"Error publishing processes: {e}")
+                logger.warning("Error publishing processes: %s", e)
             finally:
                 with self.update_lock:
                     self.update_scheduled = False
@@ -70,39 +106,109 @@ class WorkspaceChangeHandler(FileSystemEventHandler):
 
 
 class WorktreeChangeHandler(FileSystemEventHandler):
-    """Watch worktree directories for file changes and broadcast via SSE."""
+    """Watch worktree directories for file changes and broadcast via SSE.
 
-    def __init__(self, event_loop):
+    Beyond the existing `worktrees` ping event, this also keeps the
+    per-worktree `ProcessService` cache fresh and broadcasts the unified
+    `processes` snapshot. The worktree name is derived from the event path
+    so we only re-scan the affected worktree (cheap) rather than every one.
+    """
+
+    def __init__(self, event_loop, worktrees_root: str):
         super().__init__()
         self.event_loop = event_loop
-        self._debounce_task: asyncio.Task | None = None
+        self.worktrees_root = os.path.realpath(worktrees_root)
+        # Per-worktree debounce timers, so simultaneous edits in
+        # different worktrees don't collide.
+        self._debounce_tasks: dict[str | None, asyncio.Task] = {}
+        # Single timer for the "ping" worktrees-list broadcast.
+        self._wt_ping_task: asyncio.Task | None = None
 
-    def _schedule_broadcast(self):
+    def _worktree_from_path(self, path: str) -> str | None:
+        """Return the name of the worktree containing `path`, or None when
+        the event is at the worktrees root (e.g. a worktree being added /
+        removed)."""
+        try:
+            rel = os.path.relpath(os.path.realpath(path), self.worktrees_root)
+        except ValueError:
+            return None
+        if rel == "." or rel.startswith(".."):
+            return None
+        first = rel.replace("\\", "/").split("/", 1)[0]
+        return first or None
+
+    def _schedule_worktrees_ping(self):
+        """Refresh the cached worktree list and broadcast it over SSE.
+
+        Despite the legacy name "ping", this now carries the full data so
+        SSE consumers don't need to round-trip back to REST.
+        """
         async def _broadcast():
-            await asyncio.sleep(1)  # debounce 1s
-            try:
-                await event_broadcaster.broadcast("worktrees", {})
-            except Exception as e:
-                logger.warning("Failed to broadcast worktree change: %s", e)
+            await asyncio.sleep(1)
+            await _broadcast_worktrees()
 
         def _run():
-            if self._debounce_task and not self._debounce_task.done():
-                self._debounce_task.cancel()
-            self._debounce_task = asyncio.ensure_future(_broadcast())
+            if self._wt_ping_task and not self._wt_ping_task.done():
+                self._wt_ping_task.cancel()
+            self._wt_ping_task = asyncio.ensure_future(_broadcast())
 
         self.event_loop.call_soon_threadsafe(_run)
 
+    def _schedule_process_refresh(self, worktree: str | None):
+        """Debounced refresh + SSE broadcast for one worktree's BP cache.
+
+        `worktree=None` means the event hit the worktrees root itself — a
+        worktree was probably added or removed. Refresh the full set so the
+        cache reflects the new shape, then broadcast.
+        """
+        async def _refresh():
+            await asyncio.sleep(0.5)
+            try:
+                if worktree is None:
+                    process_service.refresh_all()
+                else:
+                    if os.path.isdir(
+                        os.path.join(self.worktrees_root, worktree)
+                    ):
+                        process_service.refresh(worktree)
+                    else:
+                        process_service.forget_worktree(worktree)
+                await _broadcast_processes()
+            except Exception as e:
+                logger.warning(
+                    "Failed to refresh worktree processes (%s): %s",
+                    worktree or "<root>",
+                    e,
+                )
+
+        def _run():
+            existing = self._debounce_tasks.get(worktree)
+            if existing and not existing.done():
+                existing.cancel()
+            self._debounce_tasks[worktree] = asyncio.ensure_future(_refresh())
+
+        self.event_loop.call_soon_threadsafe(_run)
+
+    def _handle(self, event):
+        # Always ping the worktrees list (cheap; existing consumers depend
+        # on it).
+        self._schedule_worktrees_ping()
+        # Targeted BP refresh for the affected worktree.
+        src = getattr(event, "src_path", "")
+        wt = self._worktree_from_path(src) if src else None
+        self._schedule_process_refresh(wt)
+
     def on_created(self, event):
-        self._schedule_broadcast()
+        self._handle(event)
 
     def on_deleted(self, event):
-        self._schedule_broadcast()
+        self._handle(event)
 
     def on_modified(self, event):
-        self._schedule_broadcast()
+        self._handle(event)
 
     def on_moved(self, event):
-        self._schedule_broadcast()
+        self._handle(event)
 
 
 async def _broadcast_automations_after_delay():
@@ -209,6 +315,18 @@ async def lifespan(app: FastAPI):
         # Set up MQTT subscriptions for process operations
         await setup_mqtt_subscriptions(client)
 
+        # Warm the ProcessService cache before publishing anything — both
+        # `publish_processes` (MQTT) and `_broadcast_processes` (SSE) read
+        # from it.
+        process_service.refresh_all()
+
+        # Warm the worktree-list cache so the first SSE consumer doesn't
+        # pay the git-cost of an initial scan.
+        try:
+            await refresh_worktrees()
+        except Exception as e:
+            logger.warning("Initial worktrees cache warm failed: %s", e)
+
         # Publish processes and automations
         await publish_processes(client)
         await publish_automations(client)
@@ -235,7 +353,9 @@ async def lifespan(app: FastAPI):
         # Watch worktree directories for file changes → SSE push
         worktrees_dir = os.path.join(workspace_dir, "worktrees")
         if os.path.exists(worktrees_dir):
-            wt_handler = WorktreeChangeHandler(asyncio.get_event_loop())
+            wt_handler = WorktreeChangeHandler(
+                asyncio.get_event_loop(), worktrees_dir
+            )
             worktree_observer = Observer()
             worktree_observer.schedule(wt_handler, worktrees_dir, recursive=True)
             worktree_observer.start()

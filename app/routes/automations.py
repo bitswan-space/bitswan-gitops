@@ -53,6 +53,66 @@ class StartLiveDevRequest(BaseModel):
     worktree: str | None = None
 
 
+class StartDeployRequest(BaseModel):
+    relative_path: str
+    stage: str  # "dev" or "live-dev"
+    worktree: str | None = None
+
+
+@router.post("/start-deploy")
+async def start_deploy(
+    body: StartDeployRequest,
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    """Deploy an automation from the bind-mounted workspace.
+
+    Replaces the editor's upload+deploy flow for environments where the
+    workspace is co-located with gitops. The body is intentionally minimal
+    (relative_path, stage, worktree?) — gitops reads the automation source
+    directly from `/workspace-repo`, merges `bitswan_lib` if present,
+    computes the merged-tree checksum, materialises `<checksum>/` if needed,
+    and kicks off the existing deploy pipeline.
+    """
+    prep = await automation_service.start_deploy_from_workspace(
+        relative_path=body.relative_path,
+        stage=body.stage,
+        worktree=body.worktree,
+    )
+
+    _spawn_bg(
+        _run_deploy_with_progress(
+            prep["task_id"],
+            prep["deployment_id"],
+            automation_service,
+            prep["deploy_kwargs"],
+        )
+    )
+
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+    gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "")
+    url = ""
+    if gitops_domain:
+        source = prep["source"]
+        label = make_hostname_label(
+            workspace_name,
+            source["automation_name"],
+            source["context"],
+            body.stage,
+        )
+        url = f"https://{label}.{gitops_domain}"
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "task_id": prep["task_id"],
+            "deployment_id": prep["deployment_id"],
+            "checksum": prep["checksum"],
+            "url": url,
+            "status": "pending",
+        },
+    )
+
+
 @router.post("/start-live-dev")
 async def start_live_dev(
     body: StartLiveDevRequest,
