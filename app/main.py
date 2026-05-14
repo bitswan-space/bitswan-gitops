@@ -14,6 +14,7 @@ from app.routes.processes import router as processes_router
 from app.routes.worktrees import router as worktrees_router
 from app.routes.agent import router as agent_router
 from app.routes.backups import router as backups_router
+from app.routes.templates import router as templates_router
 from app.dependencies import verify_token
 
 
@@ -50,7 +51,11 @@ async def log_slow_requests(request: Request, call_next):
     return response
 
 
-# Apply auth to protected routes only
+# Apply auth to protected routes only.
+# Templates router is registered BEFORE automations router so its concrete
+# `POST /automations/from-template` route wins against the parameterised
+# `POST /automations/{deployment_id}` catch-all in the automations router.
+app.include_router(templates_router, dependencies=[Depends(verify_token)])
 app.include_router(automations_router, dependencies=[Depends(verify_token)])
 app.include_router(images_router, dependencies=[Depends(verify_token)])
 app.include_router(jupyter_router, dependencies=[Depends(verify_token)])
