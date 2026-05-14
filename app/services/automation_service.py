@@ -241,6 +241,13 @@ class AutomationService:
         )
         # Cache full history per deployment_id: {deployment_id: (commit_hash, [entries])}
         self._history_cache: dict[str, tuple[str, list]] = {}
+        # Scope-keyed cache mirroring ProcessService._cache. Key = worktree
+        # name, or None for main. Holds STATIC entries (yaml + filesystem
+        # scan); Docker container state is overlaid live by get_automations()
+        # so we don't have to couple this cache to Docker events. Refreshed
+        # by the filesystem watchers in app/lifespan.py whenever
+        # bitswan.yaml or any automation.toml changes.
+        self._cache: dict[str | None, list[DeployedAutomation]] = {}
 
     async def warm_history_cache(self):
         """Pre-warm the history cache for all known deployments."""
@@ -308,134 +315,63 @@ class AutomationService:
         )
         return containers
 
-    def _discover_workspace_sources(self) -> list[dict]:
-        """List every `automation.toml` directory under the workspace repo.
+    def _yaml_scope(self, relative_path: str | None) -> str | None:
+        """Classify a `bitswan.yaml` deployment into a cache scope.
 
-        Combines the main workspace with each worktree under
-        `<workspace_repo>/worktrees/`. Used by `get_automations()` to surface
-        automations that exist on disk but have not been deployed yet.
+        Main scope = `None` (everything not under `worktrees/`).
+        Worktree scope = the worktree's name, parsed out of the path.
         """
-        sources = scan_workspace_sources(self.workspace_repo_dir, worktree=None)
-        worktrees_root = os.path.join(self.workspace_repo_dir, "worktrees")
-        if os.path.isdir(worktrees_root):
-            for entry in os.listdir(worktrees_root):
-                if entry.startswith("."):
-                    continue
-                if not os.path.isdir(os.path.join(worktrees_root, entry)):
-                    continue
-                sources.extend(
-                    scan_workspace_sources(self.workspace_repo_dir, worktree=entry)
-                )
-        return sources
+        if not relative_path:
+            return None
+        norm = relative_path.replace("\\", "/").lstrip("/")
+        if not norm.startswith("worktrees/"):
+            return None
+        rest = norm[len("worktrees/") :]
+        wt = rest.split("/", 1)[0]
+        return wt or None
 
-    async def get_automations(self):
-        """Get all automations with their container status using async Docker client."""
-        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+    def _build_static_entries(
+        self, scope: str | None, bs_yaml: dict | None
+    ) -> list[DeployedAutomation]:
+        """Build the static (yaml + scan) entries for a single scope.
 
-        if not bs_yaml:
-            bs_yaml = {"deployments": {}}
-
-        pres = {
-            deployment_id: DeployedAutomation(
-                container_id=None,
-                endpoint_name=None,
-                created_at=None,
-                name=deployment_id,
-                state=None,
-                status=None,
-                deployment_id=deployment_id,
-                active=bs_yaml["deployments"][deployment_id].get("active", False),
-                automation_url=None,
-                relative_path=bs_yaml["deployments"][deployment_id].get(
-                    "relative_path", None
-                ),
-                stage=bs_yaml["deployments"][deployment_id].get("stage", "production"),
-                automation_name=bs_yaml["deployments"][deployment_id].get(
-                    "automation_name", None
-                ),
-                context=bs_yaml["deployments"][deployment_id].get("context", None),
-                version_hash=bs_yaml["deployments"][deployment_id].get(
-                    "checksum", None
-                ),
-                replicas=bs_yaml["deployments"][deployment_id].get("replicas", 1),
-            )
-            for deployment_id in bs_yaml["deployments"]
-        }
-
-        docker_client = get_async_docker_client()
-        info = await docker_client.info()
-        containers = await self.get_containers()
-
-        gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", None)
-
-        dep_configs = bs_yaml.get("deployments", {})
-
-        # updated pres with active containers
-        for container in containers:
-            labels = container.get("Labels", {})
-            deployment_id = labels.get("gitops.deployment_id")
-            if deployment_id and deployment_id in pres:
-                label = labels.get("gitops.intended_exposed", "false")
-
-                dep_conf = dep_configs.get(deployment_id, {})
-                url = generate_workspace_url(
-                    self.workspace_name,
-                    dep_conf.get("automation_name", deployment_id),
-                    dep_conf.get("context", ""),
-                    dep_conf.get("stage", "production") or "production",
-                    gitops_domain,
-                    True,
-                )
-
-                if label != "true":
-                    url = None
-
-                # Parse created timestamp
-                created_str = container.get("Created")
-                created_at = None
-                if created_str:
-                    try:
-                        # Docker API returns Unix timestamp
-                        created_at = datetime.utcfromtimestamp(created_str)
-                    except (ValueError, TypeError):
-                        pass
-
-                # Get container state
-                state = container.get("State", "unknown")
-                status = container.get("Status", "")
-
-                pres[deployment_id] = DeployedAutomation(
-                    container_id=container.get("Id"),
-                    endpoint_name=info.get("Name"),
-                    created_at=created_at,
+        Container/state/status/url fields are left blank — Docker overlay
+        is applied live by `get_automations()` so we don't have to couple
+        the cache to Docker events.
+        """
+        deployments = (bs_yaml or {}).get("deployments", {}) or {}
+        deployed: list[DeployedAutomation] = []
+        for deployment_id, cfg in deployments.items():
+            if self._yaml_scope(cfg.get("relative_path")) != scope:
+                continue
+            deployed.append(
+                DeployedAutomation(
+                    container_id=None,
+                    endpoint_name=None,
+                    created_at=None,
                     name=deployment_id,
-                    state=state,
-                    status=status,
+                    state=None,
+                    status=None,
                     deployment_id=deployment_id,
-                    active=pres[deployment_id].active,
-                    automation_url=url,
-                    relative_path=pres[deployment_id].relative_path,
-                    stage=pres[deployment_id].stage,
-                    automation_name=pres[deployment_id].automation_name,
-                    context=pres[deployment_id].context,
-                    version_hash=pres[deployment_id].version_hash,
-                    replicas=pres[deployment_id].replicas,
+                    active=cfg.get("active", False),
+                    automation_url=None,
+                    relative_path=cfg.get("relative_path", None),
+                    stage=cfg.get("stage", "production"),
+                    automation_name=cfg.get("automation_name", None),
+                    context=cfg.get("context", None),
+                    version_hash=cfg.get("checksum", None),
+                    replicas=cfg.get("replicas", 1),
                 )
-
-        # Discoverable entries — sources that exist on disk but aren't in
-        # `bitswan.yaml`. Surfaced so the dashboard can offer a Deploy button
-        # for them. Matched by automation_name + relative_path against any
-        # already-deployed entry; matched ones are dropped (the deployed entry
-        # already covers them).
-        deployed_keys = {
-            (
-                (p.automation_name or "").lower(),
-                (p.relative_path or "").rstrip("/"),
             )
-            for p in pres.values()
+
+        # Discoverable: on-disk automations not represented in bitswan.yaml,
+        # matched by (automation_name, relative_path) — same key as before.
+        deployed_keys = {
+            ((d.automation_name or "").lower(), (d.relative_path or "").rstrip("/"))
+            for d in deployed
         }
         discoverable: list[DeployedAutomation] = []
-        for src in self._discover_workspace_sources():
+        for src in scan_workspace_sources(self.workspace_repo_dir, worktree=scope):
             key = (src["automation_name"], src["relative_path"].rstrip("/"))
             if key in deployed_keys:
                 continue
@@ -459,7 +395,115 @@ class AutomationService:
                 )
             )
 
-        return list(pres.values()) + discoverable
+        return deployed + discoverable
+
+    async def refresh(self, worktree: str | None = None) -> list[DeployedAutomation]:
+        """Recompute one scope's static automation list and cache it."""
+        bs_yaml = read_bitswan_yaml(self.gitops_dir) or {"deployments": {}}
+        entries = self._build_static_entries(worktree, bs_yaml)
+        self._cache[worktree] = entries
+        return entries
+
+    async def refresh_all(self) -> None:
+        """Refresh main + every worktree on disk; drop stale scope keys."""
+        bs_yaml = read_bitswan_yaml(self.gitops_dir) or {"deployments": {}}
+        self._cache[None] = self._build_static_entries(None, bs_yaml)
+
+        worktrees_root = os.path.join(self.workspace_repo_dir, "worktrees")
+        live: set[str] = set()
+        if os.path.isdir(worktrees_root):
+            for entry in os.listdir(worktrees_root):
+                if entry.startswith("."):
+                    continue
+                if not os.path.isdir(os.path.join(worktrees_root, entry)):
+                    continue
+                live.add(entry)
+                self._cache[entry] = self._build_static_entries(entry, bs_yaml)
+
+        # Forget worktree scopes that have disappeared since the last refresh.
+        for stale in [k for k in self._cache.keys() if k is not None and k not in live]:
+            self._cache.pop(stale, None)
+
+    def forget_worktree(self, worktree: str) -> None:
+        self._cache.pop(worktree, None)
+
+    def _apply_docker_overlay(
+        self,
+        entries: list[DeployedAutomation],
+        containers: list[dict],
+        info: dict,
+        bs_yaml: dict,
+    ) -> None:
+        """Fill in container_id/state/status/created_at/automation_url/endpoint_name
+        on the cached static entries — in place, since each `get_automations()`
+        call constructs fresh DeployedAutomation copies from the cache snapshot.
+        """
+        gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", None)
+        dep_configs = (bs_yaml or {}).get("deployments", {}) or {}
+        by_id = {a.deployment_id: a for a in entries if a.deployment_id}
+
+        for container in containers:
+            labels = container.get("Labels", {})
+            deployment_id = labels.get("gitops.deployment_id")
+            if not deployment_id or deployment_id not in by_id:
+                continue
+            a = by_id[deployment_id]
+
+            label = labels.get("gitops.intended_exposed", "false")
+            dep_conf = dep_configs.get(deployment_id, {})
+            url = generate_workspace_url(
+                self.workspace_name,
+                dep_conf.get("automation_name", deployment_id),
+                dep_conf.get("context", ""),
+                dep_conf.get("stage", "production") or "production",
+                gitops_domain,
+                True,
+            )
+            if label != "true":
+                url = None
+
+            created_str = container.get("Created")
+            created_at = None
+            if created_str:
+                try:
+                    created_at = datetime.utcfromtimestamp(created_str)
+                except (ValueError, TypeError):
+                    pass
+
+            a.container_id = container.get("Id")
+            a.endpoint_name = info.get("Name")
+            a.created_at = created_at
+            a.state = container.get("State", "unknown")
+            a.status = container.get("Status", "")
+            a.automation_url = url
+
+    async def get_automations(self) -> list[DeployedAutomation]:
+        """Return every automation across all scopes, with live Docker state.
+
+        Reads the scope-keyed static cache built by `refresh()` / `refresh_all()`;
+        Docker container state is fetched on each call and overlaid in place
+        (cheap — one Docker API call). The cache is warmed on first use if a
+        startup warmup hasn't run yet.
+        """
+        if not self._cache:
+            await self.refresh_all()
+
+        # Re-read bitswan.yaml for the overlay (URL generation needs the
+        # current deployment config). The cache itself was built from the
+        # same file, so the cost is minor.
+        bs_yaml = read_bitswan_yaml(self.gitops_dir) or {"deployments": {}}
+
+        # Deep-copy each entry so the overlay doesn't mutate cached objects.
+        result: list[DeployedAutomation] = []
+        for entries in self._cache.values():
+            for a in entries:
+                result.append(a.model_copy() if hasattr(a, "model_copy") else a)
+
+        docker_client = get_async_docker_client()
+        info = await docker_client.info()
+        containers = await self.get_containers()
+        self._apply_docker_overlay(result, containers, info, bs_yaml)
+        return result
 
     async def materialize_merged_tree(
         self, dirs: list[str], checksum: str

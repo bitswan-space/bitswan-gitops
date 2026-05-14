@@ -58,8 +58,38 @@ async def _broadcast_worktrees() -> None:
         logger.warning("Failed to broadcast worktrees: %s", e)
 
 
+async def _broadcast_automations() -> None:
+    """Push the current `automations` snapshot over the SSE feed.
+
+    Driven by the filesystem watchers (when `bitswan.yaml` or any
+    `automation.toml` changes) and by the Docker event watcher. Reads from
+    `AutomationService.get_automations()` which now consults the scope-keyed
+    cache and overlays live Docker state on read.
+    """
+    try:
+        automations = await get_automation_service().get_automations()
+        data = [
+            a.model_dump(mode="json") if hasattr(a, "model_dump") else a
+            for a in automations
+        ]
+        await event_broadcaster.broadcast("automations", data)
+    except Exception as e:
+        logger.warning("Failed to broadcast automations: %s", e)
+
+
 class WorkspaceChangeHandler(FileSystemEventHandler):
-    """Handle file system changes in the workspace directory."""
+    """Handle file system changes in the workspace directory.
+
+    Two parallel pipelines:
+      - process refresh (`process.toml` create/delete/move, plus directory
+        events that add/remove BPs).
+      - automation refresh (`automation.toml` / `bitswan.yaml` changes).
+
+    Both share the same coarse "anything happened" trigger for create/
+    delete/move events, since those almost always coincide with BP or
+    automation creation. `on_modified` is filtered by basename so editing
+    a python file inside an automation doesn't fire either refresh.
+    """
 
     def __init__(self, client, event_loop):
         super().__init__()
@@ -67,9 +97,11 @@ class WorkspaceChangeHandler(FileSystemEventHandler):
         self.event_loop = event_loop
         self.update_scheduled = False
         self.update_lock = threading.Lock()
+        self.automations_scheduled = False
+        self.automations_lock = threading.Lock()
 
     def schedule_update(self):
-        """Schedule an update to avoid multiple rapid updates."""
+        """Schedule a process-cache refresh + broadcast (debounced 500ms)."""
         with self.update_lock:
             if self.update_scheduled:
                 return
@@ -91,36 +123,82 @@ class WorkspaceChangeHandler(FileSystemEventHandler):
 
         asyncio.run_coroutine_threadsafe(delayed_update(), self.event_loop)
 
+    def schedule_automations_update(self):
+        """Schedule an automation-cache refresh + broadcast (debounced 500ms).
+
+        Runs independently of the process pipeline so concurrent events don't
+        clobber each other. `refresh_all` is cheap (single bitswan.yaml read
+        + per-scope filesystem scan).
+        """
+        with self.automations_lock:
+            if self.automations_scheduled:
+                return
+            self.automations_scheduled = True
+
+        async def delayed_update():
+            await asyncio.sleep(0.5)
+            try:
+                await get_automation_service().refresh_all()
+                await _broadcast_automations()
+            except Exception as e:
+                logger.warning("Error refreshing automations: %s", e)
+            finally:
+                with self.automations_lock:
+                    self.automations_scheduled = False
+
+        asyncio.run_coroutine_threadsafe(delayed_update(), self.event_loop)
+
     def on_created(self, event):
         self.schedule_update()
+        self.schedule_automations_update()
 
     def on_deleted(self, event):
         self.schedule_update()
+        self.schedule_automations_update()
 
     def on_moved(self, event):
         self.schedule_update()
+        self.schedule_automations_update()
 
     def on_modified(self, event):
-        if event.src_path.endswith("process.toml"):
+        src = getattr(event, "src_path", "") or ""
+        if src.endswith("process.toml"):
             self.schedule_update()
+        if src.endswith("automation.toml") or src.endswith("bitswan.yaml"):
+            self.schedule_automations_update()
 
 
 class WorktreeChangeHandler(FileSystemEventHandler):
     """Watch worktree directories for file changes and broadcast via SSE.
 
-    Beyond the existing `worktrees` ping event, this also keeps the
-    per-worktree `ProcessService` cache fresh and broadcasts the unified
-    `processes` snapshot. The worktree name is derived from the event path
-    so we only re-scan the affected worktree (cheap) rather than every one.
+    Narrowly filtered so editing code inside an automation doesn't fire any
+    refresh — only events that meaningfully change the state we publish:
+      - worktrees-list ping: events at the worktrees root (worktree added /
+        removed), or events under a worktree's `.git/` (commit detection,
+        which flips `synced` / `commit_hash`).
+      - per-worktree process refresh: `process.toml` events.
+      - per-worktree automation refresh: `automation.toml` events.
+      - per-worktree automation refresh-all on `bitswan.yaml` events
+        (defensive — bitswan.yaml normally lives at the gitops root, not
+        inside a worktree).
+
+    The worktree name is derived from the event path so we only re-scan the
+    affected scope.
     """
+
+    # Path-suffix markers that flip git state we publish — commits, index
+    # writes, branch tip moves. Anything else under `.git/` (e.g. pack file
+    # housekeeping) is ignored.
+    _GIT_STATE_SUFFIXES = ("/.git/HEAD", "/.git/index", "/.git/ORIG_HEAD")
+    _GIT_REFS_SEGMENT = "/.git/refs/heads/"
 
     def __init__(self, event_loop, worktrees_root: str):
         super().__init__()
         self.event_loop = event_loop
         self.worktrees_root = os.path.realpath(worktrees_root)
-        # Per-worktree debounce timers, so simultaneous edits in
-        # different worktrees don't collide.
-        self._debounce_tasks: dict[str | None, asyncio.Task] = {}
+        # Per-worktree debounce timers, one set per refresh pipeline.
+        self._process_tasks: dict[str | None, asyncio.Task] = {}
+        self._automation_tasks: dict[str | None, asyncio.Task] = {}
         # Single timer for the "ping" worktrees-list broadcast.
         self._wt_ping_task: asyncio.Task | None = None
 
@@ -137,12 +215,17 @@ class WorktreeChangeHandler(FileSystemEventHandler):
         first = rel.replace("\\", "/").split("/", 1)[0]
         return first or None
 
-    def _schedule_worktrees_ping(self):
-        """Refresh the cached worktree list and broadcast it over SSE.
+    def _is_git_state_change(self, path: str) -> bool:
+        """True for paths whose change can flip `synced` / `commit_hash`."""
+        if not path:
+            return False
+        norm = path.replace("\\", "/")
+        if norm.endswith(self._GIT_STATE_SUFFIXES):
+            return True
+        return self._GIT_REFS_SEGMENT in norm
 
-        Despite the legacy name "ping", this now carries the full data so
-        SSE consumers don't need to round-trip back to REST.
-        """
+    def _schedule_worktrees_ping(self):
+        """Refresh the cached worktree list and broadcast it over SSE."""
         async def _broadcast():
             await asyncio.sleep(1)
             await _broadcast_worktrees()
@@ -182,21 +265,74 @@ class WorktreeChangeHandler(FileSystemEventHandler):
                 )
 
         def _run():
-            existing = self._debounce_tasks.get(worktree)
+            existing = self._process_tasks.get(worktree)
             if existing and not existing.done():
                 existing.cancel()
-            self._debounce_tasks[worktree] = asyncio.ensure_future(_refresh())
+            self._process_tasks[worktree] = asyncio.ensure_future(_refresh())
+
+        self.event_loop.call_soon_threadsafe(_run)
+
+    def _schedule_automations_refresh(self, worktree: str | None):
+        """Debounced refresh + SSE broadcast for one worktree's automation cache."""
+        async def _refresh():
+            await asyncio.sleep(0.5)
+            try:
+                svc = get_automation_service()
+                if worktree is None:
+                    await svc.refresh_all()
+                else:
+                    if os.path.isdir(
+                        os.path.join(self.worktrees_root, worktree)
+                    ):
+                        await svc.refresh(worktree)
+                    else:
+                        svc.forget_worktree(worktree)
+                await _broadcast_automations()
+            except Exception as e:
+                logger.warning(
+                    "Failed to refresh worktree automations (%s): %s",
+                    worktree or "<root>",
+                    e,
+                )
+
+        def _run():
+            existing = self._automation_tasks.get(worktree)
+            if existing and not existing.done():
+                existing.cancel()
+            self._automation_tasks[worktree] = asyncio.ensure_future(_refresh())
 
         self.event_loop.call_soon_threadsafe(_run)
 
     def _handle(self, event):
-        # Always ping the worktrees list (cheap; existing consumers depend
-        # on it).
-        self._schedule_worktrees_ping()
-        # Targeted BP refresh for the affected worktree.
-        src = getattr(event, "src_path", "")
+        src = getattr(event, "src_path", "") or ""
         wt = self._worktree_from_path(src) if src else None
-        self._schedule_process_refresh(wt)
+        basename = os.path.basename(src)
+
+        # 1. Worktree-list ping: only on root events (add/remove) or git
+        #    state changes (commit, index write, ref update) — NOT on every
+        #    code edit inside a worktree.
+        if wt is None or self._is_git_state_change(src):
+            self._schedule_worktrees_ping()
+
+        # 2. Worktree directory itself appearing / disappearing → full
+        #    refresh of both pipelines so the new scope is picked up (or
+        #    stale scope dropped).
+        if wt is None:
+            self._schedule_process_refresh(None)
+            self._schedule_automations_refresh(None)
+            return
+
+        # 3. Targeted refresh by file basename. Skip everything else (code
+        #    edits, asset writes, etc.) to keep noise off the SSE feed.
+        if basename == "process.toml":
+            self._schedule_process_refresh(wt)
+        if basename == "automation.toml":
+            self._schedule_automations_refresh(wt)
+        if basename == "bitswan.yaml":
+            # bitswan.yaml normally lives at the gitops root, not under a
+            # worktree, but treat any in-worktree occurrence as a global
+            # automation-state change.
+            self._schedule_automations_refresh(None)
 
     def on_created(self, event):
         self._handle(event)
@@ -212,17 +348,14 @@ class WorktreeChangeHandler(FileSystemEventHandler):
 
 
 async def _broadcast_automations_after_delay():
-    """Debounced broadcast of automation state after Docker events settle."""
+    """Debounced broadcast of automation state after Docker events settle.
+
+    Cache is unchanged here — `get_automations()` overlays live Docker state
+    on the static cache on every call, so a Docker event just needs to
+    trigger a re-broadcast.
+    """
     await asyncio.sleep(0.5)
-    try:
-        automations = await get_automation_service().get_automations()
-        data = [
-            a.model_dump(mode="json") if hasattr(a, "model_dump") else a
-            for a in automations
-        ]
-        await event_broadcaster.broadcast("automations", data)
-    except Exception as e:
-        logger.warning("Failed to broadcast automations: %s", e)
+    await _broadcast_automations()
 
 
 async def _docker_event_watcher():
@@ -319,6 +452,14 @@ async def lifespan(app: FastAPI):
         # `publish_processes` (MQTT) and `_broadcast_processes` (SSE) read
         # from it.
         process_service.refresh_all()
+
+        # Warm the AutomationService scope-keyed cache. Cheap (filesystem
+        # scan + bitswan.yaml read) and means the first GET /automations/
+        # or SSE consumer doesn't pay for an inline `refresh_all()`.
+        try:
+            await get_automation_service().refresh_all()
+        except Exception as e:
+            logger.warning("Initial automations cache warm failed: %s", e)
 
         # Warm the worktree-list cache so the first SSE consumer doesn't
         # pay the git-cost of an initial scan.
