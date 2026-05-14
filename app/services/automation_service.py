@@ -2487,12 +2487,14 @@ fi
                                 "client_secret"
                             ],
                             "OAUTH2_PROXY_SCOPE": "openid email profile",
+                            "OAUTH2_PROXY_HTTP_ADDRESS": f"0.0.0.0:{self.oauth2_proxy_port}",
                             "OAUTH2_PROXY_UPSTREAMS": f"http://127.0.0.1:{port}",
                             "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
                             "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(expose_to_groups),
                             "OAUTH2_PROXY_SET_XAUTHREQUEST": "true",
                             "OAUTH2_PROXY_PASS_ACCESS_TOKEN": "true",
                             "OAUTH2_PROXY_COOKIE_REFRESH": OAUTH2_COOKIE_REFRESH,
+                            "OAUTH2_PROXY_EMAIL_DOMAINS": "*",
                             "BITSWAN_AUTOMATION_URL": automation_url,
                         }
                     )
