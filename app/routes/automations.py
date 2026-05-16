@@ -24,6 +24,7 @@ from app.event_broadcaster import event_broadcaster
 from app.routes.agent import _scan_automations
 from app.services.automation_service import AutomationService, make_hostname_label
 from app.dependencies import get_automation_service
+from app.async_docker import get_async_docker_client, DockerError
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,41 @@ async def start_live_dev(
             detail=f"Deployment {deployment_id} is already in progress",
         )
 
+    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
+
+    # Pre-flight: check for container name conflicts before reserving a deploy slot.
+    # Must run here in the route handler (not inside the background task) so we can
+    # return HTTP 409; exceptions raised in background tasks are not propagated to callers.
+    compose_service_name = make_hostname_label(
+        workspace_name,
+        source["automation_name"],
+        source["context"],
+        "live-dev",
+    )
+    docker_client = get_async_docker_client()
+    try:
+        existing = await docker_client.get_container(compose_service_name)
+        existing_dep_id = (
+            existing.get("Config", {}).get("Labels", {}).get("gitops.deployment_id", "")
+        )
+        if existing_dep_id == deployment_id:
+            # Scenario A: our container — remove it so compose can recreate it cleanly.
+            await docker_client.remove_container(compose_service_name, force=True)
+        else:
+            # Scenario B: foreign container — reject with 409 so the user can clean up.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A container named '{compose_service_name}' already exists "
+                    f"but is not managed by this GitOps instance "
+                    f"(deployment_id '{existing_dep_id or 'none'}'). "
+                    f"Remove it manually and retry."
+                ),
+            )
+    except DockerError as e:
+        if e.status_code != 404:
+            raise  # unexpected Docker API error — propagate
+
     task = await deploy_manager.create_task(deployment_id)
     if task is None:
         raise HTTPException(
@@ -100,7 +136,6 @@ async def start_live_dev(
         )
     )
 
-    workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "")
     url = ""
     if gitops_domain:
