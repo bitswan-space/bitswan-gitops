@@ -316,8 +316,6 @@ async def create_automation_from_template(
     if template_id and group_id:
         raise ValueError("template_id and group_id are mutually exclusive")
 
-    listing = discover_templates(workspace_root)
-
     bp_full, bp_rel = _bp_destination(workspace_root, bp, worktree)
     os.makedirs(bp_full, exist_ok=True)
 

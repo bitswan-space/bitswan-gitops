@@ -22,10 +22,7 @@ from .mqtt_processes import (
     publish_processes,
     setup_mqtt_subscriptions,
 )
-from .routes.worktrees import (
-    get_cached_worktrees,
-    refresh_worktrees,
-)
+from .routes.worktrees import refresh_worktrees
 
 logger = logging.getLogger(__name__)
 
