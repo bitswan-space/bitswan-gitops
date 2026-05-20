@@ -101,7 +101,9 @@ def update_automation_toml_image(toml_path: str, new_image_value: str) -> None:
         if existing == expected_line:
             return
         # Preserve leading whitespace.
-        leading_ws_len = len(lines[image_line_idx]) - len(lines[image_line_idx].lstrip())
+        leading_ws_len = len(lines[image_line_idx]) - len(
+            lines[image_line_idx].lstrip()
+        )
         lines[image_line_idx] = lines[image_line_idx][:leading_ws_len] + expected_line
     elif deployment_section_idx >= 0:
         lines.insert(deployment_section_idx + 1, expected_line)
@@ -157,9 +159,7 @@ def scan_workspace_sources(
         source_name = os.path.basename(root)
         sanitized = sanitize_automation_name(source_name)
         rel_parts = rel_path.replace("\\", "/").split("/")
-        bp_name = (
-            sanitize_automation_name(rel_parts[0]) if len(rel_parts) >= 2 else ""
-        )
+        bp_name = sanitize_automation_name(rel_parts[0]) if len(rel_parts) >= 2 else ""
         bp_prefix = f"{bp_name}-" if bp_name else ""
 
         if worktree:
@@ -505,9 +505,7 @@ class AutomationService:
         self._apply_docker_overlay(result, containers, info, bs_yaml)
         return result
 
-    async def materialize_merged_tree(
-        self, dirs: list[str], checksum: str
-    ) -> str:
+    async def materialize_merged_tree(self, dirs: list[str], checksum: str) -> str:
         """Copy `dirs` (later-wins-on-collision) into `gitops_dir/<checksum>/`
         and commit. No-op if the target directory already exists. Returns the
         absolute output path.
@@ -538,9 +536,7 @@ class AutomationService:
             raise
 
         async with GitLockContext(timeout=10.0):
-            await call_git_command(
-                "git", "add", f"{checksum}", cwd=self.gitops_dir
-            )
+            await call_git_command("git", "add", f"{checksum}", cwd=self.gitops_dir)
             await call_git_command(
                 "git",
                 "commit",
@@ -588,7 +584,11 @@ class AutomationService:
                     entries[name] = (src, is_dir, False)
 
             for name, (src, is_dir, is_symlink) in entries.items():
-                dest = os.path.join(dest_root, rel, name) if rel else os.path.join(dest_root, name)
+                dest = (
+                    os.path.join(dest_root, rel, name)
+                    if rel
+                    else os.path.join(dest_root, name)
+                )
                 if is_symlink:
                     target = os.readlink(src)
                     if os.path.lexists(dest):
@@ -648,9 +648,7 @@ class AutomationService:
         )
 
         if not already_built and existing_status != "building":
-            logger.info(
-                f"Building automation image {full_tag} from {image_dir}"
-            )
+            logger.info(f"Building automation image {full_tag} from {image_dir}")
             await image_service.create_image(
                 tag_root,
                 build_context_path=image_dir,
@@ -715,9 +713,7 @@ class AutomationService:
         sources = scan_workspace_sources(
             self.workspace_repo_dir, worktree=scan_worktree
         )
-        source = next(
-            (s for s in sources if s["relative_path"] == relative_path), None
-        )
+        source = next((s for s in sources if s["relative_path"] == relative_path), None)
         if not source:
             ctx = f" in worktree '{worktree}'" if worktree else ""
             raise HTTPException(
@@ -741,9 +737,13 @@ class AutomationService:
             )
 
         # Resolve source dir + optional bitswan_lib for the merge.
-        source_dir = os.path.realpath(os.path.join(self.workspace_repo_dir, relative_path))
+        source_dir = os.path.realpath(
+            os.path.join(self.workspace_repo_dir, relative_path)
+        )
         ws_root_real = os.path.realpath(self.workspace_repo_dir)
-        if not (source_dir == ws_root_real or source_dir.startswith(ws_root_real + os.sep)):
+        if not (
+            source_dir == ws_root_real or source_dir.startswith(ws_root_real + os.sep)
+        ):
             raise HTTPException(status_code=400, detail="Source escapes workspace")
         bitswan_lib_dir = os.path.join(self.workspace_repo_dir, "bitswan_lib")
         dirs_to_merge = [source_dir]

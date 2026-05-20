@@ -653,9 +653,7 @@ def _calculate_merged_git_tree_hash_recursive(
     entry_map: dict[str, tuple[str, bool, bool]] = {}
 
     for dir_path in dir_paths:
-        full_dir = (
-            os.path.join(dir_path, relative_path) if relative_path else dir_path
-        )
+        full_dir = os.path.join(dir_path, relative_path) if relative_path else dir_path
         if not os.path.isdir(full_dir):
             continue
         for item in os.listdir(full_dir):
@@ -665,9 +663,7 @@ def _calculate_merged_git_tree_hash_recursive(
             is_symlink = os.path.islink(item_path)
             if not is_symlink and not os.access(item_path, os.R_OK):
                 if logger:
-                    entry_rel = (
-                        f"{relative_path}/{item}" if relative_path else item
-                    )
+                    entry_rel = f"{relative_path}/{item}" if relative_path else item
                     logger.info(f"Skipping unreadable: {entry_rel}")
                 continue
             if is_symlink:
@@ -682,18 +678,14 @@ def _calculate_merged_git_tree_hash_recursive(
         key = f"{name}/" if is_dir else name
         return key.encode("utf-8")
 
-    items = sorted(
-        entry_map.items(), key=lambda kv: _git_sort_key(kv[0], kv[1][1])
-    )
+    items = sorted(entry_map.items(), key=lambda kv: _git_sort_key(kv[0], kv[1][1]))
 
     entries: list[dict] = []
     for name, (item_path, is_dir, is_symlink) in items:
         entry_rel = f"{relative_path}/{name}" if relative_path else name
         if is_symlink:
             target = os.readlink(item_path)
-            blob_hash = _calculate_git_blob_hash_from_content(
-                target.encode("utf-8")
-            )
+            blob_hash = _calculate_git_blob_hash_from_content(target.encode("utf-8"))
             entries.append({"mode": "120000", "name": name, "hash": blob_hash})
             if logger:
                 logger.info(

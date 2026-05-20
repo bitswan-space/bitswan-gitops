@@ -69,9 +69,7 @@ async def create_process(body: CreateProcessRequest) -> dict:
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to create process: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to create process: {e}")
 
     # Push the fresh snapshot to all SSE consumers so the dashboard's
     # sidebar updates without waiting for the workspace watcher tick.

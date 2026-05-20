@@ -105,8 +105,7 @@ class ProcessService:
 
             except Exception as e:
                 logger.error(
-                    f"Error reading process {item} "
-                    f"(worktree={worktree or 'main'}): {e}"
+                    f"Error reading process {item} (worktree={worktree or 'main'}): {e}"
                 )
                 continue
 
@@ -436,13 +435,9 @@ class ProcessService:
             raise ValueError("process name is empty or invalid")
 
         if worktree:
-            scope_root = os.path.join(
-                self.workspace_repo_dir, "worktrees", worktree
-            )
+            scope_root = os.path.join(self.workspace_repo_dir, "worktrees", worktree)
             if not os.path.isdir(scope_root):
-                raise FileNotFoundError(
-                    f"worktree '{worktree}' does not exist"
-                )
+                raise FileNotFoundError(f"worktree '{worktree}' does not exist")
         else:
             scope_root = self.workspace_repo_dir
 
