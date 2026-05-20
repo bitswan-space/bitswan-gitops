@@ -920,7 +920,9 @@ async def get_worktree_diff(
     else:
         git_args += ["--", "."]
 
-    stdout, stderr, rc = await call_git_command_with_output(*git_args, cwd=worktree_path)
+    stdout, stderr, rc = await call_git_command_with_output(
+        *git_args, cwd=worktree_path
+    )
     if rc != 0:
         raise HTTPException(
             status_code=500,

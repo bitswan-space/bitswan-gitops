@@ -142,7 +142,9 @@ def _read_group(dir_path: str) -> Optional[TemplateGroupInfo]:
     )
 
 
-def _discover_in_root(root_dir: str) -> tuple[list[TemplateInfo], list[TemplateGroupInfo]]:
+def _discover_in_root(
+    root_dir: str,
+) -> tuple[list[TemplateInfo], list[TemplateGroupInfo]]:
     templates: list[TemplateInfo] = []
     groups: list[TemplateGroupInfo] = []
     if not os.path.isdir(root_dir):
@@ -172,7 +174,9 @@ def discover_templates(workspace_root: str) -> dict:
     of the same id, matching the editor's behaviour.
     """
     builtin_t, builtin_g = _discover_in_root(TEMPLATES_ROOT)
-    override_t, override_g = _discover_in_root(os.path.join(workspace_root, "templates"))
+    override_t, override_g = _discover_in_root(
+        os.path.join(workspace_root, "templates")
+    )
 
     by_id_t: dict[str, TemplateInfo] = {t.id: t for t in builtin_t}
     by_id_g: dict[str, TemplateGroupInfo] = {g.id: g for g in builtin_g}
@@ -258,7 +262,9 @@ def _ensure_automation_id(target_dir: str) -> None:
         f.write(newline.join(lines))
 
 
-def _bp_destination(workspace_root: str, bp: str, worktree: Optional[str]) -> tuple[str, str]:
+def _bp_destination(
+    workspace_root: str, bp: str, worktree: Optional[str]
+) -> tuple[str, str]:
     """Returns `(bp_full_path, bp_relative_path)`."""
     rel = os.path.join("worktrees", worktree, bp) if worktree else bp
     return os.path.join(workspace_root, rel), rel
@@ -341,7 +347,9 @@ async def create_automation_from_template(
         # of the resulting automation.
         _copy_dir_recursive(tpl.source_dir, dest, skip={"template.toml"})
         _ensure_automation_id(dest)
-        created.append({"name": sanitized, "relative_path": os.path.join(bp_rel, sanitized)})
+        created.append(
+            {"name": sanitized, "relative_path": os.path.join(bp_rel, sanitized)}
+        )
 
         message = f"Add automation {sanitized}"
     else:
@@ -376,7 +384,9 @@ async def create_automation_from_template(
     # Commit in the workspace root (or worktree). `git` finds the right worktree
     # from the cwd, so commits land on the right branch automatically.
     commit_cwd = (
-        os.path.join(workspace_root, "worktrees", worktree) if worktree else workspace_root
+        os.path.join(workspace_root, "worktrees", worktree)
+        if worktree
+        else workspace_root
     )
     try:
         await _commit(commit_cwd, message)

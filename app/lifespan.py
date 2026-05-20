@@ -226,6 +226,7 @@ class WorktreeChangeHandler(FileSystemEventHandler):
 
     def _schedule_worktrees_ping(self):
         """Refresh the cached worktree list and broadcast it over SSE."""
+
         async def _broadcast():
             await asyncio.sleep(1)
             await _broadcast_worktrees()
@@ -244,15 +245,14 @@ class WorktreeChangeHandler(FileSystemEventHandler):
         worktree was probably added or removed. Refresh the full set so the
         cache reflects the new shape, then broadcast.
         """
+
         async def _refresh():
             await asyncio.sleep(0.5)
             try:
                 if worktree is None:
                     process_service.refresh_all()
                 else:
-                    if os.path.isdir(
-                        os.path.join(self.worktrees_root, worktree)
-                    ):
+                    if os.path.isdir(os.path.join(self.worktrees_root, worktree)):
                         process_service.refresh(worktree)
                     else:
                         process_service.forget_worktree(worktree)
@@ -274,6 +274,7 @@ class WorktreeChangeHandler(FileSystemEventHandler):
 
     def _schedule_automations_refresh(self, worktree: str | None):
         """Debounced refresh + SSE broadcast for one worktree's automation cache."""
+
         async def _refresh():
             await asyncio.sleep(0.5)
             try:
@@ -281,9 +282,7 @@ class WorktreeChangeHandler(FileSystemEventHandler):
                 if worktree is None:
                     await svc.refresh_all()
                 else:
-                    if os.path.isdir(
-                        os.path.join(self.worktrees_root, worktree)
-                    ):
+                    if os.path.isdir(os.path.join(self.worktrees_root, worktree)):
                         await svc.refresh(worktree)
                     else:
                         svc.forget_worktree(worktree)
@@ -494,9 +493,7 @@ async def lifespan(app: FastAPI):
         # Watch worktree directories for file changes → SSE push
         worktrees_dir = os.path.join(workspace_dir, "worktrees")
         if os.path.exists(worktrees_dir):
-            wt_handler = WorktreeChangeHandler(
-                asyncio.get_event_loop(), worktrees_dir
-            )
+            wt_handler = WorktreeChangeHandler(asyncio.get_event_loop(), worktrees_dir)
             worktree_observer = Observer()
             worktree_observer.schedule(wt_handler, worktrees_dir, recursive=True)
             worktree_observer.start()
