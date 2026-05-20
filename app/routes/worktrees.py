@@ -4,7 +4,7 @@ import os
 import re
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.async_docker import get_async_docker_client, DockerError
@@ -794,17 +794,133 @@ async def delete_worktree(name: str):
     return {"status": "success", "message": f"Worktree '{name}' deleted"}
 
 
+def _is_safe_relative_path(p: str) -> bool:
+    """True if `p` looks like a workspace-relative path (no `..`, no leading `/`)."""
+    if not p:
+        return False
+    if p.startswith("/") or p.startswith("\\"):
+        return False
+    parts = re.split(r"[\\/]", p)
+    return not any(seg in ("", "..") for seg in parts)
+
+
+# Map a porcelain status code to the simple A/M/D taxonomy the dashboard
+# renders. Renames collapse to M for now — the design only knows A/M/D.
+def _porcelain_to_kind(code: str) -> str | None:
+    """`code` is the two-char xy prefix from `git status --porcelain`."""
+    if not code:
+        return None
+    x, y = code[0], code[1] if len(code) > 1 else " "
+    # Untracked file (??)
+    if x == "?" and y == "?":
+        return "A"
+    # Deleted on either side
+    if x == "D" or y == "D":
+        return "D"
+    # Added on either side
+    if x == "A" or y == "A":
+        return "A"
+    # Renamed collapses to M for v1
+    if x == "R" or y == "R":
+        return "M"
+    # Anything else (modified, copied, type-changed) → M
+    if x == "M" or y == "M" or x == "T" or y == "T" or x == "C" or y == "C":
+        return "M"
+    return None
+
+
+@router.get("/{name}/status")
+async def get_worktree_status(name: str):
+    """Per-file change list for a worktree.
+
+    Combines `git status --porcelain=v1 -z` (which files changed and how)
+    with `git diff --numstat HEAD` (how many lines added / removed). Used
+    by the dashboard's Diff / Files tabs.
+    """
+    worktree_path = _resolve_worktree_path(name)
+    if not os.path.exists(worktree_path):
+        raise HTTPException(status_code=404, detail=f"Worktree '{name}' not found")
+
+    # `--porcelain=v1 -z` uses NUL terminators between records and never
+    # quotes file paths, so we don't need to deal with shell-quoted names.
+    status_out, status_err, status_rc = await call_git_command_with_output(
+        "git",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        cwd=worktree_path,
+    )
+    if status_rc != 0:
+        raise HTTPException(
+            status_code=500, detail=f"git status failed: {status_err.strip()}"
+        )
+
+    changed: list[dict] = []
+    # Records are NUL-separated; rename entries are two records (new\0old).
+    records = status_out.split("\x00")
+    skip_next = False
+    for rec in records:
+        if skip_next:
+            skip_next = False
+            continue
+        if not rec:
+            continue
+        # Format: "XY path"  (XY is two columns)
+        code = rec[:2]
+        path = rec[3:] if len(rec) > 3 else ""
+        kind = _porcelain_to_kind(code)
+        if not kind or not path:
+            continue
+        # Rename: next NUL-delimited entry is the OLD name; skip it.
+        if code[0] == "R" or code[1] == "R":
+            skip_next = True
+        changed.append({"path": path, "kind": kind, "adds": 0, "dels": 0})
+
+    # Merge in adds/dels from `git diff --numstat HEAD`. Untracked files
+    # don't show up here (diff is against HEAD); leave their counts at 0
+    # — the user can see exact contents in the Files tab.
+    numstat_out, _, numstat_rc = await call_git_command_with_output(
+        "git", "diff", "--numstat", "HEAD", cwd=worktree_path
+    )
+    if numstat_rc == 0:
+        # Lines are `adds\tdels\tpath`. Binary files use `-\t-`.
+        by_path = {c["path"]: c for c in changed}
+        for line in numstat_out.splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) != 3:
+                continue
+            adds_str, dels_str, path = parts
+            adds = int(adds_str) if adds_str.isdigit() else 0
+            dels = int(dels_str) if dels_str.isdigit() else 0
+            entry = by_path.get(path)
+            if entry is not None:
+                entry["adds"] = adds
+                entry["dels"] = dels
+
+    return {"changed": changed}
+
+
 @router.get("/{name}/diff")
-async def get_worktree_diff(name: str):
+async def get_worktree_diff(
+    name: str,
+    path: str | None = Query(None),
+):
+    """Unified diff of the worktree against its own HEAD. Optional `?path=`
+    filters to a single workspace-relative file."""
     worktree_path = _resolve_worktree_path(name)
 
     if not os.path.exists(worktree_path):
         raise HTTPException(status_code=404, detail=f"Worktree '{name}' not found")
 
-    # Diff the worktree's working tree against its own HEAD
-    stdout, stderr, rc = await call_git_command_with_output(
-        "git", "diff", "HEAD", "--", ".", cwd=worktree_path
-    )
+    git_args: list[str] = ["git", "diff", "HEAD"]
+    if path is not None:
+        if not _is_safe_relative_path(path):
+            raise HTTPException(status_code=400, detail="invalid path")
+        git_args += ["--", path]
+    else:
+        git_args += ["--", "."]
+
+    stdout, stderr, rc = await call_git_command_with_output(*git_args, cwd=worktree_path)
     if rc != 0:
         raise HTTPException(
             status_code=500,
