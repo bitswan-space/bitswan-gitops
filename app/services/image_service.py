@@ -405,7 +405,7 @@ class ImageService:
                             zip_ref.extractall(temp_dir_path)
 
                     # Verify the checksum using git tree hash algorithm
-                    calculated_hash = await calculate_git_tree_hash(temp_dir_path)
+                    calculated_hash = await calculate_git_tree_hash([temp_dir_path])
                     if calculated_hash != checksum:
                         raise HTTPException(
                             status_code=400,
