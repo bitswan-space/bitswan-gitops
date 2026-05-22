@@ -209,7 +209,10 @@ class WorktreeChangeHandler(FileSystemEventHandler):
             return None
         if rel == "." or rel.startswith(".."):
             return None
-        first = rel.replace("\\", "/").split("/", 1)[0]
+        parts = rel.replace("\\", "/").split("/")
+        if len(parts) <= 1:
+            return None
+        first = parts[0]
         return first or None
 
     def _is_git_state_change(self, path: str) -> bool:
