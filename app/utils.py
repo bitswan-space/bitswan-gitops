@@ -524,51 +524,59 @@ def _calculate_git_blob_hash(file_path: str) -> str:
 
 
 def _calculate_git_tree_hash_recursive(
-    dir_path: str, relative_path: str = "", logger=None
+    dir_paths: list[str], relative_path: str = "", logger=None
 ) -> str:
     """
     Calculate git tree hash for a directory recursively.
     Implements git's tree object format directly without spawning git processes.
     Tree format: "tree <size>\\0<entries>" where each entry is "<mode> <name>\\0<20-byte-sha1>"
-    """
-    entries = []
 
-    # Get all entries and sort them (directories first, then alphabetical)
-    items = []
-    for item in os.listdir(dir_path):
-        if item == ".git":
+    Accepts multiple `dir_paths` and overlays them in order — later paths win
+    on filename collisions. With a single path, this matches a plain
+    single-dir walk. Empty input (or all-missing dirs) yields git's empty-tree
+    SHA naturally from the tree-object encoding.
+    """
+    # name -> (source_path, is_directory, is_symlink); later dirs overwrite earlier
+    entry_map: dict[str, tuple[str, bool, bool]] = {}
+
+    for dir_path in dir_paths:
+        full_dir = os.path.join(dir_path, relative_path) if relative_path else dir_path
+        if not os.path.isdir(full_dir):
             continue
-        item_path = os.path.join(dir_path, item)
-        # lstat-style check: symlinks must be detected before any os.path.is*
-        # call that follows them. Symlinks are hashed git-style (mode 120000)
-        # so the deploy archive's checksum reflects them faithfully — the
-        # client-side calculation does the same.
-        is_symlink = os.path.islink(item_path)
-        if not is_symlink and not os.access(item_path, os.R_OK):
-            if logger:
-                entry_relative_path = (
-                    f"{relative_path}/{item}" if relative_path else item
-                )
-                logger.info(f"Skipping unreadable: {entry_relative_path}")
-            continue
-        if is_symlink:
-            items.append((item, False, True))
-            continue
-        is_dir = os.path.isdir(item_path)
-        # Skip anything that's not a regular file or directory
-        if not is_dir and not os.path.isfile(item_path):
-            continue
-        items.append((item, is_dir, False))
+        for item in os.listdir(full_dir):
+            if item == ".git":
+                continue
+            item_path = os.path.join(full_dir, item)
+            # lstat-style check: symlinks must be detected before any os.path.is*
+            # call that follows them. Symlinks are hashed git-style (mode 120000)
+            # so the deploy archive's checksum reflects them faithfully — the
+            # client-side calculation does the same.
+            is_symlink = os.path.islink(item_path)
+            if not is_symlink and not os.access(item_path, os.R_OK):
+                if logger:
+                    entry_relative_path = (
+                        f"{relative_path}/{item}" if relative_path else item
+                    )
+                    logger.info(f"Skipping unreadable: {entry_relative_path}")
+                continue
+            if is_symlink:
+                entry_map[item] = (item_path, False, True)
+                continue
+            is_dir = os.path.isdir(item_path)
+            # Skip anything that's not a regular file or directory
+            if not is_dir and not os.path.isfile(item_path):
+                continue
+            entry_map[item] = (item_path, is_dir, False)
 
     def _git_sort_key(name: str, is_dir: bool) -> bytes:
         key = f"{name}/" if is_dir else name
         return key.encode("utf-8")
 
     # Git-style ordering: symlinks sort like regular files (no trailing slash).
-    items.sort(key=lambda x: _git_sort_key(x[0], x[1]))
+    items = sorted(entry_map.items(), key=lambda kv: _git_sort_key(kv[0], kv[1][1]))
 
-    for name, is_dir, is_symlink in items:
-        item_path = os.path.join(dir_path, name)
+    entries = []
+    for name, (item_path, is_dir, is_symlink) in items:
         entry_relative_path = f"{relative_path}/{name}" if relative_path else name
 
         if is_symlink:
@@ -581,7 +589,7 @@ def _calculate_git_tree_hash_recursive(
                 )
         elif is_dir:
             tree_hash = _calculate_git_tree_hash_recursive(
-                item_path, entry_relative_path, logger
+                dir_paths, entry_relative_path, logger
             )
             entries.append({"mode": "040000", "name": name, "hash": tree_hash})
             if logger:
@@ -615,142 +623,27 @@ def _calculate_git_tree_hash_recursive(
     return result_hash
 
 
-async def calculate_git_tree_hash(dir_path: str) -> str:
+async def calculate_git_tree_hash(dir_paths: list[str]) -> str:
     """
-    Calculate git tree hash for a directory using git's tree object format.
-    This implementation directly calculates the hash without spawning git processes,
-    making it much more efficient.
+    Calculate git tree hash for one or more directories using git's tree object
+    format. Multiple directories are overlaid later-wins-on-collision (mirrors
+    the editor's pre-merged-tar checksum). Implementation calculates the hash
+    directly without spawning git processes, making it much more efficient.
     """
     import logging
 
     logger = logging.getLogger(__name__)
-    logger.info(f"=== SERVER CHECKSUM CALCULATION START for {dir_path} ===")
+    logger.info(f"=== SERVER CHECKSUM CALCULATION START for {len(dir_paths)} dirs ===")
+    for dp in dir_paths:
+        logger.info(f"  - {dp}")
 
     # Run the recursive calculation in a thread pool to keep it async
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
-        None, lambda: _calculate_git_tree_hash_recursive(dir_path, "", logger)
+        None, lambda: _calculate_git_tree_hash_recursive(dir_paths, "", logger)
     )
 
     logger.info(f"=== SERVER CHECKSUM CALCULATION END: {result} ===")
-    return result
-
-
-def _calculate_merged_git_tree_hash_recursive(
-    dir_paths: list[str], relative_path: str = "", logger=None
-) -> str | None:
-    """
-    Compute the git tree hash of a virtual tree formed by overlaying
-    `dir_paths` in order — later paths win on filename collisions.
-
-    Mirrors the TypeScript algorithm in
-    `bitswan-editor/Extension/src/lib.ts:557+` so checksums computed here
-    match what the editor produces when uploading a pre-merged tar.
-
-    Returns `None` for an empty merged directory (git does not track empties).
-    """
-    # name -> (source_path, is_directory, is_symlink); later dirs overwrite earlier
-    entry_map: dict[str, tuple[str, bool, bool]] = {}
-
-    for dir_path in dir_paths:
-        full_dir = os.path.join(dir_path, relative_path) if relative_path else dir_path
-        if not os.path.isdir(full_dir):
-            continue
-        for item in os.listdir(full_dir):
-            if item == ".git":
-                continue
-            item_path = os.path.join(full_dir, item)
-            is_symlink = os.path.islink(item_path)
-            if not is_symlink and not os.access(item_path, os.R_OK):
-                if logger:
-                    entry_rel = f"{relative_path}/{item}" if relative_path else item
-                    logger.info(f"Skipping unreadable: {entry_rel}")
-                continue
-            if is_symlink:
-                entry_map[item] = (item_path, False, True)
-                continue
-            is_dir = os.path.isdir(item_path)
-            if not is_dir and not os.path.isfile(item_path):
-                continue
-            entry_map[item] = (item_path, is_dir, False)
-
-    def _git_sort_key(name: str, is_dir: bool) -> bytes:
-        key = f"{name}/" if is_dir else name
-        return key.encode("utf-8")
-
-    items = sorted(entry_map.items(), key=lambda kv: _git_sort_key(kv[0], kv[1][1]))
-
-    entries: list[dict] = []
-    for name, (item_path, is_dir, is_symlink) in items:
-        entry_rel = f"{relative_path}/{name}" if relative_path else name
-        if is_symlink:
-            target = os.readlink(item_path)
-            blob_hash = _calculate_git_blob_hash_from_content(target.encode("utf-8"))
-            entries.append({"mode": "120000", "name": name, "hash": blob_hash})
-            if logger:
-                logger.info(
-                    f"CHECKSUM LINK: {entry_rel} -> 120000 {blob_hash} (target: {target})"
-                )
-        elif is_dir:
-            tree_hash = _calculate_merged_git_tree_hash_recursive(
-                dir_paths, entry_rel, logger
-            )
-            if tree_hash is None:
-                if logger:
-                    logger.info(f"Skipping empty directory: {entry_rel}/")
-                continue
-            entries.append({"mode": "040000", "name": name, "hash": tree_hash})
-            if logger:
-                logger.info(f"CHECKSUM DIR:  {entry_rel}/ -> {tree_hash}")
-        else:
-            blob_hash = _calculate_git_blob_hash(item_path)
-            file_mode = os.stat(item_path).st_mode
-            mode = "100755" if file_mode & 0o111 else "100644"
-            entries.append({"mode": mode, "name": name, "hash": blob_hash})
-            if logger:
-                logger.info(f"CHECKSUM FILE: {entry_rel} -> {mode} {blob_hash}")
-
-    if not entries:
-        return None
-
-    entry_bytes = bytearray()
-    for entry in entries:
-        hash_bytes = bytes.fromhex(entry["hash"])
-        entry_str = f"{entry['mode']} {entry['name']}\0"
-        entry_bytes.extend(entry_str.encode("utf-8"))
-        entry_bytes.extend(hash_bytes)
-    tree_content = bytes(entry_bytes)
-    tree_header = f"tree {len(tree_content)}\0".encode("utf-8")
-    return hashlib.sha1(tree_header + tree_content).hexdigest()
-
-
-async def calculate_merged_git_tree_hash(dir_paths: list[str]) -> str:
-    """Async wrapper over `_calculate_merged_git_tree_hash_recursive`.
-
-    Raises if every input directory is missing or empty (git does not track
-    empty trees and the caller should treat that as an error).
-    """
-    import logging
-
-    logger = logging.getLogger(__name__)
-    logger.info(
-        f"=== SERVER MERGED CHECKSUM CALCULATION START for {len(dir_paths)} dirs ==="
-    )
-    for dp in dir_paths:
-        logger.info(f"  - {dp}")
-
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: _calculate_merged_git_tree_hash_recursive(dir_paths, "", logger),
-    )
-
-    if result is None:
-        raise ValueError(
-            f"Merged directories are empty (no deployable files): {dir_paths}"
-        )
-
-    logger.info(f"=== SERVER MERGED CHECKSUM CALCULATION END: {result} ===")
     return result
 
 

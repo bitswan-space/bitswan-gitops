@@ -559,7 +559,7 @@ async def build_and_restart_deployment(
 
                 # Compute content hash and build disambiguated tag
                 # matching the editor scheme: internal/{ws}-{bp}-{name}:sha{hash}
-                checksum = await calculate_git_tree_hash(image_dir)
+                checksum = await calculate_git_tree_hash([image_dir])
                 auto_name = os.path.basename(source_dir)
                 ws_name = automation_service.workspace_name or "workspace"
                 # Extract BP name from relative_path

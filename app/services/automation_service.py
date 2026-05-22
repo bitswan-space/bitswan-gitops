@@ -19,7 +19,6 @@ from app.utils import (
     bitswan_extract_filter,
     get_expose_to_for_stage,
     calculate_git_tree_hash,
-    calculate_merged_git_tree_hash,
     docker_compose_up,
     generate_workspace_url,
     read_bitswan_yaml,
@@ -513,7 +512,7 @@ class AutomationService:
         Mirrors `_upload_and_commit_asset`'s contract but sources files from
         the workspace bind-mount instead of an upload stream. Symlinks are
         preserved verbatim (same as the hash function), so the materialized
-        tree round-trips through `calculate_merged_git_tree_hash` to the same
+        tree round-trips through `calculate_git_tree_hash` to the same
         digest.
         """
         output_dir = os.path.join(self.gitops_dir, checksum)
@@ -558,7 +557,7 @@ class AutomationService:
     def _copy_merged_tree_sync(dirs: list[str], dest_root: str) -> None:
         """Walk `dirs` in order, writing each entry into `dest_root` with
         later-wins semantics. Mirrors the entry-map logic in
-        `calculate_merged_git_tree_hash` so the materialized tree hashes back
+        `calculate_git_tree_hash` so the materialized tree hashes back
         to the same checksum.
         """
 
@@ -636,7 +635,7 @@ class AutomationService:
         workspace = self.workspace_name or "workspace"
         tag_root = f"{workspace}-{bp_name}-{auto_name}"
 
-        image_checksum = await calculate_git_tree_hash(image_dir)
+        image_checksum = await calculate_git_tree_hash([image_dir])
         full_tag = f"internal/{tag_root}:sha{image_checksum}"
 
         image_service = ImageService()
@@ -753,7 +752,7 @@ class AutomationService:
         if stage == "live-dev":
             checksum = "live-dev"
         else:
-            checksum = await calculate_merged_git_tree_hash(dirs_to_merge)
+            checksum = await calculate_git_tree_hash(dirs_to_merge)
             await self.materialize_merged_tree(dirs_to_merge, checksum)
 
         # Build the per-automation runtime image if the source ships a
@@ -832,7 +831,7 @@ class AutomationService:
                         zip_ref.extractall(output_dir)
 
                 # Verify the checksum using git tree hash algorithm
-                calculated_hash = await calculate_git_tree_hash(output_dir)
+                calculated_hash = await calculate_git_tree_hash([output_dir])
                 if calculated_hash != checksum:
                     raise HTTPException(
                         status_code=400,
@@ -986,7 +985,7 @@ class AutomationService:
             raise HTTPException(status_code=400, detail=f"Invalid archive: {e}")
 
         # Verify the checksum using git tree hash algorithm
-        calculated_hash = await calculate_git_tree_hash(output_dir)
+        calculated_hash = await calculate_git_tree_hash([output_dir])
         if calculated_hash != checksum:
             shutil.rmtree(output_dir, ignore_errors=True)
             logger.error(
