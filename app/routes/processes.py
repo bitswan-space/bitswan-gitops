@@ -20,6 +20,8 @@ router = APIRouter(prefix="/processes", tags=["processes"])
 # Mirrors the dashboard-side validation, kept tight enough that the name can
 # also stand in for a deployment_id segment without surprises.
 _PROCESS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+# Matches the canonical worktree-name constraint used by /worktrees and /templates.
+_WORKTREE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-]*$")
 
 
 class CreateProcessRequest(BaseModel):
@@ -57,7 +59,7 @@ async def create_process(body: CreateProcessRequest) -> dict:
                 "contain only letters, digits, underscores, dashes, and dots."
             ),
         )
-    if body.worktree is not None and not _PROCESS_NAME_RE.match(body.worktree):
+    if body.worktree is not None and not _WORKTREE_NAME_RE.match(body.worktree):
         raise HTTPException(status_code=400, detail="Invalid worktree name")
 
     try:

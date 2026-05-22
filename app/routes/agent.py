@@ -13,7 +13,6 @@ from app.dependencies import get_automation_service
 from app.services.automation_service import (
     AutomationService,
     make_hostname_label,
-    sanitize_automation_name,
     scan_workspace_sources,
 )
 from app.utils import (
@@ -157,16 +156,6 @@ def _resolve_worktree_path(name: str) -> str:
 
 
 # --- Deployment endpoints ---
-
-
-def _sanitize_name(name: str) -> str:
-    """Sanitize an automation source name for use in deployment IDs.
-
-    Backwards-compatible alias kept so older call sites in this module keep
-    working. New code should call `sanitize_automation_name` from
-    `app.services.automation_service` directly.
-    """
-    return sanitize_automation_name(name)
 
 
 def _scan_automations(worktree: str | None = None) -> list[dict]:

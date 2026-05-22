@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import logging
 import os
+import re
 import threading
 from typing import Any, Optional
 import shlex
@@ -193,6 +194,17 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
         services=services,
         external_testing_network=deployment.get("external-testing-network", False),
     )
+
+
+def sanitize_automation_name(name: str) -> str:
+    """Lowercase + replace each char outside [a-z0-9-] with '-', trim hyphens.
+
+    Single shared implementation: deployment-id derivation (automation_service)
+    and template scaffolding (template_service) must agree on the same output
+    for a given input, otherwise scaffolded folders won't round-trip back to
+    the same deployment id.
+    """
+    return re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
 
 
 def read_automation_toml(source_dir: str) -> AutomationConfig | None:

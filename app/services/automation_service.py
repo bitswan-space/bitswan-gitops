@@ -25,6 +25,7 @@ from app.utils import (
     read_pipeline_conf,
     read_automation_config,
     remove_route_from_ingress,
+    sanitize_automation_name,
     update_git,
     call_git_command,
     call_git_command_with_output,
@@ -51,11 +52,6 @@ OAUTH2_COOKIE_REFRESH = "14m"
 def _short_hash(context: str) -> str:
     """Deterministic 4-char hash for a context string."""
     return hashlib.sha256(context.encode()).hexdigest()[:4]
-
-
-def sanitize_automation_name(name: str) -> str:
-    """Lowercase + replace anything outside [a-z0-9-] with '-', trim hyphens."""
-    return re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
 
 
 def update_automation_toml_image(toml_path: str, new_image_value: str) -> None:
@@ -588,6 +584,18 @@ class AutomationService:
                     if rel
                     else os.path.join(dest_root, name)
                 )
+                # If dest exists with a different type than the incoming
+                # entry, remove it so the write below succeeds. Mirrors the
+                # hash overlay's type-aware later-wins behavior.
+                if os.path.lexists(dest):
+                    dest_is_link = os.path.islink(dest)
+                    dest_is_dir = (not dest_is_link) and os.path.isdir(dest)
+                    incoming_is_real_dir = is_dir and not is_symlink
+                    if dest_is_dir != incoming_is_real_dir:
+                        if dest_is_dir:
+                            shutil.rmtree(dest)
+                        else:
+                            os.unlink(dest)
                 if is_symlink:
                     target = os.readlink(src)
                     if os.path.lexists(dest):
