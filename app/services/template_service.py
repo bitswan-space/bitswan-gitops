@@ -22,6 +22,7 @@ from app.utils import (
     GitLockContext,
     call_git_command,
     call_git_command_with_output,
+    sanitize_automation_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -195,14 +196,6 @@ def discover_templates(workspace_root: str) -> dict:
     }
 
 
-def sanitize_automation_name(name: str) -> str:
-    """lowercase, non-`[a-z0-9-]` collapsed to `-`, trim leading/trailing dashes."""
-    s = name.lower()
-    s = re.sub(r"[^a-z0-9-]+", "-", s)
-    s = re.sub(r"^-+|-+$", "", s)
-    return s
-
-
 def _copy_dir_recursive(src: str, dest: str, skip: Optional[set[str]] = None) -> None:
     """Symlink-preserving recursive copy. Symlinks are re-created with their
     original (verbatim) target, since templates ship links pointing at
@@ -221,7 +214,7 @@ def _copy_dir_recursive(src: str, dest: str, skip: Optional[set[str]] = None) ->
         elif os.path.isdir(s):
             _copy_dir_recursive(s, d)
         elif os.path.isfile(s):
-            shutil.copyfile(s, d)
+            shutil.copy2(s, d, follow_symlinks=False)
 
 
 def _ensure_automation_id(target_dir: str) -> None:
