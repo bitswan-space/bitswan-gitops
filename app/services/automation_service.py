@@ -2784,8 +2784,18 @@ fi
                 entry["environment"]["BITSWAN_URL_SUFFIX"] = url_suffix
 
                 entry["labels"]["gitops.intended_exposed"] = "true"
+                # `BITSWAN_WORKSPACE_OWNER` is set by `bitswan workspace init`
+                # at deployment time — every automation in this workspace
+                # belongs to the same human deployer. The daemon writes this
+                # as the ACL row's owner so the app shows up on that user's
+                # bailey dashboard immediately.
+                workspace_owner = os.environ.get("BITSWAN_WORKSPACE_OWNER") or None
                 if not add_workspace_route_to_ingress(
-                    dep_automation_name, dep_context, dep_stage, port
+                    dep_automation_name,
+                    dep_context,
+                    dep_stage,
+                    port,
+                    owner_email=workspace_owner,
                 ):
                     logger.warning(f"Failed to add ingress route for {deployment_id}")
             # Add the public hostname as a network alias so other containers

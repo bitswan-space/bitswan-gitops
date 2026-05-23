@@ -7,7 +7,7 @@ We don't talk to a real daemon here — mock the HTTP layer and assert
 the request body shape.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import app.utils as utils
 
