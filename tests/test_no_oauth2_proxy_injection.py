@@ -23,8 +23,8 @@ FORBIDDEN_SUBSTRINGS = [
 ]
 
 ALLOWED_FILES = {
-    "tests/test_no_oauth2_proxy_injection.py",   # this file itself
-    "PLAN-bailey-protected-ingress.md",          # plan doc
+    "tests/test_no_oauth2_proxy_injection.py",  # this file itself
+    "PLAN-bailey-protected-ingress.md",  # plan doc
 }
 
 
@@ -67,13 +67,17 @@ def test_no_oauth2_proxy_injection_helpers_referenced():
         for needle in FORBIDDEN_SUBSTRINGS:
             if needle in text:
                 offenders.append(f"{rel}: contains {needle!r}")
-    assert not offenders, "Forbidden oauth2-proxy hooks reintroduced:\n  " + "\n  ".join(offenders)
+    assert not offenders, (
+        "Forbidden oauth2-proxy hooks reintroduced:\n  " + "\n  ".join(offenders)
+    )
 
 
 def test_oauth2_enabled_returns_false():
     """The InfraService.oauth2_enabled property short-circuits all the
     per-container oauth2-proxy code paths. It must keep returning False
     until those code paths are deleted."""
-    from app.services.infra_service import InfraService
-    instance = InfraService.__new__(InfraService)
+    # InfraService is abstract; test on PostgresService — same property.
+    from app.services.postgres_service import PostgresService
+
+    instance = PostgresService.__new__(PostgresService)
     assert instance.oauth2_enabled is False

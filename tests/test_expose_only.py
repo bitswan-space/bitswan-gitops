@@ -16,6 +16,7 @@ APP_DIR = REPO_ROOT / "app"
 def test_get_expose_to_for_stage_removed():
     """The per-stage expose_to resolver shouldn't exist anymore."""
     import app.utils as utils
+
     assert not hasattr(utils, "get_expose_to_for_stage"), (
         "get_expose_to_for_stage was re-introduced. expose_to is dead — "
         "single knob is `expose: true|false`."
@@ -26,9 +27,12 @@ def test_automation_config_has_no_expose_to_fields():
     """AutomationConfig used to carry dev/staging/production_expose_to lists.
     All three should be gone now."""
     from app.utils import AutomationConfig
-    fields = set(AutomationConfig.__dataclass_fields__.keys()) \
-        if hasattr(AutomationConfig, "__dataclass_fields__") \
+
+    fields = (
+        set(AutomationConfig.__dataclass_fields__.keys())
+        if hasattr(AutomationConfig, "__dataclass_fields__")
         else set(vars(AutomationConfig).keys())
+    )
     forbidden = {"dev_expose_to", "staging_expose_to", "production_expose_to"}
     leaked = fields & forbidden
     assert not leaked, f"AutomationConfig still carries expose_to fields: {leaked}"
@@ -44,15 +48,14 @@ def test_no_expose_to_substring_in_app():
             continue
         if "expose_to" in text:
             offenders.append(str(p.relative_to(REPO_ROOT)))
-    assert not offenders, (
-        "expose_to references remain in app/: " + ", ".join(offenders)
-    )
+    assert not offenders, "expose_to references remain in app/: " + ", ".join(offenders)
 
 
 def test_get_or_create_automation_client_removed():
     """Per-automation Keycloak clients are gone — bailey-proxy has one shared
     client for the whole server."""
     from app.services.automation_service import AutomationService
+
     assert not hasattr(AutomationService, "get_or_create_automation_client"), (
         "get_or_create_automation_client was re-introduced. Per-automation "
         "Keycloak clients are no longer used."
@@ -80,6 +83,7 @@ def test_expose_branch_routes_directly_to_app_port():
     with the APP's port, not an oauth2-proxy port. Inspect the compose-generator
     method source for the route call."""
     from app.services.automation_service import AutomationService
+
     # Find the method that generates docker compose entries (it's the one with
     # the `expose and port` branch).
     src = inspect.getsource(AutomationService)

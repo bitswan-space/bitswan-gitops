@@ -114,7 +114,6 @@ class AutomationConfig:
     external_testing_network: bool = False
 
 
-
 def _parse_string_or_list(value) -> list[str] | None:
     """Parse a value that can be either a string or list into a list."""
     if value is None:
@@ -395,8 +394,11 @@ def add_workspace_route_to_ingress(
     if display_name is None:
         display_name = f"{automation_name} ({stage})"
     return add_route_to_ingress(
-        hostname, upstream, workspace_name,
-        owner_email=owner_email, display_name=display_name,
+        hostname,
+        upstream,
+        workspace_name,
+        owner_email=owner_email,
+        display_name=display_name,
     )
 
 

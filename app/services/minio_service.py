@@ -48,7 +48,6 @@ class MinioService(InfraService):
         )
 
     def _generate_compose_dict(self) -> dict:
-        console_upstream = "http://127.0.0.1:9001"
 
         minio_entry = {
             "image": self.minio_image,

@@ -373,7 +373,6 @@ class InfraService(ABC):
         per-container oauth2-proxy sidecar."""
         return True
 
-
     async def start(self) -> dict:
         """Start the service container via docker start."""
         logger.info(

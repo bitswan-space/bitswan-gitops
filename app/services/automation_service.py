@@ -2787,9 +2787,7 @@ fi
                 if not add_workspace_route_to_ingress(
                     dep_automation_name, dep_context, dep_stage, port
                 ):
-                    logger.warning(
-                        f"Failed to add ingress route for {deployment_id}"
-                    )
+                    logger.warning(f"Failed to add ingress route for {deployment_id}")
             # Add the public hostname as a network alias so other containers
             # on the same Docker network can reach this automation by its URL.
             if expose and port and self.gitops_domain and not network_mode:

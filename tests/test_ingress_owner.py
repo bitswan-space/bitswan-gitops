@@ -21,10 +21,12 @@ def _mock_client_response(status=200):
 
     def factory():
         client = MagicMock()
+
         # Track the json= kwarg of every .post() call.
         def post(url, json=None, **kw):
             captured.append({"url": url, "body": json})
             return response
+
         client.post.side_effect = post
         client.__enter__ = MagicMock(return_value=client)
         client.__exit__ = MagicMock(return_value=False)

@@ -62,7 +62,6 @@ class PostgresService(InfraService):
         )
 
     def _generate_compose_dict(self) -> dict:
-        pgadmin_upstream = "http://127.0.0.1:80"
 
         pgadmin_entry = {
             "container_name": self.pgadmin_container_name,
