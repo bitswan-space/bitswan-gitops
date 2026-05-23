@@ -1715,6 +1715,16 @@ fi
                     deployed_by=deployed_by,
                 )
 
+        # bitswan.yaml just changed. The watchdog in lifespan.py watches
+        # /workspace-repo, which isn't mounted on a normal gitops container
+        # (only live-dev mode mounts it) — so the cache wouldn't be invalidated
+        # by file events. Refresh explicitly so the next GET /automations sees
+        # the new deployment.
+        try:
+            await self.refresh_all()
+        except Exception as e:
+            logger.warning("post-deploy refresh_all failed: %s", e)
+
         return {
             "message": "Deployed services successfully",
             "deployments": list(deployments.get(deployment_id, {}).keys()),
