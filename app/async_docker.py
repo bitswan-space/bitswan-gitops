@@ -4,16 +4,35 @@ Replaces the synchronous docker-py library for better concurrency.
 """
 
 import asyncio
+import os
 import aiohttp
 import json
 from typing import Any, AsyncGenerator, Optional
 from urllib.parse import quote
 
 
+def _default_socket_path() -> str:
+    """Resolve the Docker socket path.
+
+    In bailey-protected workspaces, gitops never talks to the real
+    /var/run/docker.sock — it goes through the per-workspace
+    container-manager sidecar, which exposes a more restrictive socket
+    at $DOCKER_HOST. Honour that env var so the async client agrees
+    with the rest of the gitops process (docker.from_env() already
+    does this for the sync path).
+    """
+    raw = os.environ.get("DOCKER_HOST", "").strip()
+    if raw.startswith("unix://"):
+        return raw[len("unix://") :]
+    return "/var/run/docker.sock"
+
+
 class AsyncDockerClient:
     """Async client for Docker API over Unix socket."""
 
-    def __init__(self, socket_path: str = "/var/run/docker.sock"):
+    def __init__(self, socket_path: Optional[str] = None):
+        if socket_path is None:
+            socket_path = _default_socket_path()
         self.socket_path = socket_path
         self._connector = None
         self._session = None
