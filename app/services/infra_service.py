@@ -14,10 +14,6 @@ from abc import ABC, abstractmethod
 
 import requests
 
-from app.services.oauth2_helpers import (
-    copy_oauth2_proxy_to_container,
-    is_oauth2_proxy_running,
-)
 from app.utils import SERVICE_REALMS
 
 logger = logging.getLogger(__name__)
@@ -120,8 +116,13 @@ class InfraService(ABC):
 
     @property
     def oauth2_enabled(self) -> bool:
-        """Check if OAuth2 proxy is configured in the environment."""
-        return any(k.startswith("OAUTH2") for k in os.environ)
+        """Always False — per-container oauth2-proxy sidecars are gone.
+        bailey-proxy handles authentication in front of the workspace
+        traefik now; exposed apps register an endpoint on the bailey
+        and inherit its OIDC + MFA + ACL chain. Kept as a property
+        rather than removed so call sites can be culled incrementally
+        in follow-up commits without breaking the file."""
+        return False
 
     def _get_oauth2_env_vars(self, upstream: str) -> dict:
         """Build OAuth2 proxy environment variables for a container.
@@ -367,75 +368,11 @@ class InfraService(ABC):
         pass
 
     async def _start_oauth2_proxy_in_container(self, container_name: str) -> bool:
-        """Start oauth2-proxy inside a container via docker exec.
+        """No-op. bailey-proxy handles authentication in front of the
+        workspace traefik now — infra service containers don't need a
+        per-container oauth2-proxy sidecar."""
+        return True
 
-        Copies the oauth2-proxy binary from the gitops container into the target
-        container, then starts it in the background. Same pattern as
-        AutomationService.start_oauth2_proxy_in_container.
-        """
-        from app.async_docker import get_async_docker_client
-
-        docker_client = get_async_docker_client()
-
-        try:
-            # Find the container by name
-            containers = await docker_client.list_containers(
-                filters={"name": [f"^/{container_name}$"]}
-            )
-            if not containers:
-                logger.warning(f"Container {container_name} not found")
-                return False
-
-            container = containers[0]
-            container_id = container.get("Id")
-            labels = container.get("Labels", {})
-
-            if labels.get("gitops.oauth2.enabled") != "true":
-                logger.debug(f"oauth2 not enabled for {container_name}")
-                return True
-
-            state = container.get("State", "")
-            if state != "running":
-                logger.warning(
-                    f"Container {container_name} is not running (state: {state})"
-                )
-                return False
-
-            upstream_url = labels.get("gitops.oauth2.upstream")
-            if not upstream_url:
-                logger.warning(f"No oauth2 upstream URL label on {container_name}")
-                return False
-
-            if await is_oauth2_proxy_running(docker_client, container_id):
-                logger.info(f"oauth2-proxy already running in {container_name}")
-                return True
-
-            if not await copy_oauth2_proxy_to_container(container_id, container_name):
-                return False
-
-            # Start oauth2-proxy in background
-            logger.info(
-                f"Starting oauth2-proxy in {container_name} (upstream: {upstream_url})"
-            )
-            cmd = [
-                "sh",
-                "-c",
-                f"oauth2-proxy --upstream={upstream_url} > /tmp/oauth2-proxy.log 2>&1 &",
-            ]
-            exec_id = await docker_client.exec_create(container_id, cmd)
-            await docker_client.exec_start(exec_id)
-            exec_info = await docker_client.exec_inspect(exec_id)
-
-            if exec_info.get("ExitCode", 0) == 0:
-                logger.info(f"oauth2-proxy started in {container_name}")
-                return True
-            else:
-                logger.error(f"Failed to start oauth2-proxy in {container_name}")
-                return False
-
-        except Exception as e:
-            logger.error(f"Exception starting oauth2-proxy in {container_name}: {e}")
-            return False
 
     async def start(self) -> dict:
         """Start the service container via docker start."""
