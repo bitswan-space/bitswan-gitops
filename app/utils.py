@@ -99,10 +99,6 @@ class AutomationConfig:
     image: str = "bitswan/pipeline-runtime-environment:latest"
     expose: bool = False
     port: int = 8080
-    # Per-stage expose_to groups (from [expose_to] section in automation.toml)
-    dev_expose_to: list[str] | None = None
-    staging_expose_to: list[str] | None = None
-    production_expose_to: list[str] | None = None
     config_format: str = "ini"  # "toml" or "ini"
     mount_path: str = "/opt/pipelines"  # "/app/" for TOML, "/opt/pipelines" for INI
     # Stage-specific secret groups (only for automation.toml - no general fallback)
@@ -116,19 +112,6 @@ class AutomationConfig:
     services: dict[str, ServiceDependency] | None = None
     # Use host network for external access (Selenium testing)
     external_testing_network: bool = False
-
-
-def get_expose_to_for_stage(config: AutomationConfig, stage: str) -> list[str]:
-    """Resolve expose_to groups for a given stage."""
-    if stage == "live-dev" or stage == "dev":
-        groups = config.dev_expose_to
-    elif stage == "staging":
-        groups = config.staging_expose_to
-    elif stage == "production":
-        groups = config.production_expose_to
-    else:
-        groups = None
-    return groups or []
 
 
 def _parse_string_or_list(value) -> list[str] | None:
@@ -153,7 +136,6 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
 
     deployment = data.get("deployment", {})
     secrets = data.get("secrets", {})
-    expose_to_section = data.get("expose_to", {})
 
     # Parse allowed_domains as a list (for CORS in Keycloak client)
     allowed_domains = deployment.get("allowed_domains")
@@ -186,10 +168,6 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
         dev_groups=_parse_string_or_list(secrets.get("dev")),
         staging_groups=_parse_string_or_list(secrets.get("staging")),
         production_groups=_parse_string_or_list(secrets.get("production")),
-        # Per-stage expose_to from [expose_to] section
-        dev_expose_to=_parse_string_or_list(expose_to_section.get("dev")),
-        staging_expose_to=_parse_string_or_list(expose_to_section.get("staging")),
-        production_expose_to=_parse_string_or_list(expose_to_section.get("production")),
         allowed_domains=allowed_domains,
         services=services,
         external_testing_network=deployment.get("external-testing-network", False),
@@ -390,8 +368,20 @@ def generate_workspace_url(
 
 
 def add_workspace_route_to_ingress(
-    automation_name: str, context: str, stage: str, port: str
+    automation_name: str,
+    context: str,
+    stage: str,
+    port: str,
+    owner_email: str | None = None,
+    display_name: str | None = None,
 ) -> bool:
+    """Register a workspace-deployed app's hostname with the bailey daemon.
+
+    When `owner_email` is set, the daemon also writes the hostname to
+    bailey's ACL with that user as the original owner, so the app
+    shows up on their bailey workspaces page immediately. The owner
+    is the *deployer* — whoever caused this deployment to run.
+    """
     from app.services.automation_service import make_hostname_label
 
     gitops_domain = os.environ.get("BITSWAN_GITOPS_DOMAIN", "gitops.bitswan.space")
@@ -401,7 +391,15 @@ def add_workspace_route_to_ingress(
     )
     svc_name = make_hostname_label(workspace_name, automation_name, context, stage)
     upstream = f"{svc_name}:{port}"
-    return add_route_to_ingress(hostname, upstream, workspace_name)
+    if display_name is None:
+        display_name = f"{automation_name} ({stage})"
+    return add_route_to_ingress(
+        hostname,
+        upstream,
+        workspace_name,
+        owner_email=owner_email,
+        display_name=display_name,
+    )
 
 
 def _ingress_client_and_base() -> tuple:
@@ -426,13 +424,21 @@ def _ingress_client_and_base() -> tuple:
 
 
 def add_route_to_ingress(
-    hostname: str, upstream: str, workspace_name: str = ""
+    hostname: str,
+    upstream: str,
+    workspace_name: str = "",
+    owner_email: str | None = None,
+    display_name: str | None = None,
 ) -> bool:
-    body = {
+    body: dict = {
         "hostname": hostname,
         "upstream": upstream,
         "workspace_name": workspace_name,
     }
+    if owner_email:
+        body["owner_email"] = owner_email
+    if display_name:
+        body["display_name"] = display_name
     try:
         client, base = _ingress_client_and_base()
         with client:
