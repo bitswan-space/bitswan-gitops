@@ -99,10 +99,6 @@ class AutomationConfig:
     image: str = "bitswan/pipeline-runtime-environment:latest"
     expose: bool = False
     port: int = 8080
-    # Per-stage expose_to groups (from [expose_to] section in automation.toml)
-    dev_expose_to: list[str] | None = None
-    staging_expose_to: list[str] | None = None
-    production_expose_to: list[str] | None = None
     config_format: str = "ini"  # "toml" or "ini"
     mount_path: str = "/opt/pipelines"  # "/app/" for TOML, "/opt/pipelines" for INI
     # Stage-specific secret groups (only for automation.toml - no general fallback)
@@ -117,18 +113,6 @@ class AutomationConfig:
     # Use host network for external access (Selenium testing)
     external_testing_network: bool = False
 
-
-def get_expose_to_for_stage(config: AutomationConfig, stage: str) -> list[str]:
-    """Resolve expose_to groups for a given stage."""
-    if stage == "live-dev" or stage == "dev":
-        groups = config.dev_expose_to
-    elif stage == "staging":
-        groups = config.staging_expose_to
-    elif stage == "production":
-        groups = config.production_expose_to
-    else:
-        groups = None
-    return groups or []
 
 
 def _parse_string_or_list(value) -> list[str] | None:
@@ -153,7 +137,6 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
 
     deployment = data.get("deployment", {})
     secrets = data.get("secrets", {})
-    expose_to_section = data.get("expose_to", {})
 
     # Parse allowed_domains as a list (for CORS in Keycloak client)
     allowed_domains = deployment.get("allowed_domains")
@@ -186,10 +169,6 @@ def parse_automation_toml(content: str) -> AutomationConfig | None:
         dev_groups=_parse_string_or_list(secrets.get("dev")),
         staging_groups=_parse_string_or_list(secrets.get("staging")),
         production_groups=_parse_string_or_list(secrets.get("production")),
-        # Per-stage expose_to from [expose_to] section
-        dev_expose_to=_parse_string_or_list(expose_to_section.get("dev")),
-        staging_expose_to=_parse_string_or_list(expose_to_section.get("staging")),
-        production_expose_to=_parse_string_or_list(expose_to_section.get("production")),
         allowed_domains=allowed_domains,
         services=services,
         external_testing_network=deployment.get("external-testing-network", False),

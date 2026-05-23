@@ -17,7 +17,6 @@ from app.utils import (
     add_workspace_route_to_ingress,
     AutomationConfig,
     bitswan_extract_filter,
-    get_expose_to_for_stage,
     calculate_git_tree_hash,
     docker_compose_up,
     generate_workspace_url,
@@ -2266,40 +2265,6 @@ fi
             print(f"Warning: Exception while adding redirect URI to Keycloak: {str(e)}")
             return None
 
-    def get_or_create_automation_client(self, deployment_id, redirect_uri):
-        """Get or create a Keycloak client for a specific automation (expose_to).
-
-        Each automation gets its own client so it can have its own expose_to groups.
-        Returns dict with client_id, client_secret, issuer_url or None.
-        """
-        if not self.workspace_id or not self.aoc_url or not self.aoc_token:
-            print("Warning: AOC not configured, skipping automation client creation")
-            return None
-
-        url = f"{self.aoc_url}/api/automation_server/workspaces/{self.workspace_id}/keycloak/automation-client/"
-        headers = {
-            "Authorization": f"Bearer {self.aoc_token}",
-            "Content-Type": "application/json",
-        }
-
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json={"deployment_id": deployment_id, "redirect_uri": redirect_uri},
-                timeout=30,
-            )
-            if response.status_code in (200, 201):
-                return response.json()
-            else:
-                print(
-                    f"Warning: Failed to get automation client: {response.status_code} - {response.text}"
-                )
-                return None
-        except Exception as e:
-            print(f"Warning: Exception getting automation client: {e}")
-            return None
-
     def get_or_create_public_client(
         self,
         client_id: str,
@@ -2800,37 +2765,13 @@ fi
             entry["image"] = automation_config.image
             expose = automation_config.expose
             port = automation_config.port
-            expose_to_groups = get_expose_to_for_stage(automation_config, stage)
-
-            # Resolve group paths if expose_to_groups is set and AOC is configured.
-            # Without AOC, group-based exposure is silently skipped (simple-mode deploy).
-            if expose_to_groups:
-                org_group_path = self.get_org_group_path()
-                if org_group_path:
-                    resolved = []
-                    for g in expose_to_groups:
-                        if g == "*":
-                            resolved.append(org_group_path)
-                        else:
-                            resolved.append(f"{org_group_path}{g}")
-                    expose_to_groups = resolved
-                else:
-                    expose_to_groups = []
-
-            # Error if both expose and expose_to_groups are set
-            if expose and expose_to_groups:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot specify both 'expose' and 'expose_to'. Use 'expose_to' alone to enable exposure with OAuth2.",
-                )
-
-            # If expose_to_groups is set, automatically enable exposure
-            if expose_to_groups:
-                expose = True
-
+            # `expose: true` registers the endpoint on the bailey, which
+            # then handles auth + per-endpoint ACL in front of this
+            # container. No per-automation oauth2-proxy sidecar, no
+            # per-automation Keycloak client. Default state for newly
+            # exposed endpoints is owner-only; grants are managed on
+            # the bailey share UI.
             if expose and port:
-                # Set URL env vars for exposed automations
-                # Shorten hostname if it would exceed DNS 63-char label limit
                 url_label = make_hostname_label(
                     self.workspace_name, dep_automation_name, dep_context, dep_stage
                 )
@@ -2842,67 +2783,13 @@ fi
                 entry["environment"]["BITSWAN_URL_PREFIX"] = url_prefix
                 entry["environment"]["BITSWAN_URL_SUFFIX"] = url_suffix
 
-                if expose_to_groups:
-                    endpoint = automation_url
-                    redirect_uri = f"{endpoint}/oauth2/callback"
-
-                    # Get or create a dedicated automation client
-                    # (one per automation, so each can have its own expose_to)
-                    automation_client = self.get_or_create_automation_client(
-                        deployment_id, redirect_uri
+                entry["labels"]["gitops.intended_exposed"] = "true"
+                if not add_workspace_route_to_ingress(
+                    dep_automation_name, dep_context, dep_stage, port
+                ):
+                    logger.warning(
+                        f"Failed to add ingress route for {deployment_id}"
                     )
-                    if not automation_client:
-                        raise Exception(
-                            f"Failed to get or create automation client for expose_to on {deployment_id}"
-                        )
-
-                    # Start with the editor's OAUTH2 env vars as defaults,
-                    # then override with per-automation specifics
-                    oauth2_envs = {
-                        k: v for k, v in os.environ.items() if k.startswith("OAUTH2")
-                    }
-                    oauth2_envs.update(
-                        {
-                            "OAUTH_ENABLED": "true",
-                            "OAUTH2_PROXY_CLIENT_ID": automation_client["client_id"],
-                            "OAUTH2_PROXY_CLIENT_SECRET": automation_client[
-                                "client_secret"
-                            ],
-                            "OAUTH2_PROXY_SCOPE": "openid email profile",
-                            "OAUTH2_PROXY_UPSTREAMS": f"http://127.0.0.1:{port}",
-                            "OAUTH2_PROXY_REDIRECT_URL": redirect_uri,
-                            "OAUTH2_PROXY_ALLOWED_GROUPS": ",".join(expose_to_groups),
-                            "OAUTH2_PROXY_SET_XAUTHREQUEST": "true",
-                            "OAUTH2_PROXY_PASS_ACCESS_TOKEN": "true",
-                            "OAUTH2_PROXY_COOKIE_REFRESH": OAUTH2_COOKIE_REFRESH,
-                            "BITSWAN_AUTOMATION_URL": automation_url,
-                        }
-                    )
-                    entry["environment"].update(oauth2_envs)
-
-                    # Store oauth2 config in labels for post-deployment execution
-                    entry["labels"]["gitops.oauth2.enabled"] = "true"
-                    entry["labels"]["gitops.intended_exposed"] = "true"
-                    if not add_workspace_route_to_ingress(
-                        dep_automation_name,
-                        dep_context,
-                        dep_stage,
-                        self.oauth2_proxy_port,
-                    ):
-                        logger.warning(
-                            f"Failed to add ingress route for {deployment_id} (oauth2 proxy port)"
-                        )
-
-                else:
-                    entry["labels"]["gitops.intended_exposed"] = "true"
-                    if not add_workspace_route_to_ingress(
-                        dep_automation_name, dep_context, dep_stage, port
-                    ):
-                        logger.warning(
-                            f"Failed to add ingress route for {deployment_id} — "
-                            "deployment will proceed but you suck may not be externally reachable"
-                        )
-
             # Add the public hostname as a network alias so other containers
             # on the same Docker network can reach this automation by its URL.
             if expose and port and self.gitops_domain and not network_mode:
