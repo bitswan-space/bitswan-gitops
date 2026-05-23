@@ -62,7 +62,6 @@ class PostgresService(InfraService):
         )
 
     def _generate_compose_dict(self) -> dict:
-
         pgadmin_entry = {
             "container_name": self.pgadmin_container_name,
             "restart": "unless-stopped",

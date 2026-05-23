@@ -48,7 +48,6 @@ class MinioService(InfraService):
         )
 
     def _generate_compose_dict(self) -> dict:
-
         minio_entry = {
             "image": self.minio_image,
             "container_name": self.container_name,

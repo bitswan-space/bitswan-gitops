@@ -56,9 +56,9 @@ def test_dockerfile_doesnt_install_oauth2_proxy():
     if not DOCKERFILE.exists():
         return
     text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "oauth2-proxy" not in text.lower(), (
-        "Dockerfile installs oauth2-proxy. Auth is bailey-proxy's job now."
-    )
+    assert (
+        "oauth2-proxy" not in text.lower()
+    ), "Dockerfile installs oauth2-proxy. Auth is bailey-proxy's job now."
 
 
 def test_no_oauth2_proxy_injection_helpers_referenced():

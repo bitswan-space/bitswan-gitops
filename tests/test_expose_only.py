@@ -70,12 +70,12 @@ def test_automation_service_doesnt_set_oauth2_proxy_env():
         "automation_service.py is setting OAUTH2_PROXY_CLIENT_ID — that's "
         "the dead expose_to sidecar path."
     )
-    assert "OAUTH2_PROXY_CLIENT_SECRET" not in src, (
-        "automation_service.py is setting OAUTH2_PROXY_CLIENT_SECRET."
-    )
-    assert "OAUTH2_PROXY_ALLOWED_GROUPS" not in src, (
-        "automation_service.py is setting OAUTH2_PROXY_ALLOWED_GROUPS."
-    )
+    assert (
+        "OAUTH2_PROXY_CLIENT_SECRET" not in src
+    ), "automation_service.py is setting OAUTH2_PROXY_CLIENT_SECRET."
+    assert (
+        "OAUTH2_PROXY_ALLOWED_GROUPS" not in src
+    ), "automation_service.py is setting OAUTH2_PROXY_ALLOWED_GROUPS."
 
 
 def test_expose_branch_routes_directly_to_app_port():
