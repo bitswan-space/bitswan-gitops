@@ -8,7 +8,12 @@ import json
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from app.dependencies import get_automation_service, get_image_service
+from app.dependencies import (
+    get_automation_service,
+    get_image_service,
+    get_snapshot_manager,
+    get_snapshot_service,
+)
 from app.deploy_manager import deploy_manager
 from app.event_broadcaster import event_broadcaster
 from app.mqtt_processes import process_service
@@ -51,6 +56,15 @@ async def stream_events():
             # Send active deploy tasks so reconnecting clients pick up current state
             for task in deploy_manager.get_all_active_tasks():
                 yield f"event: deploy_progress\ndata: {json.dumps(task.to_dict())}\n\n"
+
+            # Send current snapshots + tasks so reconnecting clients get full state
+            snap_service = get_snapshot_service()
+            snap_manager = get_snapshot_manager()
+            snap_initial = {
+                "snapshots": snap_service.list_snapshots(),
+                "tasks": snap_manager.to_dict_all(),
+            }
+            yield f"event: snapshots\ndata: {json.dumps(snap_initial)}\n\n"
 
             while True:
                 try:
