@@ -416,3 +416,216 @@ class SnapshotService:
                 if snap_dir.exists():
                     await asyncio.to_thread(shutil.rmtree, snap_dir)
                     logger.info("Retention cleanup: removed snapshot %s", sid)
+
+    # ------------------------------------------------------------------
+    # Clone
+    # ------------------------------------------------------------------
+
+    async def clone_snapshot(
+        self,
+        snapshot_id: str,
+        target_stage: str,
+        confirm_production: bool = False,
+    ) -> str:
+        """Start a clone-snapshot task. Returns task_id."""
+        from app.deploy_manager import deploy_manager
+        from app.utils import SERVICE_REALMS
+
+        # Validate
+        snapshots = self.list_snapshots()
+        manifest = next(
+            (s for s in snapshots if s.get("snapshot_id") == snapshot_id), None
+        )
+        if manifest is None:
+            raise ValueError(f"Snapshot '{snapshot_id}' not found")
+
+        if target_stage not in SERVICE_REALMS:
+            raise ValueError(
+                f"Invalid target stage '{target_stage}': must be one of {sorted(SERVICE_REALMS)}"
+            )
+
+        if target_stage == "production" and not confirm_production:
+            raise ValueError(
+                "Cloning into production requires confirm_destination_is_production=true"
+            )
+
+        # Cross-exclusion: refuse if target stage has active deploys
+        active_deploys = deploy_manager.get_active_for_stage(target_stage)
+        if active_deploys:
+            raise RuntimeError(
+                f"Target stage '{target_stage}' has active deploys; retry after they complete"
+            )
+
+        # Cross-exclusion: refuse if another snapshot op is already targeting this stage
+        active_snaps = self.snapshot_manager.get_active_for_stage(target_stage)
+        if active_snaps:
+            raise RuntimeError(
+                f"Target stage '{target_stage}' is busy with another snapshot operation"
+            )
+
+        async with self._lock:
+            task = await self.snapshot_manager.create_task(
+                SnapshotKind.CLONE,
+                snapshot_id=snapshot_id,
+                source_stage=manifest.get("source_stage", ""),
+                target_stage=target_stage,
+            )
+            asyncio.create_task(self._run_clone(task, snapshot_id, target_stage))
+            return task.task_id
+
+    async def _run_clone(
+        self,
+        task: SnapshotTask,
+        snapshot_id: str,
+        target_stage: str,
+    ) -> None:
+        from app.event_broadcaster import event_broadcaster
+
+        async def _broadcast():
+            await event_broadcaster.broadcast("snapshot_progress", task.to_dict())
+
+        async def _step(step: SnapshotStep, msg: str = ""):
+            await self.snapshot_manager.update_task(
+                task.task_id, status="running", step=step, message=msg
+            )
+            await _broadcast()
+
+        snap_dir = self.snapshots_dir / snapshot_id
+        per_service_errors: dict[str, str | None] = {}
+
+        try:
+            # STOPPING_TARGET_AUTOMATIONS
+            await _step(
+                SnapshotStep.STOPPING_TARGET_AUTOMATIONS,
+                f"Stopping automations in stage '{target_stage}'…",
+            )
+            await self._stop_stage_automations(target_stage)
+
+            # Restore sequentially to limit blast radius
+            for label, step in [
+                ("postgres", SnapshotStep.RESTORE_POSTGRES),
+                ("couchdb", SnapshotStep.RESTORE_COUCHDB),
+                ("minio", SnapshotStep.RESTORE_MINIO),
+            ]:
+                await _step(step, f"Restoring {label}…")
+                tar_path = snap_dir / f"{label}.tar.gz"
+                svc = get_service(label, self.workspace_name, target_stage)
+                try:
+                    if not tar_path.exists() or tar_path.stat().st_size == 0:
+                        logger.info("Skipping %s restore: no data in snapshot", label)
+                        per_service_errors[label] = None
+                        continue
+                    if not svc.is_enabled():
+                        logger.info(
+                            "Skipping %s restore: service not enabled on %s",
+                            label,
+                            target_stage,
+                        )
+                        per_service_errors[label] = None
+                        continue
+                    await svc.restore(str(tar_path), force=True)
+                    per_service_errors[label] = None
+                except Exception as exc:
+                    per_service_errors[label] = str(exc)
+                    logger.error(
+                        "Clone %s restore failed for %s on %s: %s",
+                        snapshot_id,
+                        label,
+                        target_stage,
+                        exc,
+                    )
+
+            failed_services = [
+                k for k, v in per_service_errors.items() if v is not None
+            ]
+            if failed_services:
+                await self.snapshot_manager.update_task(
+                    task.task_id,
+                    status="error",
+                    step=SnapshotStep.FAILED,
+                    error=f"Restore failed for: {failed_services}. Target automations left stopped.",
+                    per_service_errors=per_service_errors,
+                )
+                await _broadcast()
+                return
+
+            # STARTING_TARGET_AUTOMATIONS
+            await _step(
+                SnapshotStep.STARTING_TARGET_AUTOMATIONS,
+                f"Restarting automations in stage '{target_stage}'…",
+            )
+            await self._start_stage_automations(target_stage)
+
+            await self.snapshot_manager.update_task(
+                task.task_id,
+                status="success",
+                step=SnapshotStep.DONE,
+                message="Clone completed successfully",
+                per_service_errors=per_service_errors,
+            )
+            await _broadcast()
+
+        except Exception as exc:
+            logger.exception("Clone failed: %s", exc)
+            await self.snapshot_manager.update_task(
+                task.task_id,
+                status="error",
+                step=SnapshotStep.FAILED,
+                error=str(exc),
+                per_service_errors=per_service_errors,
+            )
+            await _broadcast()
+
+    async def _stop_stage_automations(self, stage: str) -> None:
+        """Stop all active automations for a given stage."""
+        from app.dependencies import get_automation_service
+
+        automation_svc = get_automation_service()
+        active = automation_svc.get_active_automations()
+        for dep_id, dep_conf in active.items():
+            dep_stage = (dep_conf or {}).get("stage") or "production"
+            if dep_stage == "":
+                dep_stage = "production"
+            # live-dev is a deploy stage that uses the dev service realm
+            if dep_stage == stage or (stage == "dev" and dep_stage == "live-dev"):
+                try:
+                    await automation_svc.stop_automation(dep_id)
+                    logger.info("Stopped automation %s for snapshot clone", dep_id)
+                except Exception as exc:
+                    logger.warning("Could not stop automation %s: %s", dep_id, exc)
+
+    async def _start_stage_automations(self, stage: str) -> None:
+        """Restart all automations for a given stage."""
+        from app.dependencies import get_automation_service
+
+        automation_svc = get_automation_service()
+        active = automation_svc.get_active_automations()
+        for dep_id, dep_conf in active.items():
+            dep_stage = (dep_conf or {}).get("stage") or "production"
+            if dep_stage == "":
+                dep_stage = "production"
+            if dep_stage == stage or (stage == "dev" and dep_stage == "live-dev"):
+                try:
+                    await automation_svc.restart_automation(dep_id)
+                    logger.info("Restarted automation %s after clone", dep_id)
+                except Exception as exc:
+                    logger.warning("Could not restart automation %s: %s", dep_id, exc)
+
+    async def resume_target_automations(self, task_id: str, target_stage: str) -> None:
+        """Restart target automations after an operator-investigated partial clone failure."""
+        from app.event_broadcaster import event_broadcaster
+
+        try:
+            await self._start_stage_automations(target_stage)
+            await self.snapshot_manager.update_task(
+                task_id,
+                status="success",
+                step=SnapshotStep.DONE,
+                message=f"Target automations in '{target_stage}' restarted",
+            )
+        except Exception as exc:
+            await self.snapshot_manager.update_task(task_id, error=str(exc))
+        finally:
+            task = self.snapshot_manager.get_task(task_id)
+            if task:
+                await event_broadcaster.broadcast("snapshot_progress", task.to_dict())

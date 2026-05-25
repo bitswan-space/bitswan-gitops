@@ -42,6 +42,7 @@ class DeployTask:
     message: str = ""
     error: str | None = None
     build_checksum: str | None = None
+    stage: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
 
@@ -70,13 +71,15 @@ class DeployManager:
     def is_deploying(self, deployment_id: str) -> bool:
         return deployment_id in self._active_deploys
 
-    async def create_task(self, deployment_id: str) -> DeployTask | None:
+    async def create_task(
+        self, deployment_id: str, stage: str | None = None
+    ) -> DeployTask | None:
         """Create a deploy task. Returns None if deployment_id is already deploying."""
         async with self._lock:
             if deployment_id in self._active_deploys:
                 return None
             task_id = str(uuid.uuid4())
-            task = DeployTask(task_id=task_id, deployment_id=deployment_id)
+            task = DeployTask(task_id=task_id, deployment_id=deployment_id, stage=stage)
             self._tasks[task_id] = task
             self._active_deploys[deployment_id] = task_id
             return task
@@ -107,6 +110,17 @@ class DeployManager:
 
     def get_task(self, task_id: str) -> DeployTask | None:
         return self._tasks.get(task_id)
+
+    def get_active_for_stage(self, stage: str) -> list[DeployTask]:
+        """Return running/pending deploy tasks targeting a specific stage."""
+        return [
+            self._tasks[tid]
+            for tid in self._active_deploys.values()
+            if tid in self._tasks
+            and self._tasks[tid].stage == stage
+            and self._tasks[tid].status
+            in (DeployStatus.PENDING, DeployStatus.IN_PROGRESS)
+        ]
 
     def get_all_active_tasks(self) -> list[DeployTask]:
         return [
