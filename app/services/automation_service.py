@@ -5,9 +5,7 @@ import os
 import json
 import re
 import shutil
-from tempfile import NamedTemporaryFile
 import tarfile
-import zipfile
 import yaml
 import requests
 from datetime import datetime
@@ -16,7 +14,6 @@ from app.models import DeployedAutomation
 from app.utils import (
     add_workspace_route_to_ingress,
     AutomationConfig,
-    bitswan_extract_filter,
     get_expose_to_for_stage,
     calculate_git_tree_hash,
     docker_compose_up,
@@ -40,7 +37,7 @@ from app.services.oauth2_helpers import (
     copy_oauth2_proxy_to_container,
     is_oauth2_proxy_running,
 )
-from fastapi import UploadFile, HTTPException
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +348,11 @@ class AutomationService:
                     active=cfg.get("active", False),
                     automation_url=None,
                     relative_path=cfg.get("relative_path", None),
-                    stage=cfg.get("stage", "production"),
+                    # Production is persisted as an empty-string stage in
+                    # bitswan.yaml; normalise it back to "production" so SSE/REST
+                    # consumers see a canonical stage value (clients filter on
+                    # exactly "dev"|"staging"|"production").
+                    stage=(cfg.get("stage") or "production"),
                     automation_name=cfg.get("automation_name", None),
                     context=cfg.get("context", None),
                     version_hash=cfg.get("checksum", None),
@@ -505,11 +506,10 @@ class AutomationService:
         and commit. No-op if the target directory already exists. Returns the
         absolute output path.
 
-        Mirrors `_upload_and_commit_asset`'s contract but sources files from
-        the workspace bind-mount instead of an upload stream. Symlinks are
-        preserved verbatim (same as the hash function), so the materialized
-        tree round-trips through `calculate_git_tree_hash` to the same
-        digest.
+        Source files come from the workspace bind-mount (not from an upload).
+        Symlinks are preserved verbatim (same as the hash function), so the
+        materialized tree round-trips through `calculate_git_tree_hash` to
+        the same digest.
         """
         output_dir = os.path.join(self.gitops_dir, checksum)
         if os.path.exists(output_dir) and os.listdir(output_dir):
@@ -800,228 +800,6 @@ class AutomationService:
             "checksum": checksum,
             "deploy_kwargs": deploy_kwargs,
             "source": source,
-        }
-
-    async def _upload_and_commit_asset(
-        self,
-        file: UploadFile,
-        commit_message: str | Callable[[str], str],
-        checksum: str,
-    ) -> dict:
-        """
-        Shared logic for uploading an asset (zip file), unpacking it,
-        and committing it to git. Returns dict with checksum and output_directory.
-
-        commit_message can be a string or a callable that takes checksum and returns a string.
-        checksum: Pre-calculated git tree hash that will be verified.
-
-        Uses async git lock to prevent race conditions with concurrent uploads.
-        """
-        with NamedTemporaryFile(delete=False) as temp_file:
-            content = await file.read()
-            temp_file.write(content)
-
-            temp_file.close()
-            output_dir = f"{checksum}"
-
-            try:
-                output_dir = os.path.join(self.gitops_dir, output_dir)
-
-                # Clean stale files from any previous extraction attempt
-                if os.path.exists(output_dir):
-                    shutil.rmtree(output_dir)
-                os.makedirs(output_dir)
-                if tarfile.is_tarfile(temp_file.name):
-                    with tarfile.open(temp_file.name, "r:gz") as tar_ref:
-                        tar_ref.extractall(output_dir, filter=bitswan_extract_filter)
-                else:
-                    with zipfile.ZipFile(temp_file.name, "r") as zip_ref:
-                        zip_ref.extractall(output_dir)
-
-                # Verify the checksum using git tree hash algorithm
-                calculated_hash = await calculate_git_tree_hash([output_dir])
-                if calculated_hash != checksum:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Checksum verification failed. Expected {checksum}, got {calculated_hash}",
-                    )
-
-                # Generate commit message if it's a callable
-                if callable(commit_message):
-                    final_commit_message = commit_message(checksum)
-                else:
-                    final_commit_message = commit_message
-
-                # Use async lock for git operations to prevent race conditions
-                async with GitLockContext(timeout=10.0):
-                    # add this file to git
-                    await call_git_command(
-                        "git", "add", f"{checksum}", cwd=self.gitops_dir
-                    )
-
-                    # commit the changes
-                    await call_git_command(
-                        "git",
-                        "commit",
-                        "-m",
-                        final_commit_message,
-                        cwd=self.gitops_dir,
-                    )
-
-                    # push the changes
-                    await call_git_command("git", "push", cwd=self.gitops_dir)
-
-                return {
-                    "checksum": checksum,
-                    "output_directory": output_dir,
-                }
-            except Exception as e:
-                raise Exception(f"Error processing file: {str(e)}")
-            finally:
-                os.unlink(temp_file.name)
-
-    async def create_automation(
-        self,
-        deployment_id: str,
-        file: UploadFile,
-        relative_path: str = None,
-        checksum: str = None,
-    ):
-        if not checksum:
-            raise HTTPException(status_code=400, detail="Checksum is required")
-        result = await self._upload_and_commit_asset(
-            file, f"Add {deployment_id} to bitswan.yaml", checksum=checksum
-        )
-        checksum = result["checksum"]
-        output_dir = result["output_directory"]
-
-        try:
-            bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
-
-            # Update or create bitswan.yaml
-            data = read_bitswan_yaml(self.gitops_dir)
-
-            data = data or {"deployments": {}}
-            deployments = data["deployments"]  # should never raise KeyError
-
-            deployments[deployment_id] = deployments.get(deployment_id, {})
-            deployments[deployment_id]["checksum"] = checksum
-            deployments[deployment_id]["active"] = True
-
-            if relative_path:
-                deployments[deployment_id]["relative_path"] = relative_path
-
-            data["deployments"] = deployments
-            with open(bitswan_yaml_path, "w") as f:
-                yaml.dump(data, f)
-
-            await update_git(
-                self.gitops_dir, self.gitops_dir_host, deployment_id, "create"
-            )
-
-            return {
-                "message": "File processed successfully",
-                "output_directory": output_dir,
-                "checksum": checksum,
-            }
-        except Exception as e:
-            return {"error": f"Error processing file: {str(e)}"}
-
-    async def upload_asset(self, file: UploadFile, checksum: str):
-        """
-        Upload an asset (zip file), unpack it, and return the checksum.
-        Similar to create_automation but without deployment_id.
-
-        checksum: Pre-calculated git tree hash that will be verified.
-        """
-        try:
-            result = await self._upload_and_commit_asset(
-                file, lambda checksum: f"Add asset {checksum}", checksum=checksum
-            )
-            return {
-                "message": "Asset uploaded successfully",
-                "output_directory": result["output_directory"],
-                "checksum": result["checksum"],
-            }
-        except Exception as e:
-            return {"error": f"Error processing file: {str(e)}"}
-
-    async def upload_asset_from_path(self, file_path: str, checksum: str):
-        """
-        Upload an asset from a file path (for streaming uploads).
-        Similar to upload_asset but takes a file path instead of UploadFile.
-
-        checksum: Pre-calculated git tree hash that will be verified.
-        """
-        output_dir = os.path.join(self.gitops_dir, checksum)
-        if os.path.exists(output_dir):
-            # If the tree is already in git, the asset was extracted and committed
-            # on a previous request — treat re-upload as a no-op. The automation
-            # container may have written build artifacts (dist/, node_modules/)
-            # into output_dir as root, which would make rmtree fail, but we don't
-            # need to clean: the asset is already stored.
-            # Use "HEAD:<path>" rather than bare "<checksum>" because our
-            # checksum is a normalized tree hash (all files forced to 100644),
-            # which differs from git's actual tree SHA when any file is +x
-            # (e.g. entrypoint.sh → 100755). The path-in-HEAD check is
-            # mode-agnostic.
-            _, _, rc = await call_git_command_with_output(
-                "git", "cat-file", "-e", f"HEAD:{checksum}", cwd=self.gitops_dir
-            )
-            if rc == 0:
-                logger.info(
-                    "Asset %s already committed; skipping re-extraction", checksum
-                )
-                return {
-                    "message": "Asset already uploaded",
-                    "output_directory": output_dir,
-                    "checksum": checksum,
-                }
-            # Stale files from a failed previous extraction — clean them.
-            shutil.rmtree(output_dir)
-        os.makedirs(output_dir)
-
-        try:
-            if tarfile.is_tarfile(file_path):
-                with tarfile.open(file_path, "r:gz") as tar_ref:
-                    tar_ref.extractall(output_dir, filter=bitswan_extract_filter)
-            else:
-                with zipfile.ZipFile(file_path, "r") as zip_ref:
-                    zip_ref.extractall(output_dir)
-        except (tarfile.TarError, zipfile.BadZipFile) as e:
-            shutil.rmtree(output_dir, ignore_errors=True)
-            raise HTTPException(status_code=400, detail=f"Invalid archive: {e}")
-
-        # Verify the checksum using git tree hash algorithm
-        calculated_hash = await calculate_git_tree_hash([output_dir])
-        if calculated_hash != checksum:
-            shutil.rmtree(output_dir, ignore_errors=True)
-            logger.error(
-                "Checksum mismatch: expected=%s got=%s — extracted dir removed",
-                checksum,
-                calculated_hash,
-            )
-            raise HTTPException(
-                status_code=400,
-                detail=f"Checksum verification failed. Expected {checksum}, got {calculated_hash}",
-            )
-
-        # Use async lock for git operations to prevent race conditions
-        async with GitLockContext(timeout=10.0):
-            await call_git_command("git", "add", f"{checksum}", cwd=self.gitops_dir)
-            await call_git_command(
-                "git",
-                "commit",
-                "-m",
-                f"Add asset {checksum}",
-                cwd=self.gitops_dir,
-            )
-            await call_git_command("git", "push", cwd=self.gitops_dir)
-
-        return {
-            "message": "Asset uploaded successfully",
-            "output_directory": output_dir,
-            "checksum": checksum,
         }
 
     async def get_asset_diff(

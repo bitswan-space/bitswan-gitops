@@ -2,18 +2,13 @@ import asyncio
 import json as _json
 import logging
 import os
-import tempfile
 
 from fastapi import (
     APIRouter,
     Depends,
-    File,
     Form,
     HTTPException,
-    UploadFile,
     Query,
-    Request,
-    Header,
 )
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -427,80 +422,12 @@ async def inspect_automation(
     return await automation_service.inspect_automation(deployment_id)
 
 
-@router.post("/{deployment_id}")
-async def create_automation(
-    deployment_id: str,
-    file: UploadFile = File(...),
-    relative_path: str = Form(None),
-    checksum: str = Form(...),
-    automation_service: AutomationService = Depends(get_automation_service),
-):
-    if file.filename.endswith((".zip", ".tar.gz", ".tgz")):
-        result = await automation_service.create_automation(
-            deployment_id, file, relative_path, checksum=checksum
-        )
-        return JSONResponse(content=result)
-    else:
-        raise HTTPException(
-            status_code=400, detail="File must be a .zip or .tar.gz archive"
-        )
-
-
 @router.delete("/{deployment_id}")
 async def delete_automation(
     deployment_id: str,
     automation_service: AutomationService = Depends(get_automation_service),
 ):
     return await automation_service.delete_automation(deployment_id)
-
-
-@router.post("/assets/upload")
-async def upload_asset(
-    file: UploadFile = File(...),
-    checksum: str = Form(...),
-    automation_service: AutomationService = Depends(get_automation_service),
-):
-    if file.filename.endswith((".zip", ".tar.gz", ".tgz")):
-        result = await automation_service.upload_asset(file, checksum=checksum)
-        return JSONResponse(content=result)
-    else:
-        raise HTTPException(
-            status_code=400, detail="File must be a .zip or .tar.gz archive"
-        )
-
-
-@router.post("/assets/upload-stream")
-async def upload_asset_stream(
-    request: Request,
-    checksum: str = Header(..., alias="X-Checksum"),
-    automation_service: AutomationService = Depends(get_automation_service),
-):
-    """
-    Streaming upload endpoint for large zip files.
-    Receives raw zip data in the request body with checksum in X-Checksum header.
-    This endpoint supports chunked transfer encoding.
-    """
-    # Create a temporary file to store the streamed data
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as temp_file:
-        temp_path = temp_file.name
-        # Stream the request body to the temp file
-        async for chunk in request.stream():
-            temp_file.write(chunk)
-
-    try:
-        result = await automation_service.upload_asset_from_path(
-            temp_path, checksum=checksum
-        )
-        return JSONResponse(content=result)
-    except HTTPException as exc:
-        logger.error("upload_asset_stream failed [%s]: %s", exc.status_code, exc.detail)
-        raise
-    except Exception as exc:
-        logger.exception("upload_asset_stream unexpected error: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-    finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
 
 
 @router.get("/assets/{checksum}/download")
