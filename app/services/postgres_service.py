@@ -312,6 +312,174 @@ class PostgresService(InfraService):
             if should_cleanup and extract_dir:
                 shutil.rmtree(extract_dir, ignore_errors=True)
 
+    async def backup_db(self, db_name: str, backup_path: str) -> dict:
+        """Dump a single database (pg_dump) into a tarball under backup_path.
+
+        Used by per-worktree snapshots; the resulting archive is restorable into
+        any target database via restore_db() because of --clean / --no-owner.
+        """
+        if not self.is_enabled():
+            raise ValueError(f"{self.display_name} is not enabled")
+        if not await self.is_running():
+            raise ValueError(f"{self.display_name} is not running")
+
+        info = self._get_connection_info()
+        user = info.get("username", "admin")
+
+        temp_dir = tempfile.mkdtemp(prefix="postgres-db-backup-")
+        try:
+            stdout, stderr, rc = await run_docker_command(
+                "docker",
+                "exec",
+                self.container_name,
+                "pg_dump",
+                "-U",
+                user,
+                "--clean",
+                "--if-exists",
+                "--no-owner",
+                db_name,
+            )
+            if rc != 0:
+                raise RuntimeError(f"pg_dump failed for {db_name}: {stderr}")
+
+            dump_file = os.path.join(temp_dir, "dump.sql")
+            with open(dump_file, "w") as f:
+                f.write(stdout)
+            logger.info(
+                f"pg_dump completed for {db_name}, dump size: {len(stdout)} bytes"
+            )
+
+            backup_time = datetime.utcnow()
+            manifest = {
+                "version": 1,
+                "workspace": self.workspace_name,
+                "backup_date": backup_time.isoformat(),
+                "format": "pg_dump_single",
+                "db_name": db_name,
+                "postgres_host": self.container_name,
+            }
+            with open(os.path.join(temp_dir, "manifest.json"), "w") as f:
+                json.dump(manifest, f, indent=2)
+
+            tarball_name = (
+                f"postgres-db-{db_name}-{backup_time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
+            )
+            tarball_path = os.path.join(backup_path, tarball_name)
+            os.makedirs(backup_path, exist_ok=True)
+            with tarfile.open(tarball_path, "w:gz") as tar:
+                for item in os.listdir(temp_dir):
+                    tar.add(os.path.join(temp_dir, item), arcname=item)
+
+            return {
+                "status": "ok",
+                "backup_path": tarball_path,
+                "tarball": tarball_name,
+                "db_name": db_name,
+            }
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    async def restore_db(
+        self, backup_path: str, target_db: str, force: bool = True
+    ) -> dict:
+        """Restore a single-DB tarball (from backup_db) into target_db.
+
+        Terminates active connections, ensures target_db exists as an empty
+        database (the dump's --clean handles object-level recreation), then
+        pipes the SQL via psql -d target_db.
+        """
+        if not self.is_enabled():
+            raise ValueError(f"{self.display_name} is not enabled")
+        if not await self.is_running():
+            raise ValueError(f"{self.display_name} is not running")
+
+        info = self._get_connection_info()
+        user = info.get("username", "admin")
+
+        extract_dir = None
+        should_cleanup = False
+        if os.path.isfile(backup_path) and backup_path.endswith(".tar.gz"):
+            extract_dir = tempfile.mkdtemp(prefix="postgres-db-restore-")
+            should_cleanup = True
+            with tarfile.open(backup_path, "r:gz") as tar:
+                tar.extractall(extract_dir)
+        elif os.path.isdir(backup_path):
+            extract_dir = backup_path
+        else:
+            raise ValueError(
+                f"Backup path does not exist or is not a valid format: {backup_path}"
+            )
+
+        try:
+            dump_file = os.path.join(extract_dir, "dump.sql")
+            if not os.path.isfile(dump_file):
+                raise ValueError("dump.sql not found in single-DB backup archive")
+
+            # Terminate connections + (re)create target DB. Quote the identifier
+            # by doubling embedded double-quotes; psql parses this safely.
+            safe_db = target_db.replace('"', '""')
+            prep_sql = (
+                f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                f"WHERE datname = '{target_db}' AND pid <> pg_backend_pid(); "
+                f'CREATE DATABASE "{safe_db}";'
+            )
+            _, prep_stderr, prep_rc = await run_docker_command(
+                "docker",
+                "exec",
+                self.container_name,
+                "psql",
+                "-U",
+                user,
+                "-d",
+                "postgres",
+                "-v",
+                "ON_ERROR_STOP=0",
+                "-c",
+                prep_sql,
+            )
+            # "database ... already exists" is expected when restoring in-place.
+            if prep_rc != 0 and "already exists" not in (prep_stderr or ""):
+                logger.warning(
+                    "Prep step for restore_db emitted: %s", (prep_stderr or "").strip()
+                )
+
+            with open(dump_file, "r") as f:
+                sql_content = f.read()
+
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                "-i",
+                self.container_name,
+                "psql",
+                "-U",
+                user,
+                "-d",
+                target_db,
+                "-v",
+                "ON_ERROR_STOP=1",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr_bytes = await proc.communicate(input=sql_content.encode())
+
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"psql restore_db into '{target_db}' failed: {stderr_bytes.decode().strip()}"
+                )
+
+            logger.info("PostgreSQL restore_db into '%s' completed", target_db)
+            return {
+                "status": "ok",
+                "message": f"Restore into '{target_db}' completed successfully",
+                "db_name": target_db,
+            }
+        finally:
+            if should_cleanup and extract_dir:
+                shutil.rmtree(extract_dir, ignore_errors=True)
+
     async def clear(self) -> dict:
         """Drop all user-created databases and recreate an empty default database.
 

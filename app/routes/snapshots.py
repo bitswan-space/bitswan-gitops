@@ -35,10 +35,16 @@ def _spawn_bg(coro) -> asyncio.Task:
 class CreateSnapshotRequest(BaseModel):
     source_stage: str
     name: str | None = None
+    # When set, runs the per-worktree Postgres-only path (source_stage is
+    # forced to "dev"). Otherwise the stage-scoped snapshot path runs.
+    worktree: str | None = None
 
 
 class CloneSnapshotRequest(BaseModel):
-    target_stage: str
+    # Exactly one of target_stage / target_worktree must be set, depending on
+    # the kind of snapshot referenced.
+    target_stage: str | None = None
+    target_worktree: str | None = None
     confirm_destination_is_production: bool = False
 
 
@@ -52,10 +58,13 @@ async def create_snapshot(
     body: CreateSnapshotRequest,
     service: Annotated[SnapshotService, Depends(get_snapshot_service)],
 ):
-    """Snapshot a stage's Postgres + CouchDB + MinIO data."""
+    """Snapshot a stage's Postgres + CouchDB + MinIO data,
+    or a single worktree's Postgres DB when `worktree` is supplied."""
     try:
         task_id = await service.create_snapshot(
-            source_stage=body.source_stage, name=body.name
+            source_stage=body.source_stage,
+            name=body.name,
+            worktree=body.worktree,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -79,10 +88,12 @@ async def list_snapshots(
 async def estimate_size(
     stage: Annotated[str, Query()],
     service: Annotated[SnapshotService, Depends(get_snapshot_service)],
+    worktree: Annotated[str | None, Query()] = None,
 ):
-    """Synchronous size estimate for a stage (postgres + couchdb + minio)."""
+    """Synchronous size estimate. With `worktree`, returns just the per-worktree
+    Postgres DB size; otherwise the full stage (postgres + couchdb + minio)."""
     try:
-        return await service.estimate_size(stage)
+        return await service.estimate_size(stage, worktree=worktree)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -130,11 +141,18 @@ async def clone_snapshot(
     body: CloneSnapshotRequest,
     service: Annotated[SnapshotService, Depends(get_snapshot_service)],
 ):
-    """Clone a snapshot into a target stage."""
+    """Clone a snapshot into a target stage, or into a target worktree
+    when the snapshot is worktree-kind."""
+    if bool(body.target_stage) == bool(body.target_worktree):
+        raise HTTPException(
+            status_code=400,
+            detail="Exactly one of target_stage or target_worktree must be set",
+        )
     try:
         task_id = await service.clone_snapshot(
             snapshot_id=snapshot_id,
             target_stage=body.target_stage,
+            target_worktree=body.target_worktree,
             confirm_production=body.confirm_destination_is_production,
         )
     except ValueError as exc:
@@ -153,11 +171,20 @@ async def resume_target(
     service: Annotated[SnapshotService, Depends(get_snapshot_service)],
     manager: Annotated[SnapshotManager, Depends(get_snapshot_manager)],
 ):
-    """Restart the target stage's automations after a partial-failure clone."""
+    """Restart the target's automations after a partial-failure clone.
+    Dispatches to worktree or stage scope based on the task fields."""
     task = manager.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
-    if task.target_stage is None:
-        raise HTTPException(status_code=400, detail="Task has no target stage")
-    _spawn_bg(service.resume_target_automations(task_id, task.target_stage))
+    if task.target_worktree is None and task.target_stage is None:
+        raise HTTPException(
+            status_code=400, detail="Task has no target stage or worktree"
+        )
+    _spawn_bg(
+        service.resume_target_automations(
+            task_id,
+            target_stage=task.target_stage,
+            target_worktree=task.target_worktree,
+        )
+    )
     return {"task_id": task_id}

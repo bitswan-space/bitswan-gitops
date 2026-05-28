@@ -207,6 +207,15 @@ def sanitize_automation_name(name: str) -> str:
     return re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
 
 
+def worktree_db_name(worktree_name: str) -> str:
+    """Postgres database name for a worktree, shared by worktree creation
+    (app/routes/worktrees.py) and per-worktree snapshot operations
+    (app/services/snapshot_service.py). Must stay in sync with the
+    POSTGRES_DB env override in automation_service.py."""
+    safe = re.sub(r"[^a-z0-9_]", "_", worktree_name.lower())
+    return f"postgres_wt_{safe}"
+
+
 def read_automation_toml(source_dir: str) -> AutomationConfig | None:
     """Read automation.toml from a directory."""
     toml_path = os.path.join(source_dir, "automation.toml")

@@ -3,12 +3,16 @@ Snapshot service: creates, lists, clones and deletes per-stage data snapshots.
 
 Snapshots capture Postgres + CouchDB + MinIO from a source stage and let
 operators restore the data into a target stage (primarily prod → dev/staging).
+
+Also supports per-worktree Postgres-only snapshots (source_kind="worktree"),
+restricted to the dev service realm.
 """
 
 import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -22,6 +26,7 @@ from app.snapshot_manager import (
     SnapshotStep,
     SnapshotTask,
 )
+from app.utils import worktree_db_name
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +39,20 @@ def _utc_compact() -> str:
 
 def _short_uuid() -> str:
     return uuid.uuid4().hex[:8]
+
+
+def _sanitize_worktree_for_id(name: str) -> str:
+    """Filesystem-safe slug for embedding a worktree name in snapshot_id."""
+    return re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or "worktree"
+
+
+def _deployment_belongs_to_worktree(dep_conf: dict | None, worktree: str) -> bool:
+    """Match a bitswan.yaml deployment entry to a worktree via its relative_path."""
+    rel = (dep_conf or {}).get("relative_path") or ""
+    if not rel:
+        return False
+    parts = rel.replace("\\", "/").lstrip("/").split("/")
+    return len(parts) >= 2 and parts[0] == "worktrees" and parts[1] == worktree
 
 
 class SnapshotService:
@@ -54,8 +73,27 @@ class SnapshotService:
     # Estimate
     # ------------------------------------------------------------------
 
-    async def estimate_size(self, stage: str) -> dict:
-        """Return rough byte sizes for postgres/couchdb/minio on a stage."""
+    async def estimate_size(self, stage: str, worktree: str | None = None) -> dict:
+        """Return rough byte sizes for postgres/couchdb/minio on a stage.
+
+        When `worktree` is set, only the per-worktree Postgres DB is measured;
+        the dev realm is assumed and couchdb/minio bytes are 0 (shared, not
+        snapshotted for worktree-scoped operations).
+        """
+        if worktree:
+            if worktree not in self._list_worktrees():
+                raise ValueError(f"Worktree '{worktree}' not found")
+            pg_svc = get_service("postgres", self.workspace_name, "dev")
+            postgres_bytes = await self._estimate_postgres_db(
+                pg_svc, worktree_db_name(worktree)
+            )
+            return {
+                "postgres": postgres_bytes,
+                "couchdb": 0,
+                "minio": 0,
+                "total": postgres_bytes,
+            }
+
         pg_svc = get_service("postgres", self.workspace_name, stage)
         couch_svc = get_service("couchdb", self.workspace_name, stage)
         minio_svc = get_service("minio", self.workspace_name, stage)
@@ -71,6 +109,25 @@ class SnapshotService:
             "minio": minio_bytes,
             "total": total,
         }
+
+    async def _estimate_postgres_db(self, svc, db_name: str) -> int:
+        """Byte size of a single Postgres database."""
+        try:
+            if not svc.is_enabled() or not await svc.is_running():
+                return 0
+            stdout, _, rc = await run_docker_command(
+                "docker",
+                "exec",
+                svc.container_name,
+                "psql",
+                "-U",
+                "admin",
+                "-tAc",
+                f"SELECT COALESCE(pg_database_size('{db_name}'),0);",
+            )
+            return int(stdout.strip()) if rc == 0 and stdout.strip().isdigit() else 0
+        except Exception:
+            return 0
 
     async def _estimate_postgres(self, svc) -> int:
         try:
@@ -175,11 +232,55 @@ class SnapshotService:
             return 0
 
     # ------------------------------------------------------------------
+    # Worktrees (helpers shared with create/clone paths)
+    # ------------------------------------------------------------------
+
+    def _list_worktrees(self) -> list[str]:
+        """Enumerate worktree names from disk (no git shell-out)."""
+        base = os.environ.get("BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo")
+        worktrees_dir = os.path.join(base, "worktrees")
+        if not os.path.isdir(worktrees_dir):
+            return []
+        names: list[str] = []
+        for entry in os.listdir(worktrees_dir):
+            if entry.startswith("."):
+                continue
+            if os.path.isdir(os.path.join(worktrees_dir, entry)):
+                names.append(entry)
+        return sorted(names)
+
+    # ------------------------------------------------------------------
     # Create
     # ------------------------------------------------------------------
 
-    async def create_snapshot(self, source_stage: str, name: str | None = None) -> str:
-        """Start a create-snapshot task. Returns task_id."""
+    async def create_snapshot(
+        self,
+        source_stage: str,
+        name: str | None = None,
+        worktree: str | None = None,
+    ) -> str:
+        """Start a create-snapshot task. Returns task_id.
+
+        When `worktree` is set, runs the per-worktree Postgres-only path on the
+        dev service realm; `source_stage` is ignored/forced to 'dev'.
+        """
+        if worktree:
+            if worktree not in self._list_worktrees():
+                raise ValueError(f"Worktree '{worktree}' not found")
+            slug = _sanitize_worktree_for_id(worktree)
+            snapshot_id = f"wt-{slug}-{_utc_compact()}-{_short_uuid()}"
+            async with self._lock:
+                task = await self.snapshot_manager.create_task(
+                    SnapshotKind.CREATE,
+                    snapshot_id=snapshot_id,
+                    source_stage="dev",
+                    worktree=worktree,
+                )
+                asyncio.create_task(
+                    self._run_create_worktree(task, worktree, snapshot_id, name)
+                )
+                return task.task_id
+
         snapshot_id = f"{source_stage}-{_utc_compact()}-{_short_uuid()}"
 
         async with self._lock:
@@ -332,6 +433,97 @@ class SnapshotService:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    async def _run_create_worktree(
+        self,
+        task: SnapshotTask,
+        worktree: str,
+        snapshot_id: str,
+        name: str | None,
+    ) -> None:
+        from app.event_broadcaster import event_broadcaster
+
+        async def _broadcast():
+            await event_broadcaster.broadcast("snapshot_progress", task.to_dict())
+
+        async def _step(step: SnapshotStep, msg: str = ""):
+            await self.snapshot_manager.update_task(
+                task.task_id, status="running", step=step, message=msg
+            )
+            await _broadcast()
+
+        partial_dir = self.snapshots_dir / f"{snapshot_id}.partial"
+        final_dir = self.snapshots_dir / snapshot_id
+        db_name = worktree_db_name(worktree)
+
+        try:
+            await _step(SnapshotStep.PREPARING_DIR, "Preparing snapshot directory…")
+            self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+            partial_dir.mkdir(parents=True, exist_ok=True)
+
+            await _step(
+                SnapshotStep.BACKUP_POSTGRES,
+                f"Dumping worktree database '{db_name}'…",
+            )
+            pg_svc = get_service("postgres", self.workspace_name, "dev")
+            tmp = tempfile.mkdtemp(prefix="snap-wt-postgres-")
+            try:
+                result = await pg_svc.backup_db(db_name, tmp)
+                backup_path = result.get("backup_path")
+                if not backup_path or not os.path.exists(backup_path):
+                    raise RuntimeError("backup_db() returned no file")
+                shutil.copy2(backup_path, partial_dir / "postgres.tar.gz")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+
+            await _step(SnapshotStep.WRITING_MANIFEST, "Writing manifest…")
+            pg_size = (
+                (partial_dir / "postgres.tar.gz").stat().st_size
+                if (partial_dir / "postgres.tar.gz").exists()
+                else 0
+            )
+            manifest = {
+                "snapshot_id": snapshot_id,
+                "name": name,
+                "source_kind": "worktree",
+                "source_stage": "dev",
+                "worktree": worktree,
+                "db_name": db_name,
+                "workspace": self.workspace_name,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "sizes_bytes": {"postgres": pg_size, "total": pg_size},
+                "gitops_version": GITOPS_VERSION,
+                "known_limitations": [
+                    "Captures Postgres only; CouchDB and MinIO are shared across worktrees."
+                ],
+            }
+            with open(partial_dir / "manifest.json", "w") as f:
+                json.dump(manifest, f, indent=2)
+
+            partial_dir.rename(final_dir)
+
+            await _step(SnapshotStep.CLEANUP_OLD, "Cleaning up old snapshots…")
+            await self.cleanup_old_snapshots()
+
+            await self.snapshot_manager.update_task(
+                task.task_id,
+                status="success",
+                step=SnapshotStep.DONE,
+                message="Worktree snapshot created successfully",
+                per_service_errors={"postgres": None},
+            )
+            await _broadcast()
+
+        except Exception as exc:
+            logger.exception("Worktree snapshot create failed: %s", exc)
+            await self.snapshot_manager.update_task(
+                task.task_id,
+                status="error",
+                step=SnapshotStep.FAILED,
+                error=str(exc),
+                message="Worktree snapshot creation failed",
+            )
+            await _broadcast()
+
     # ------------------------------------------------------------------
     # List
     # ------------------------------------------------------------------
@@ -424,20 +616,67 @@ class SnapshotService:
     async def clone_snapshot(
         self,
         snapshot_id: str,
-        target_stage: str,
+        target_stage: str | None = None,
         confirm_production: bool = False,
+        target_worktree: str | None = None,
     ) -> str:
-        """Start a clone-snapshot task. Returns task_id."""
+        """Start a clone-snapshot task. Returns task_id.
+
+        Routes to per-worktree clone when the snapshot manifest is worktree-kind
+        and `target_worktree` is supplied; otherwise the existing stage clone.
+        """
         from app.deploy_manager import deploy_manager
         from app.utils import SERVICE_REALMS
 
-        # Validate
+        # Validate manifest exists
         snapshots = self.list_snapshots()
         manifest = next(
             (s for s in snapshots if s.get("snapshot_id") == snapshot_id), None
         )
         if manifest is None:
             raise ValueError(f"Snapshot '{snapshot_id}' not found")
+
+        is_worktree_snapshot = manifest.get("source_kind") == "worktree"
+
+        if is_worktree_snapshot:
+            if target_stage:
+                raise ValueError(
+                    "Worktree snapshots clone into a worktree, not a stage; "
+                    "pass target_worktree instead of target_stage."
+                )
+            if not target_worktree:
+                raise ValueError("Worktree snapshot clone requires target_worktree")
+            if target_worktree not in self._list_worktrees():
+                raise ValueError(f"Target worktree '{target_worktree}' not found")
+
+            active_snaps = self.snapshot_manager.get_active_for_worktree(
+                target_worktree
+            )
+            if active_snaps:
+                raise RuntimeError(
+                    f"Target worktree '{target_worktree}' is busy with another snapshot operation"
+                )
+
+            async with self._lock:
+                task = await self.snapshot_manager.create_task(
+                    SnapshotKind.CLONE,
+                    snapshot_id=snapshot_id,
+                    source_stage="dev",
+                    worktree=manifest.get("worktree"),
+                    target_worktree=target_worktree,
+                )
+                asyncio.create_task(
+                    self._run_clone_worktree(task, snapshot_id, target_worktree)
+                )
+                return task.task_id
+
+        if target_worktree:
+            raise ValueError(
+                "Stage snapshots clone into a stage; "
+                "target_worktree is only valid for worktree snapshots."
+            )
+        if not target_stage:
+            raise ValueError("target_stage is required for stage-snapshot clones")
 
         if target_stage not in SERVICE_REALMS:
             raise ValueError(
@@ -576,6 +815,100 @@ class SnapshotService:
             )
             await _broadcast()
 
+    async def _run_clone_worktree(
+        self,
+        task: SnapshotTask,
+        snapshot_id: str,
+        target_worktree: str,
+    ) -> None:
+        from app.event_broadcaster import event_broadcaster
+
+        async def _broadcast():
+            await event_broadcaster.broadcast("snapshot_progress", task.to_dict())
+
+        async def _step(step: SnapshotStep, msg: str = ""):
+            await self.snapshot_manager.update_task(
+                task.task_id, status="running", step=step, message=msg
+            )
+            await _broadcast()
+
+        snap_dir = self.snapshots_dir / snapshot_id
+        tar_path = snap_dir / "postgres.tar.gz"
+        target_db = worktree_db_name(target_worktree)
+        per_service_errors: dict[str, str | None] = {}
+
+        try:
+            await _step(
+                SnapshotStep.STOPPING_TARGET_AUTOMATIONS,
+                f"Stopping live-dev automations for worktree '{target_worktree}'…",
+            )
+            await self._stop_worktree_automations(target_worktree)
+
+            await _step(
+                SnapshotStep.RESTORE_POSTGRES,
+                f"Restoring database '{target_db}'…",
+            )
+            if not tar_path.exists() or tar_path.stat().st_size == 0:
+                raise RuntimeError(
+                    "Snapshot has no postgres.tar.gz; cannot restore worktree"
+                )
+            pg_svc = get_service("postgres", self.workspace_name, "dev")
+            try:
+                await pg_svc.restore_db(str(tar_path), target_db, force=True)
+                per_service_errors["postgres"] = None
+            except Exception as exc:
+                per_service_errors["postgres"] = str(exc)
+                logger.error(
+                    "Clone %s restore_db failed for worktree '%s' (db=%s): %s",
+                    snapshot_id,
+                    target_worktree,
+                    target_db,
+                    exc,
+                )
+
+            failed_services = [
+                k for k, v in per_service_errors.items() if v is not None
+            ]
+            if failed_services:
+                await self.snapshot_manager.update_task(
+                    task.task_id,
+                    status="error",
+                    step=SnapshotStep.FAILED,
+                    error=(
+                        f"Restore failed for: {failed_services}. "
+                        f"Target worktree '{target_worktree}' automations left stopped."
+                    ),
+                    per_service_errors=per_service_errors,
+                )
+                await _broadcast()
+                return
+
+            await _step(
+                SnapshotStep.STARTING_TARGET_AUTOMATIONS,
+                f"Restarting live-dev automations for worktree '{target_worktree}'…",
+            )
+            await self._start_worktree_automations(target_worktree)
+
+            await self.snapshot_manager.update_task(
+                task.task_id,
+                status="success",
+                step=SnapshotStep.DONE,
+                message="Worktree clone completed successfully",
+                per_service_errors=per_service_errors,
+            )
+            await _broadcast()
+
+        except Exception as exc:
+            logger.exception("Worktree clone failed: %s", exc)
+            await self.snapshot_manager.update_task(
+                task.task_id,
+                status="error",
+                step=SnapshotStep.FAILED,
+                error=str(exc),
+                per_service_errors=per_service_errors,
+            )
+            await _broadcast()
+
     async def _stop_stage_automations(self, stage: str) -> None:
         """Stop all active automations for a given stage."""
         from app.dependencies import get_automation_service
@@ -611,17 +944,77 @@ class SnapshotService:
                 except Exception as exc:
                     logger.warning("Could not restart automation %s: %s", dep_id, exc)
 
-    async def resume_target_automations(self, task_id: str, target_stage: str) -> None:
-        """Restart target automations after an operator-investigated partial clone failure."""
+    async def _stop_worktree_automations(self, worktree: str) -> None:
+        """Stop only the live-dev automations tied to a specific worktree."""
+        from app.dependencies import get_automation_service
+
+        automation_svc = get_automation_service()
+        active = automation_svc.get_active_automations()
+        for dep_id, dep_conf in active.items():
+            dep_stage = (dep_conf or {}).get("stage") or "production"
+            if dep_stage != "live-dev":
+                continue
+            if not _deployment_belongs_to_worktree(dep_conf, worktree):
+                continue
+            try:
+                await automation_svc.stop_automation(dep_id)
+                logger.info(
+                    "Stopped automation %s for worktree '%s' clone", dep_id, worktree
+                )
+            except Exception as exc:
+                logger.warning("Could not stop automation %s: %s", dep_id, exc)
+
+    async def _start_worktree_automations(self, worktree: str) -> None:
+        """Restart the live-dev automations tied to a specific worktree."""
+        from app.dependencies import get_automation_service
+
+        automation_svc = get_automation_service()
+        active = automation_svc.get_active_automations()
+        for dep_id, dep_conf in active.items():
+            dep_stage = (dep_conf or {}).get("stage") or "production"
+            if dep_stage != "live-dev":
+                continue
+            if not _deployment_belongs_to_worktree(dep_conf, worktree):
+                continue
+            try:
+                await automation_svc.restart_automation(dep_id)
+                logger.info(
+                    "Restarted automation %s for worktree '%s' after clone",
+                    dep_id,
+                    worktree,
+                )
+            except Exception as exc:
+                logger.warning("Could not restart automation %s: %s", dep_id, exc)
+
+    async def resume_target_automations(
+        self,
+        task_id: str,
+        target_stage: str | None = None,
+        target_worktree: str | None = None,
+    ) -> None:
+        """Restart target automations after an operator-investigated partial clone failure.
+
+        Dispatches to the worktree-scoped restart when target_worktree is set,
+        otherwise the stage-scoped restart.
+        """
         from app.event_broadcaster import event_broadcaster
 
         try:
-            await self._start_stage_automations(target_stage)
+            if target_worktree:
+                await self._start_worktree_automations(target_worktree)
+                msg = f"Target worktree '{target_worktree}' automations restarted"
+            elif target_stage:
+                await self._start_stage_automations(target_stage)
+                msg = f"Target automations in '{target_stage}' restarted"
+            else:
+                raise ValueError(
+                    "resume_target_automations requires target_stage or target_worktree"
+                )
             await self.snapshot_manager.update_task(
                 task_id,
                 status="success",
                 step=SnapshotStep.DONE,
-                message=f"Target automations in '{target_stage}' restarted",
+                message=msg,
             )
         except Exception as exc:
             await self.snapshot_manager.update_task(task_id, error=str(exc))

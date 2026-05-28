@@ -46,6 +46,10 @@ class SnapshotTask:
     snapshot_id: str
     source_stage: str
     target_stage: str | None = None
+    # Per-worktree snapshots: worktree is the source for CREATE,
+    # target_worktree is the destination for CLONE. Both None for stage-scoped ops.
+    worktree: str | None = None
+    target_worktree: str | None = None
     status: str = "pending"
     step: SnapshotStep | None = None
     message: str = ""
@@ -63,6 +67,8 @@ class SnapshotTask:
             "snapshot_id": self.snapshot_id,
             "source_stage": self.source_stage,
             "target_stage": self.target_stage,
+            "worktree": self.worktree,
+            "target_worktree": self.target_worktree,
             "status": self.status,
             "step": self.step.value if self.step else None,
             "message": self.message,
@@ -86,6 +92,8 @@ class SnapshotManager:
         snapshot_id: str,
         source_stage: str,
         target_stage: str | None = None,
+        worktree: str | None = None,
+        target_worktree: str | None = None,
     ) -> SnapshotTask:
         task_id = str(uuid.uuid4())
         task = SnapshotTask(
@@ -94,6 +102,8 @@ class SnapshotManager:
             snapshot_id=snapshot_id,
             source_stage=source_stage,
             target_stage=target_stage,
+            worktree=worktree,
+            target_worktree=target_worktree,
             step=SnapshotStep.QUEUED,
         )
         async with self._lock:
@@ -142,6 +152,15 @@ class SnapshotManager:
             for t in self._active_tasks.values()
             if t.status in ("pending", "running")
             and (t.target_stage == stage or t.source_stage == stage)
+        ]
+
+    def get_active_for_worktree(self, worktree: str) -> list[SnapshotTask]:
+        """Return running/pending tasks that target or source the given worktree."""
+        return [
+            t
+            for t in self._active_tasks.values()
+            if t.status in ("pending", "running")
+            and (t.target_worktree == worktree or t.worktree == worktree)
         ]
 
     def to_dict_all(self) -> list[dict]:

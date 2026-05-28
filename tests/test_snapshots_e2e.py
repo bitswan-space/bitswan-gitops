@@ -64,6 +64,12 @@ def server(tmp_path_factory):
     # Create minimal bitswan.yaml so automation service doesn't crash
     (gitops_dir / "bitswan.yaml").write_text("deployments: {}\n")
 
+    # Set up a fake workspace repo with two worktrees so worktree-snapshot
+    # validation tests can run without Docker.
+    workspace_repo_dir = tmp_path / "workspace-repo"
+    (workspace_repo_dir / "worktrees" / "wt-a").mkdir(parents=True)
+    (workspace_repo_dir / "worktrees" / "wt-b").mkdir(parents=True)
+
     port = _free_port()
     secret = "test-snapshot-secret"
     snap_dir = tmp_path / "snapshots"
@@ -74,6 +80,7 @@ def server(tmp_path_factory):
     env["SNAPSHOT_DIR"] = str(snap_dir)
     env["SNAPSHOT_RETENTION_PER_STAGE"] = "5"
     env["BITSWAN_WORKSPACE_NAME"] = "test-workspace"
+    env["BITSWAN_WORKSPACE_REPO_DIR"] = str(workspace_repo_dir)
     env.pop("HOST_PATH", None)
     env.pop("MQTT_BROKER", None)
 
@@ -177,7 +184,12 @@ class TestSnapshotCreateList:
         # Verify the 4 expected files are on disk
         snap_dir_path = snap_dir / snap["snapshot_id"]
         assert snap_dir_path.exists()
-        for fname in ("postgres.tar.gz", "couchdb.tar.gz", "minio.tar.gz", "manifest.json"):
+        for fname in (
+            "postgres.tar.gz",
+            "couchdb.tar.gz",
+            "minio.tar.gz",
+            "manifest.json",
+        ):
             assert (snap_dir_path / fname).exists(), f"Missing {fname}"
 
         # manifest has the right fields
@@ -203,7 +215,9 @@ class TestSnapshotCreateList:
 
     def test_get_nonexistent_snapshot_returns_404(self, server):
         base_url, headers, _ = server
-        r = httpx.get(f"{base_url}/snapshots/does-not-exist", headers=headers, timeout=5)
+        r = httpx.get(
+            f"{base_url}/snapshots/does-not-exist", headers=headers, timeout=5
+        )
         assert r.status_code == 404
 
 
@@ -317,16 +331,18 @@ class TestSnapshotRetention:
             assert r.status_code == 202
             task_id = r.json()["task_id"]
             task = _poll_task(base_url, headers, task_id, timeout=30)
-            assert task["status"] == "success", f"Create {i} failed: {task.get('error')}"
+            assert (
+                task["status"] == "success"
+            ), f"Create {i} failed: {task.get('error')}"
 
         r = httpx.get(f"{base_url}/snapshots", headers=headers, timeout=5)
         staging_snaps = [
             s for s in r.json()["snapshots"] if s["source_stage"] == "staging"
         ]
         # With retention=5, should have at most 5 staging snapshots
-        assert len(staging_snaps) <= 5, (
-            f"Expected at most 5 staging snapshots after retention, got {len(staging_snaps)}"
-        )
+        assert (
+            len(staging_snaps) <= 5
+        ), f"Expected at most 5 staging snapshots after retention, got {len(staging_snaps)}"
 
 
 class TestSnapshotDiskPreflight:
@@ -359,7 +375,12 @@ class TestSnapshotDiskPreflight:
             # Patch estimate_size to return large values.
             async def _run():
                 async def big_estimate(stage):
-                    return {"postgres": 1000, "couchdb": 1000, "minio": 1000, "total": 3000}
+                    return {
+                        "postgres": 1000,
+                        "couchdb": 1000,
+                        "minio": 1000,
+                        "total": 3000,
+                    }
 
                 svc.estimate_size = big_estimate
                 task_id = await svc.create_snapshot("dev")
@@ -398,3 +419,193 @@ class TestSnapshotEstimate:
         assert "minio" in data
         assert "total" in data
         assert isinstance(data["total"], int)
+
+
+class TestWorktreeSnapshot:
+    """Validates the per-worktree snapshot API surface.
+
+    The fixture's workspace_repo_dir contains worktrees `wt-a` and `wt-b`
+    but no Postgres container, so create-snapshot tasks finish in `error`
+    (postgres "is not enabled"). The tests assert on the routing/validation
+    layer and the manifest shape captured before the dump attempt.
+    """
+
+    def test_create_unknown_worktree_returns_400(self, server):
+        base_url, headers, _ = server
+        r = httpx.post(
+            f"{base_url}/snapshots",
+            headers=headers,
+            json={"source_stage": "dev", "worktree": "ghost"},
+            timeout=5,
+        )
+        assert r.status_code == 400
+        assert "ghost" in r.json()["detail"].lower()
+
+    def test_create_worktree_snapshot_routes_to_worktree_path(self, server):
+        """POST /snapshots with worktree=wt-a → task starts with a 'wt-' id,
+        records worktree on the task, then ends in error because postgres
+        isn't running in CI."""
+        base_url, headers, _ = server
+        r = httpx.post(
+            f"{base_url}/snapshots",
+            headers=headers,
+            json={"source_stage": "dev", "worktree": "wt-a", "name": "before-x"},
+            timeout=10,
+        )
+        assert r.status_code == 202
+        task_id = r.json()["task_id"]
+
+        task = _poll_task(base_url, headers, task_id)
+        assert task["worktree"] == "wt-a"
+        assert task["snapshot_id"].startswith("wt-wt-a-")
+        # Postgres unavailable in CI → expect graceful failure
+        assert task["status"] == "error"
+        assert "not enabled" in (task["error"] or "").lower()
+
+    def test_estimate_for_worktree(self, server):
+        """GET /snapshots/estimate?stage=dev&worktree=wt-a returns postgres-only
+        sizes; couchdb/minio are 0."""
+        base_url, headers, _ = server
+        r = httpx.get(
+            f"{base_url}/snapshots/estimate",
+            headers=headers,
+            params={"stage": "dev", "worktree": "wt-a"},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["couchdb"] == 0
+        assert data["minio"] == 0
+        assert data["total"] == data["postgres"]
+
+    def test_estimate_unknown_worktree_returns_400(self, server):
+        base_url, headers, _ = server
+        r = httpx.get(
+            f"{base_url}/snapshots/estimate",
+            headers=headers,
+            params={"stage": "dev", "worktree": "ghost"},
+            timeout=5,
+        )
+        assert r.status_code == 400
+
+    def test_clone_requires_exactly_one_target(self, server):
+        """target_stage AND target_worktree → 400; neither → 400."""
+        base_url, headers, _ = server
+
+        # Need an existing snapshot id to address the endpoint; the existing
+        # dev snapshot tests created one earlier in the session.
+        r = httpx.get(f"{base_url}/snapshots", headers=headers, timeout=5)
+        snaps = r.json()["snapshots"]
+        if not snaps:
+            pytest.skip("No snapshots available")
+        snap_id = snaps[0]["snapshot_id"]
+
+        # Both set → 400
+        r = httpx.post(
+            f"{base_url}/snapshots/{snap_id}/clone",
+            headers=headers,
+            json={"target_stage": "dev", "target_worktree": "wt-a"},
+            timeout=5,
+        )
+        assert r.status_code == 400
+
+        # Neither set → 400
+        r = httpx.post(
+            f"{base_url}/snapshots/{snap_id}/clone",
+            headers=headers,
+            json={},
+            timeout=5,
+        )
+        assert r.status_code == 400
+
+    def test_clone_stage_snapshot_with_target_worktree_returns_400(self, server):
+        """A stage-kind snapshot must not be cloned via target_worktree."""
+        base_url, headers, _ = server
+
+        # Find a stage-kind snapshot from earlier tests
+        r = httpx.get(f"{base_url}/snapshots", headers=headers, timeout=5)
+        snaps = [
+            s for s in r.json()["snapshots"] if s.get("source_kind", "stage") == "stage"
+        ]
+        if not snaps:
+            pytest.skip("No stage snapshots available")
+        snap_id = snaps[0]["snapshot_id"]
+
+        r = httpx.post(
+            f"{base_url}/snapshots/{snap_id}/clone",
+            headers=headers,
+            json={"target_worktree": "wt-a"},
+            timeout=5,
+        )
+        assert r.status_code == 400
+        assert "worktree" in r.json()["detail"].lower()
+
+    def test_clone_worktree_snapshot_unknown_target_returns_400(self, server):
+        """Create a synthetic worktree-kind snapshot on disk and try to clone
+        it into a non-existent worktree."""
+        base_url, headers, snap_dir = server
+
+        # Synthesize a worktree-kind snapshot directory + manifest. We can't
+        # rely on the create endpoint because postgres isn't running.
+        synth_id = "wt-wt-a-20260101T000000Z-deadbeef"
+        sdir = snap_dir / synth_id
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / "postgres.tar.gz").write_bytes(b"")
+        manifest = {
+            "snapshot_id": synth_id,
+            "name": "synthetic",
+            "source_kind": "worktree",
+            "source_stage": "dev",
+            "worktree": "wt-a",
+            "db_name": "postgres_wt_wt_a",
+            "workspace": "test-workspace",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "sizes_bytes": {"postgres": 0, "total": 0},
+            "gitops_version": "0.1.0",
+        }
+        (sdir / "manifest.json").write_text(json.dumps(manifest))
+
+        r = httpx.post(
+            f"{base_url}/snapshots/{synth_id}/clone",
+            headers=headers,
+            json={"target_worktree": "ghost"},
+            timeout=5,
+        )
+        assert r.status_code == 400
+        assert "ghost" in r.json()["detail"].lower()
+
+    def test_clone_worktree_snapshot_with_target_stage_returns_400(self, server):
+        """A worktree-kind snapshot must not be cloned via target_stage."""
+        base_url, headers, snap_dir = server
+
+        # Reuse the synthetic snapshot from the previous test if present,
+        # otherwise synthesise one.
+        synth_id = "wt-wt-a-20260101T000000Z-deadbeef"
+        sdir = snap_dir / synth_id
+        if not sdir.exists():
+            sdir.mkdir(parents=True)
+            (sdir / "postgres.tar.gz").write_bytes(b"")
+            (sdir / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "snapshot_id": synth_id,
+                        "name": "synthetic",
+                        "source_kind": "worktree",
+                        "source_stage": "dev",
+                        "worktree": "wt-a",
+                        "db_name": "postgres_wt_wt_a",
+                        "workspace": "test-workspace",
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "sizes_bytes": {"postgres": 0, "total": 0},
+                        "gitops_version": "0.1.0",
+                    }
+                )
+            )
+
+        r = httpx.post(
+            f"{base_url}/snapshots/{synth_id}/clone",
+            headers=headers,
+            json={"target_stage": "dev"},
+            timeout=5,
+        )
+        assert r.status_code == 400

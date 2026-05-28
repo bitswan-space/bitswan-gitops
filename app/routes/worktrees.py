@@ -12,6 +12,7 @@ from app.utils import (
     call_git_command,
     call_git_command_with_output,
     GitLockContext,
+    worktree_db_name,
 )
 
 
@@ -43,12 +44,6 @@ def _get_postgres_secrets(stage: str = "dev") -> dict | None:
     return None
 
 
-def _worktree_db_name(worktree_name: str) -> str:
-    """Generate a Postgres database name for a worktree."""
-    safe = re.sub(r"[^a-z0-9_]", "_", worktree_name.lower())
-    return f"postgres_wt_{safe}"
-
-
 async def _clone_postgres_db(worktree_name: str) -> str | None:
     """Clone the dev Postgres database for a worktree. Returns the new DB name or None."""
     secrets = _get_postgres_secrets("dev")
@@ -58,7 +53,7 @@ async def _clone_postgres_db(worktree_name: str) -> str | None:
     user = secrets["POSTGRES_USER"]
     password = secrets["POSTGRES_PASSWORD"]
     source_db = secrets.get("POSTGRES_DB", "postgres")
-    new_db = _worktree_db_name(worktree_name)
+    new_db = worktree_db_name(worktree_name)
 
     docker_client = get_async_docker_client()
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
@@ -121,7 +116,7 @@ async def _drop_postgres_db(worktree_name: str) -> None:
 
     user = secrets["POSTGRES_USER"]
     password = secrets["POSTGRES_PASSWORD"]
-    new_db = _worktree_db_name(worktree_name)
+    new_db = worktree_db_name(worktree_name)
 
     docker_client = get_async_docker_client()
     workspace_name = os.environ.get("BITSWAN_WORKSPACE_NAME", "workspace-local")
