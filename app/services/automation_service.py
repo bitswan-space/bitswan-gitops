@@ -757,17 +757,17 @@ class AutomationService:
         if os.path.isdir(bitswan_lib_dir):
             dirs_to_merge.append(bitswan_lib_dir)
 
-        if stage == "live-dev":
-            checksum = "live-dev"
-        else:
-            checksum = await calculate_git_tree_hash(dirs_to_merge)
-            await self.materialize_merged_tree(dirs_to_merge, checksum)
-
         # Build the per-automation runtime image if the source ships a
         # Dockerfile under `image/`. Editor uploads do this client-side; for
         # our workspace-mounted deploys gitops handles it itself, blocking
         # on the build so `deploy_automation` reads the correct image tag
         # from the (just-updated) `automation.toml`.
+        #
+        # This MUST run before the checksum/materialize step below: it writes
+        # the resolved image tag into the source `automation.toml`, and the
+        # dev-stage deploy reads the automation config from the materialized
+        # `<checksum>/` tree. Building afterwards would materialize a stale
+        # config and silently fall back to the default runtime image.
         try:
             await self._ensure_automation_image(source_dir)
         except HTTPException:
@@ -777,6 +777,12 @@ class AutomationService:
                 status_code=500,
                 detail=f"Image build failed: {exc}",
             )
+
+        if stage == "live-dev":
+            checksum = "live-dev"
+        else:
+            checksum = await calculate_git_tree_hash(dirs_to_merge)
+            await self.materialize_merged_tree(dirs_to_merge, checksum)
 
         task = await deploy_manager.create_task(deployment_id)
         if task is None:
