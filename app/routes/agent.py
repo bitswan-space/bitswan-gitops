@@ -243,30 +243,24 @@ async def list_agent_deployments(
     return result
 
 
-class StartDeploymentRequest(BaseModel):
-    relative_path: str
-    worktree: str | None = None
-
-
-@router.post("/deployments/start")
+@router.post("/deployments/{deployment_id}/start")
 async def start_agent_deployment(
-    body: StartDeploymentRequest,
+    deployment_id: str,
+    worktree: str = Query(...),
     automation_service: AutomationService = Depends(get_automation_service),
     _token=Depends(verify_agent_token),
 ):
     """Start a live-dev deployment for an automation."""
-    sources = _scan_automations(body.worktree)
+    _validate_deployment_id(deployment_id)
     source = next(
-        (s for s in sources if s["relative_path"] == body.relative_path), None
+        (s for s in _scan_automations(worktree) if s["deployment_id"] == deployment_id),
+        None,
     )
     if not source:
-        ctx = f" in worktree '{body.worktree}'" if body.worktree else ""
         raise HTTPException(
             status_code=404,
-            detail=f"No automation source at '{body.relative_path}'{ctx}",
+            detail=f"No automation source with deployment_id '{deployment_id}' in worktree '{worktree}'",
         )
-
-    deployment_id = source["deployment_id"]
 
     # Guard: reject if already deploying
     from app.deploy_manager import deploy_manager
