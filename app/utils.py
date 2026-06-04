@@ -665,6 +665,7 @@ async def update_git(
     deployment_id: str,
     action: str,
     deployed_by: str | None = None,
+    message: str | None = None,
 ):
     """
     Update git repository with changes to bitswan.yaml.
@@ -753,7 +754,7 @@ async def update_git(
             "--author",
             author,
             "-m",
-            f"{action} deployment {deployment_id}",
+            message or f"{action} deployment {deployment_id}",
             cwd=bitswan_dir,
         )
 

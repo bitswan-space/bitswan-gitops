@@ -54,6 +54,12 @@ class StartDeployRequest(BaseModel):
     worktree: str | None = None
 
 
+class DeployBPRequest(BaseModel):
+    bp: str
+    stage: str  # "dev" or "live-dev"
+    worktree: str | None = None
+
+
 @router.post("/start-deploy")
 async def start_deploy(
     body: StartDeployRequest,
@@ -103,6 +109,69 @@ async def start_deploy(
             "deployment_id": prep["deployment_id"],
             "checksum": prep["checksum"],
             "url": url,
+            "status": "pending",
+        },
+    )
+
+
+@router.post("/deploy-bp")
+async def deploy_bp(
+    body: DeployBPRequest,
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    """Deploy ALL automations under one business process as a single unit.
+
+    Enumerates the BP's member automations, reserves them all atomically
+    (409 if any member is already deploying), then runs one batched deploy
+    (prep all → one bitswan.yaml write → one `docker compose up`). Progress is
+    tracked under a single BP-level task broadcast over the `deploy_progress`
+    SSE event and pollable via `/automations/deploy-status/{task_id}`.
+    """
+    if body.stage not in ("dev", "live-dev"):
+        raise HTTPException(
+            status_code=400,
+            detail="Stage must be one of: dev, live-dev",
+        )
+
+    members = automation_service.members_for_bp(
+        body.bp, worktree=body.worktree, stage=body.stage
+    )
+    if not members:
+        ctx = f" in worktree '{body.worktree}'" if body.worktree else ""
+        raise HTTPException(
+            status_code=404,
+            detail=f"No deployable automations under BP '{body.bp}'{ctx}",
+        )
+
+    deployment_ids = [
+        automation_service.deployment_id_for(m, body.stage) for m in members
+    ]
+
+    task, conflict = await deploy_manager.create_bp_task(body.bp, deployment_ids)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Deployment {conflict} is already in progress",
+        )
+
+    _spawn_bg(
+        _run_bp_deploy_with_progress(
+            task.task_id,
+            body.bp,
+            deployment_ids,
+            automation_service,
+            stage=body.stage,
+            worktree=body.worktree,
+            members=members,
+        )
+    )
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "task_id": task.task_id,
+            "bp": body.bp,
+            "deployment_ids": deployment_ids,
             "status": "pending",
         },
     )
@@ -247,6 +316,77 @@ async def _run_deploy_with_progress(
             status=DeployStatus.FAILED,
             error=error_detail,
             message="Deployment failed",
+        )
+        await _broadcast_task()
+
+
+async def _run_bp_deploy_with_progress(
+    task_id: str,
+    bp: str,
+    deployment_ids: list[str],
+    automation_service: AutomationService,
+    stage: str,
+    worktree: str | None,
+    members: list[dict],
+):
+    """Background coroutine running a BP deploy with progress broadcasting.
+
+    Mirrors `_run_deploy_with_progress` but drives `deploy_business_process`.
+    On terminal status, `deploy_manager.update_task` releases every member lock.
+    """
+
+    async def progress_callback(step: str, message: str, current: int | None = None):
+        deploy_step = DeployStep(step)
+        if current is not None:
+            await deploy_manager.set_current(task_id, current)
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.IN_PROGRESS,
+            step=deploy_step,
+            message=message,
+        )
+        task = deploy_manager.get_task(task_id)
+        if task:
+            await event_broadcaster.broadcast("deploy_progress", task.to_dict())
+
+    async def _broadcast_task():
+        task = deploy_manager.get_task(task_id)
+        if task:
+            await event_broadcaster.broadcast("deploy_progress", task.to_dict())
+
+    try:
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.IN_PROGRESS,
+            message=f"Deploying business process {bp}...",
+        )
+        await _broadcast_task()
+
+        await automation_service.deploy_business_process(
+            bp=bp,
+            stage=stage,
+            worktree=worktree,
+            members=members,
+            progress_callback=progress_callback,
+        )
+
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.COMPLETED,
+            step=DeployStep.DONE,
+            message="Business process deployed successfully",
+        )
+        await _broadcast_task()
+    except Exception as exc:
+        logger.exception("BP deploy failed for %s (task %s)", bp, task_id)
+        error_detail = str(exc)
+        if hasattr(exc, "detail"):
+            error_detail = exc.detail
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.FAILED,
+            error=error_detail,
+            message="Business process deployment failed",
         )
         await _broadcast_task()
 

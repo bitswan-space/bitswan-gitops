@@ -23,6 +23,7 @@ class DeployStatus(str, Enum):
 
 
 class DeployStep(str, Enum):
+    BUILDING_IMAGES = "building_images"
     UPDATING_CONFIG = "updating_config"
     ENABLING_SERVICES = "enabling_services"
     GENERATING_COMPOSE = "generating_compose"
@@ -44,6 +45,13 @@ class DeployTask:
     build_checksum: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
+    # Business-process deploys: one task spans multiple member deployments.
+    # These are empty/None for single-automation tasks so existing clients
+    # (which key on task_id/deployment_id/step) are unaffected.
+    bp: str | None = None
+    members: list[str] = field(default_factory=list)
+    total: int | None = None
+    current: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -58,6 +66,11 @@ class DeployTask:
             "completed_at": self.completed_at.isoformat()
             if self.completed_at
             else None,
+            # Additive BP fields — None/empty for single-automation tasks.
+            "bp": self.bp,
+            "members": self.members,
+            "total": self.total,
+            "current": self.current,
         }
 
 
@@ -81,6 +94,40 @@ class DeployManager:
             self._active_deploys[deployment_id] = task_id
             return task
 
+    async def create_bp_task(
+        self, bp: str, deployment_ids: list[str]
+    ) -> tuple["DeployTask | None", str | None]:
+        """Create a single deploy task spanning all members of a business process.
+
+        Atomically reserves every member deployment_id. Returns (task, None) on
+        success, or (None, conflicting_id) if ANY member is already deploying —
+        in which case nothing is reserved.
+        """
+        async with self._lock:
+            for did in deployment_ids:
+                if did in self._active_deploys:
+                    return None, did
+            task_id = str(uuid.uuid4())
+            task = DeployTask(
+                task_id=task_id,
+                # First member keeps the single-id contract working for old
+                # clients that match a task by deployment_id.
+                deployment_id=deployment_ids[0] if deployment_ids else bp,
+                bp=bp,
+                members=list(deployment_ids),
+                total=len(deployment_ids),
+            )
+            self._tasks[task_id] = task
+            for did in deployment_ids:
+                self._active_deploys[did] = task_id
+            return task, None
+
+    async def set_current(self, task_id: str, current: int):
+        """Update the per-member progress counter for a BP deploy task."""
+        task = self._tasks.get(task_id)
+        if task:
+            task.current = current
+
     async def update_task(
         self,
         task_id: str,
@@ -103,7 +150,12 @@ class DeployManager:
         if status in (DeployStatus.COMPLETED, DeployStatus.FAILED):
             task.completed_at = datetime.now(timezone.utc)
             async with self._lock:
-                self._active_deploys.pop(task.deployment_id, None)
+                if task.members:
+                    # BP task — release every reserved member lock.
+                    for did in task.members:
+                        self._active_deploys.pop(did, None)
+                else:
+                    self._active_deploys.pop(task.deployment_id, None)
 
     def get_task(self, task_id: str) -> DeployTask | None:
         return self._tasks.get(task_id)
