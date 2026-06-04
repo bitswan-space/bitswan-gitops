@@ -689,23 +689,39 @@ class AutomationService:
         )
         return full_tag
 
-    async def start_deploy_from_workspace(
+    @staticmethod
+    def deployment_id_for(source: dict, stage: str) -> str:
+        """Resolve the deployment_id for a scanned source at a given stage.
+
+        The scanner's `deployment_id` always ends with `-live-dev`; for the
+        `dev` stage rewrite the suffix so the id matches what bitswan-editor
+        produces (sanitized-{bp_prefix}{stage}).
+        """
+        if stage == "dev":
+            return source["deployment_id"].removesuffix("-live-dev") + "-dev"
+        return source["deployment_id"]
+
+    async def prep_deploy_source(
         self,
         relative_path: str,
         stage: str,
         worktree: str | None = None,
     ) -> dict:
-        """Deploy an automation directly from the bind-mounted workspace.
+        """Build + materialize one automation source, ready for deployment.
 
-        Replaces the editor's upload-and-deploy flow for the cases where the
-        workspace is always co-located with gitops (which it is in our
-        topology). Discovers the source via `scan_workspace_sources`, merges
-        `bitswan_lib` if present, computes a real merged-tree checksum,
-        materializes the merged tree under `<gitops_dir>/<checksum>/`, and
-        delegates to `deploy_automation`.
+        Pure prep — NO deploy task, NO bitswan.yaml write, NO compose-up:
+          * discover the source via `scan_workspace_sources` (so the
+            deployment_id format matches the editor's),
+          * build the per-automation runtime image if it ships an
+            `image/Dockerfile` (`_ensure_automation_image`),
+          * compute the merged-tree checksum (with `bitswan_lib`) and
+            materialize `<gitops_dir>/<checksum>/` (skipped for live-dev).
 
-        `stage="live-dev"` skips the materialization step and uses the literal
-        "live-dev" checksum, matching the existing `start-live-dev` endpoint.
+        Returns: {deployment_id, checksum, stage, relative_path,
+                  automation_name, context, source}.
+        Raises HTTPException on bad stage / missing source / image-build or
+        materialize failure. Used by both `start_deploy_from_workspace` (single)
+        and `deploy_business_process` (BP).
         """
         if stage not in {"dev", "live-dev"}:
             raise HTTPException(
@@ -713,9 +729,8 @@ class AutomationService:
                 detail=f"Unsupported stage '{stage}' (allowed: dev, live-dev)",
             )
 
-        # Find the source via the same scan agent.py uses, so the
-        # deployment_id format matches. For dev stage we still scan from the
-        # main workspace (no worktree); for live-dev we honour `worktree`.
+        # For dev stage we scan from the main workspace (no worktree); for
+        # live-dev we honour `worktree`.
         scan_worktree = worktree if stage == "live-dev" else None
         sources = scan_workspace_sources(
             self.workspace_repo_dir, worktree=scan_worktree
@@ -728,20 +743,7 @@ class AutomationService:
                 detail=f"No automation source at '{relative_path}'{ctx}",
             )
 
-        # deployment_id: same template the editor uses for non-live-dev
-        # stage deploys (sanitized-{bp_prefix}{stage}). The scanner's
-        # `deployment_id` ends with `-live-dev`; rewrite the suffix for the
-        # dev stage so the IDs match what bitswan-editor produces.
-        if stage == "dev":
-            deployment_id = source["deployment_id"].removesuffix("-live-dev") + "-dev"
-        else:
-            deployment_id = source["deployment_id"]
-
-        if deploy_manager.is_deploying(deployment_id):
-            raise HTTPException(
-                status_code=409,
-                detail=f"Deployment {deployment_id} is already in progress",
-            )
+        deployment_id = self.deployment_id_for(source, stage)
 
         # Resolve source dir + optional bitswan_lib for the merge.
         source_dir = os.path.realpath(
@@ -758,16 +760,12 @@ class AutomationService:
             dirs_to_merge.append(bitswan_lib_dir)
 
         # Build the per-automation runtime image if the source ships a
-        # Dockerfile under `image/`. Editor uploads do this client-side; for
-        # our workspace-mounted deploys gitops handles it itself, blocking
-        # on the build so `deploy_automation` reads the correct image tag
-        # from the (just-updated) `automation.toml`.
-        #
-        # This MUST run before the checksum/materialize step below: it writes
-        # the resolved image tag into the source `automation.toml`, and the
-        # dev-stage deploy reads the automation config from the materialized
-        # `<checksum>/` tree. Building afterwards would materialize a stale
-        # config and silently fall back to the default runtime image.
+        # Dockerfile under `image/`. This MUST run before the
+        # checksum/materialize step: it writes the resolved image tag into the
+        # source `automation.toml`, and the dev-stage deploy reads the
+        # automation config from the materialized `<checksum>/` tree. Building
+        # afterwards would materialize a stale config and silently fall back to
+        # the default runtime image.
         try:
             await self._ensure_automation_image(source_dir)
         except HTTPException:
@@ -784,6 +782,35 @@ class AutomationService:
             checksum = await calculate_git_tree_hash(dirs_to_merge)
             await self.materialize_merged_tree(dirs_to_merge, checksum)
 
+        return {
+            "deployment_id": deployment_id,
+            "checksum": checksum,
+            "stage": stage,
+            "relative_path": source["relative_path"],
+            "automation_name": source["automation_name"],
+            "context": source["context"],
+            "source": source,
+        }
+
+    async def start_deploy_from_workspace(
+        self,
+        relative_path: str,
+        stage: str,
+        worktree: str | None = None,
+    ) -> dict:
+        """Deploy a single automation directly from the bind-mounted workspace.
+
+        Thin wrapper over `prep_deploy_source` that additionally reserves the
+        deploy task. Discovers the source, merges `bitswan_lib`, materializes
+        the merged tree under `<gitops_dir>/<checksum>/`, and returns the
+        kwargs the deploy pipeline (`deploy_automation`) consumes.
+
+        `stage="live-dev"` skips materialization and uses the literal
+        "live-dev" checksum, matching the existing `start-live-dev` endpoint.
+        """
+        prep = await self.prep_deploy_source(relative_path, stage, worktree)
+        deployment_id = prep["deployment_id"]
+
         task = await deploy_manager.create_task(deployment_id)
         if task is None:
             raise HTTPException(
@@ -793,19 +820,324 @@ class AutomationService:
 
         deploy_kwargs = dict(
             deployment_id=deployment_id,
-            checksum=checksum,
+            checksum=prep["checksum"],
             stage=stage,
-            relative_path=source["relative_path"],
-            automation_name=source["automation_name"],
-            context=source["context"],
+            relative_path=prep["relative_path"],
+            automation_name=prep["automation_name"],
+            context=prep["context"],
         )
 
         return {
             "deployment_id": deployment_id,
             "task_id": task.task_id,
-            "checksum": checksum,
+            "checksum": prep["checksum"],
             "deploy_kwargs": deploy_kwargs,
-            "source": source,
+            "source": prep["source"],
+        }
+
+    def members_for_bp(
+        self, bp: str, worktree: str | None = None, stage: str = "dev"
+    ) -> list[dict]:
+        """Scan for every automation source under one business process.
+
+        BP membership = automations whose first path segment (after stripping
+        any `worktrees/<wt>/` prefix) matches `bp`. Comparison is done through
+        `sanitize_automation_name` on both sides so a raw directory name and
+        its sanitized form both match. Returns the scanner dicts (same shape
+        as `scan_workspace_sources`).
+        """
+        scan_worktree = worktree if stage == "live-dev" else None
+        sources = scan_workspace_sources(
+            self.workspace_repo_dir, worktree=scan_worktree
+        )
+        bp_key = sanitize_automation_name(bp)
+        out: list[dict] = []
+        for s in sources:
+            parts = (s.get("relative_path") or "").replace("\\", "/").split("/")
+            if len(parts) >= 2 and parts[0] == "worktrees":
+                parts = parts[2:]  # drop "worktrees/<wt>"
+            if parts and sanitize_automation_name(parts[0]) == bp_key:
+                out.append(s)
+        return out
+
+    async def write_deployment_entries(
+        self,
+        members: list[dict],
+        deployed_by: str | None = None,
+        commit_subject: str | None = None,
+        report: Callable[..., Any] | None = None,
+    ) -> dict:
+        """Upsert several deployment entries into bitswan.yaml in ONE write +
+        ONE git commit, then auto-enable their declared infra services.
+
+        Each member dict carries: deployment_id, checksum, stage,
+        relative_path, automation_name, context (+ optional services/replicas).
+        Mirrors the per-field mapping `deploy_automation` does, but batched.
+        Returns the re-read bs_yaml.
+        """
+
+        async def _report(step: str, message: str):
+            if report is not None:
+                await report(step, message)
+
+        bs_yaml = read_bitswan_yaml(self.gitops_dir) or {"deployments": {}}
+        deployments = bs_yaml.setdefault("deployments", {})
+
+        for m in members:
+            deployment_id = m["deployment_id"]
+
+            # Clean up old-format worktree entries for the same automation
+            # (same logic as deploy_automation's per-deployment cleanup).
+            if (
+                "-wt-" in deployment_id
+                and m.get("stage") == "live-dev"
+                and m.get("relative_path")
+            ):
+                stale = [
+                    k
+                    for k, v in deployments.items()
+                    if k != deployment_id
+                    and "-wt-" in k
+                    and k.endswith("-live-dev")
+                    and (v or {}).get("relative_path") == m["relative_path"]
+                ]
+                for k in stale:
+                    del deployments[k]
+
+            dep = deployments.setdefault(deployment_id, {})
+            if m.get("checksum") is not None:
+                dep["checksum"] = m["checksum"]
+            if m.get("stage") is not None:
+                # Map production to empty string (canonical persisted form).
+                dep["stage"] = "" if m["stage"] == "production" else m["stage"]
+            if m.get("automation_name") is not None:
+                dep["automation_name"] = m["automation_name"]
+            if m.get("context") is not None:
+                dep["context"] = m["context"]
+            if m.get("relative_path") is not None:
+                dep["relative_path"] = m["relative_path"]
+            if m.get("services") is not None:
+                dep["services"] = m["services"]
+            if m.get("replicas") is not None:
+                dep["replicas"] = m["replicas"]
+            if "active" not in dep:
+                dep["active"] = True
+
+        # Remove stale live-dev entries that lack relative_path.
+        stale_live_devs = [
+            k
+            for k, v in deployments.items()
+            if (v or {}).get("stage") == "live-dev"
+            and not (v or {}).get("relative_path")
+        ]
+        for k in stale_live_devs:
+            logger.warning("Removing stale live-dev entry: %s", k)
+            del deployments[k]
+
+        bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+        with open(bitswan_yaml_path, "w") as f:
+            yaml.dump(bs_yaml, f)
+
+        await update_git(
+            self.gitops_dir,
+            self.gitops_dir_host,
+            members[0]["deployment_id"] if members else "all",
+            "deploy",
+            deployed_by=deployed_by,
+            message=commit_subject,
+        )
+
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+
+        # Auto-enable the union of declared services, grouped by stage.
+        by_stage: dict[str, dict] = {}
+        for m in members:
+            dep_conf = bs_yaml.get("deployments", {}).get(m["deployment_id"], {}) or {}
+            deploy_services = m.get("services") or dep_conf.get("services")
+            deploy_stage = m.get("stage") or dep_conf.get("stage") or "production"
+            if deploy_stage == "":
+                deploy_stage = "production"
+            if not deploy_services:
+                auto_conf = self.resolve_automation_config(dep_conf)
+                if auto_conf.services:
+                    deploy_services = {
+                        svc_name: {"enabled": svc_dep.enabled}
+                        for svc_name, svc_dep in auto_conf.services.items()
+                    }
+            if deploy_services:
+                by_stage.setdefault(deploy_stage, {}).update(deploy_services)
+
+        if by_stage:
+            await _report("enabling_services", "Enabling declared services...")
+            for svc_stage, services in by_stage.items():
+                await self.enable_services(services, svc_stage)
+
+        return bs_yaml
+
+    async def apply_compose_for_deployments(
+        self,
+        deployment_ids: list[str],
+        deployed_by: str | None = None,
+        report: Callable[..., Any] | None = None,
+    ) -> dict:
+        """Regenerate the full compose once and bring up the given member
+        services (+ their infra) in a single `docker compose up`, then run the
+        post-deploy hooks for each member and record image tags.
+        """
+
+        async def _report(step: str, message: str):
+            if report is not None:
+                await report(step, message)
+
+        os.environ["COMPOSE_PROJECT_NAME"] = self.workspace_name
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+
+        await _report(
+            "generating_compose", "Generating docker-compose configuration..."
+        )
+        dc_yaml, infra_service_names = self.generate_docker_compose(bs_yaml)
+        self._save_docker_compose(dc_yaml)
+        dc_config = yaml.safe_load(dc_yaml)
+        present = set(dc_config.get("services", {}).keys())
+
+        # Compute each member's compose service name (same as deploy_automation).
+        svc_name_by_id: dict[str, str] = {}
+        for dep_id in deployment_ids:
+            dep_conf = bs_yaml.get("deployments", {}).get(dep_id, {}) or {}
+            svc_name_by_id[dep_id] = make_hostname_label(
+                self.workspace_name,
+                dep_conf.get("automation_name", dep_id),
+                dep_conf.get("context", ""),
+                dep_conf.get("stage", "production") or "production",
+            )
+
+        # Only bring up services that actually made it into the compose file
+        # (a live-dev member with no resolvable image is skipped at generation).
+        member_services = [
+            svc_name_by_id[d] for d in deployment_ids if svc_name_by_id[d] in present
+        ]
+
+        await _report("docker_compose_up", "Starting containers...")
+        deployment_result = await docker_compose_up(
+            self.gitops_dir,
+            dc_yaml,
+            container_name=None,
+            extra_services=member_services + infra_service_names,
+        )
+        await self._post_deploy_infra_services(bs_yaml)
+
+        for result in deployment_result.values():
+            if result["return_code"] != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"Error deploying services: \ndocker-compose:\n {dc_yaml}\n\n"
+                        f"stdout:\n {result['stdout']}\nstderr:\n{result['stderr']}\n"
+                    ),
+                )
+
+        await _report("installing_certs", "Installing certificates...")
+        for dep_id in deployment_ids:
+            await self.install_certificates_in_container(dep_id)
+        await _report("starting_oauth2_proxy", "Starting OAuth2 proxy...")
+        for dep_id in deployment_ids:
+            await self.start_oauth2_proxy_in_container(dep_id)
+        await self.start_oauth2_proxy_in_infra_services(infra_service_names)
+
+        # Record resolved image tags for each member in one final commit.
+        await _report("storing_tags", "Recording image tags...")
+        bs_yaml = read_bitswan_yaml(self.gitops_dir)
+        changed = False
+        for dep_id in deployment_ids:
+            svc_name = svc_name_by_id[dep_id]
+            if svc_name not in present:
+                continue
+            deployed_image = dc_config["services"][svc_name].get("image")
+            image_tag = await self.get_tag(deployed_image)
+            if image_tag and dep_id in bs_yaml.get("deployments", {}):
+                bs_yaml["deployments"][dep_id]["tag_checksum"] = image_tag
+                changed = True
+        if changed:
+            bitswan_yaml_path = os.path.join(self.gitops_dir, "bitswan.yaml")
+            with open(bitswan_yaml_path, "w") as f:
+                yaml.dump(bs_yaml, f)
+            await update_git(
+                self.gitops_dir,
+                self.gitops_dir_host,
+                deployment_ids[0] if deployment_ids else "all",
+                "deploy",
+                deployed_by=deployed_by,
+            )
+
+        return deployment_result
+
+    async def deploy_business_process(
+        self,
+        bp: str,
+        stage: str,
+        worktree: str | None = None,
+        members: list[dict] | None = None,
+        deployed_by: str | None = None,
+        progress_callback: Callable[..., Any] | None = None,
+    ) -> dict:
+        """Deploy every automation under one business process as a single unit.
+
+        Preps ALL members first (build images + checksum + materialize), so a
+        failure in any member aborts before bitswan.yaml is touched or any
+        container is changed. Only once all preps succeed do we write the
+        config once and run a single compose-up over the member services.
+        """
+
+        async def _report(step: str, message: str, current: int | None = None):
+            if progress_callback is not None:
+                await progress_callback(step, message, current)
+
+        if stage not in {"dev", "live-dev"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported stage '{stage}' (allowed: dev, live-dev)",
+            )
+
+        if members is None:
+            members = self.members_for_bp(bp, worktree, stage)
+        if not members:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No deployable automations under BP '{bp}'",
+            )
+
+        # Prep every member up-front (fail-fast — touches no containers).
+        total = len(members)
+        prepped: list[dict] = []
+        for i, src in enumerate(members, start=1):
+            await _report(
+                "building_images",
+                f"Preparing {i}/{total}: {src.get('display_name', src['relative_path'])}",
+                current=i - 1,
+            )
+            prep = await self.prep_deploy_source(src["relative_path"], stage, worktree)
+            prepped.append(prep)
+
+        await _report(
+            "updating_config", "Updating deployment configuration...", current=total
+        )
+        await self.write_deployment_entries(
+            prepped,
+            deployed_by=deployed_by,
+            commit_subject=f"deploy business process {bp}",
+            report=_report,
+        )
+
+        deployment_ids = [p["deployment_id"] for p in prepped]
+        result = await self.apply_compose_for_deployments(
+            deployment_ids, deployed_by=deployed_by, report=_report
+        )
+
+        return {
+            "message": "Deployed business process successfully",
+            "bp": bp,
+            "deployment_ids": deployment_ids,
+            "result": result,
         }
 
     async def get_asset_diff(
