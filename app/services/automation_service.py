@@ -1186,6 +1186,139 @@ class AutomationService:
             "result": out["result"],
         }
 
+    def promotable_bp_members(self, bp: str, target_stage: str) -> list[dict]:
+        """Enumerate one BP's deployments at the previous stage, shaped as
+        member dicts for `write_deployment_entries` targeting `target_stage`.
+
+        Promotion re-deploys the source stage's recorded checksum — no scan,
+        no image build, no materialize (the asset tree already lives under
+        `<gitops_dir>/<checksum>/`). Target deployment ids follow the same
+        convention as the dashboard/editor per-automation promote flow:
+        `{automation}-{bp}-staging` for staging and `{automation}-{bp}`
+        (no suffix) for production.
+        """
+        if target_stage not in {"staging", "production"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Stage must be one of: staging, production",
+            )
+        source_stage = "dev" if target_stage == "staging" else "staging"
+        bs_yaml = read_bitswan_yaml(self.gitops_dir) or {"deployments": {}}
+        deployments = bs_yaml.get("deployments", {}) or {}
+        bp_key = sanitize_automation_name(bp)
+
+        members: list[dict] = []
+        for dep_id, conf in deployments.items():
+            conf = conf or {}
+            stage = conf.get("stage", "production") or "production"
+            if stage != source_stage:
+                continue
+            rel = (conf.get("relative_path") or "").replace("\\", "/")
+            parts = [p for p in rel.split("/") if p]
+            if parts and parts[0] == "worktrees":
+                continue  # worktree live-dev trees never source promotions
+            in_bp = bool(parts) and sanitize_automation_name(parts[0]) == bp_key
+            if not in_bp:
+                ctx = conf.get("context") or ""
+                in_bp = bool(ctx) and sanitize_automation_name(ctx) == bp_key
+            if not in_bp:
+                continue
+            checksum = conf.get("checksum")
+            if not checksum or checksum == "live-dev":
+                continue
+
+            automation_name = conf.get("automation_name")
+            context = conf.get("context")
+            if automation_name:
+                ctx = context or ""
+                if target_stage == "production":
+                    target_id = (
+                        f"{automation_name}-{ctx}"
+                        if ctx
+                        else f"{automation_name}-production"
+                    )
+                else:
+                    target_id = (
+                        f"{automation_name}-{ctx}-staging"
+                        if ctx
+                        else f"{automation_name}-staging"
+                    )
+            else:
+                # Legacy entry without structured name fields — derive from
+                # the source deployment id's stage suffix.
+                base = dep_id.removesuffix(f"-{source_stage}")
+                target_id = (
+                    base if target_stage == "production" else f"{base}-{target_stage}"
+                )
+
+            members.append(
+                {
+                    "deployment_id": target_id,
+                    "checksum": checksum,
+                    "stage": target_stage,
+                    "relative_path": conf.get("relative_path"),
+                    "automation_name": automation_name,
+                    "context": context,
+                    "display_name": automation_name or dep_id,
+                }
+            )
+        return members
+
+    async def promote_business_process(
+        self,
+        bp: str,
+        target_stage: str,
+        members: list[dict] | None = None,
+        deployed_by: str | None = None,
+        progress_callback: Callable[..., Any] | None = None,
+    ) -> dict:
+        """Promote every automation of one BP from the previous stage to
+        `target_stage` as a single unit: ONE bitswan.yaml write + ONE
+        compose-up over the target services.
+
+        No prep step — promotion re-deploys the source stage's recorded
+        checksums verbatim, so the deployed bits are exactly what was running
+        at the source stage even if the workspace source has since changed.
+        Existing target entries are updated in place (their replicas etc.
+        are preserved by the partial upsert).
+        """
+
+        async def _report(step: str, message: str, current: int | None = None):
+            if progress_callback is not None:
+                await progress_callback(step, message, current)
+
+        if members is None:
+            members = self.promotable_bp_members(bp, target_stage)
+        source_stage = "dev" if target_stage == "staging" else "staging"
+        if not members:
+            raise HTTPException(
+                status_code=404,
+                detail=(f"No {source_stage} deployments to promote under BP '{bp}'"),
+            )
+
+        await _report(
+            "updating_config", "Updating deployment configuration...", current=0
+        )
+        await self.write_deployment_entries(
+            members,
+            deployed_by=deployed_by,
+            commit_subject=f"promote business process {bp} to {target_stage}",
+            report=_report,
+        )
+
+        deployment_ids = [m["deployment_id"] for m in members]
+        result = await self.apply_compose_for_deployments(
+            deployment_ids, deployed_by=deployed_by, report=_report
+        )
+
+        return {
+            "message": "Promoted business process successfully",
+            "bp": bp,
+            "stage": target_stage,
+            "deployment_ids": deployment_ids,
+            "result": result,
+        }
+
     async def changed_dev_members(self) -> list[dict]:
         """Return main-scope scanner dicts whose source differs from (or has
         no) deployed dev checksum.

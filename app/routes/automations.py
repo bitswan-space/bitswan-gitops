@@ -61,6 +61,11 @@ class DeployBPRequest(BaseModel):
     worktree: str | None = None
 
 
+class PromoteBPRequest(BaseModel):
+    bp: str
+    stage: str  # "staging" or "production"
+
+
 @router.post("/start-deploy")
 async def start_deploy(
     body: StartDeployRequest,
@@ -172,6 +177,65 @@ async def deploy_bp(
         content={
             "task_id": task.task_id,
             "bp": body.bp,
+            "deployment_ids": deployment_ids,
+            "status": "pending",
+        },
+    )
+
+
+@router.post("/promote-bp")
+async def promote_bp(
+    body: PromoteBPRequest,
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    """Promote ALL automations under one business process from the previous
+    stage to `stage` as a single unit (dev→staging or staging→production).
+
+    Re-deploys each member at its source stage's recorded checksum — no image
+    builds. Reserves all target deployments atomically (409 if any is already
+    deploying); progress is tracked under one BP-level task broadcast over the
+    `deploy_progress` SSE event and pollable via
+    `/automations/deploy-status/{task_id}`.
+    """
+    if body.stage not in ("staging", "production"):
+        raise HTTPException(
+            status_code=400,
+            detail="Stage must be one of: staging, production",
+        )
+
+    members = automation_service.promotable_bp_members(body.bp, body.stage)
+    if not members:
+        source_stage = "dev" if body.stage == "staging" else "staging"
+        raise HTTPException(
+            status_code=404,
+            detail=(f"No {source_stage} deployments to promote under BP '{body.bp}'"),
+        )
+
+    deployment_ids = [m["deployment_id"] for m in members]
+
+    task, conflict = await deploy_manager.create_bp_task(body.bp, deployment_ids)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Deployment {conflict} is already in progress",
+        )
+
+    _spawn_bg(
+        _run_bp_promote_with_progress(
+            task.task_id,
+            body.bp,
+            automation_service,
+            stage=body.stage,
+            members=members,
+        )
+    )
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "task_id": task.task_id,
+            "bp": body.bp,
+            "stage": body.stage,
             "deployment_ids": deployment_ids,
             "status": "pending",
         },
@@ -434,6 +498,74 @@ async def _run_bp_deploy_with_progress(
             status=DeployStatus.FAILED,
             error=error_detail,
             message="Business process deployment failed",
+        )
+        await _broadcast_task()
+
+
+async def _run_bp_promote_with_progress(
+    task_id: str,
+    bp: str,
+    automation_service: AutomationService,
+    stage: str,
+    members: list[dict],
+):
+    """Background coroutine running a BP promotion with progress broadcasting.
+
+    Mirrors `_run_bp_deploy_with_progress` but drives `promote_business_process`.
+    On terminal status, `deploy_manager.update_task` releases every member lock.
+    """
+
+    async def progress_callback(step: str, message: str, current: int | None = None):
+        deploy_step = DeployStep(step)
+        if current is not None:
+            await deploy_manager.set_current(task_id, current)
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.IN_PROGRESS,
+            step=deploy_step,
+            message=message,
+        )
+        task = deploy_manager.get_task(task_id)
+        if task:
+            await event_broadcaster.broadcast("deploy_progress", task.to_dict())
+
+    async def _broadcast_task():
+        task = deploy_manager.get_task(task_id)
+        if task:
+            await event_broadcaster.broadcast("deploy_progress", task.to_dict())
+
+    try:
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.IN_PROGRESS,
+            message=f"Promoting business process {bp} to {stage}...",
+        )
+        await _broadcast_task()
+
+        await automation_service.promote_business_process(
+            bp=bp,
+            target_stage=stage,
+            members=members,
+            progress_callback=progress_callback,
+        )
+
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.COMPLETED,
+            step=DeployStep.DONE,
+            message=f"Business process promoted to {stage} successfully",
+        )
+        await _broadcast_task()
+    except Exception as exc:
+        logger.exception("BP promote failed for %s (task %s)", bp, task_id)
+        error_detail = str(exc)
+        if hasattr(exc, "detail"):
+            error_detail = exc.detail
+        await deploy_manager.update_task(
+            task_id,
+            status=DeployStatus.FAILED,
+            error=error_detail,
+            message="Business process promotion failed",
         )
         await _broadcast_task()
 
