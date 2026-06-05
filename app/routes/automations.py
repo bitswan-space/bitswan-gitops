@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.deploy_manager import DeployStatus, DeployStep, deploy_manager
+from app.deploy_runner import spawn_set_deploy
 from app.event_broadcaster import event_broadcaster
 from app.routes.agent import _scan_automations
 from app.services.automation_service import AutomationService, make_hostname_label
@@ -172,6 +173,52 @@ async def deploy_bp(
             "task_id": task.task_id,
             "bp": body.bp,
             "deployment_ids": deployment_ids,
+            "status": "pending",
+        },
+    )
+
+
+@router.post("/deploy-changed")
+async def deploy_changed(
+    automation_service: AutomationService = Depends(get_automation_service),
+):
+    """Deploy every main automation whose source differs from (or has no)
+    deployed dev checksum — the same changed+new set the worktree-sync hook
+    deploys automatically. Members already being deployed are skipped.
+    """
+    members = await automation_service.changed_dev_members()
+    if not members:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "noop",
+                "message": "No changed automations",
+                "deployment_ids": [],
+            },
+        )
+
+    res = await spawn_set_deploy(
+        label="deploy-changed",
+        members=members,
+        stage="dev",
+        service=automation_service,
+    )
+    if not res.get("deploy"):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": res.get("reason") or "error",
+                "skipped": res.get("skipped", []),
+                "error": res.get("error"),
+            },
+        )
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "task_id": res["deploy"]["task_id"],
+            "deployment_ids": res["deploy"]["deployment_ids"],
+            "skipped": res.get("skipped", []),
             "status": "pending",
         },
     )

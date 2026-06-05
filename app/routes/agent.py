@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.async_docker import get_async_docker_client, DockerError
 from app.dependencies import get_automation_service
+from app.deploy_runner import spawn_set_deploy
 from app.services.automation_service import (
     AutomationService,
     make_hostname_label,
@@ -875,6 +876,35 @@ async def _complete_merge(workspace_dir: str, worktree_path: str, **_kwargs) -> 
     }
 
 
+async def _attach_sync_auto_deploy(result: dict, worktree_name: str) -> None:
+    """After a successful sync merge, deploy changed+new main automations to
+    dev in the background and attach `result["deploy"]`.
+
+    Best-effort — never raises (sync already succeeded). MUST be called AFTER
+    the sync handler's GitLockContext is released: the spawned deploy takes
+    its own git locks and the lock is non-reentrant. Zero changed members →
+    no task, no `deploy` field.
+    """
+    try:
+        service = get_automation_service()
+        members = await service.changed_dev_members()
+        if not members:
+            return
+        res = await spawn_set_deploy(
+            label=f"sync:{worktree_name}",
+            members=members,
+            stage="dev",
+            service=service,
+        )
+        if res.get("deploy"):
+            result["deploy"] = res["deploy"]
+        elif res.get("error"):
+            result["deploy"] = {"error": res["error"]}
+    except Exception as e:
+        logger.warning("Sync auto-deploy spawn failed for '%s': %s", worktree_name, e)
+        result["deploy"] = {"error": str(e)}
+
+
 @router.post("/worktrees/{worktree_name}/sync")
 async def sync_worktree(
     worktree_name: str,
@@ -949,7 +979,10 @@ async def sync_worktree(
         result = await _complete_merge(workspace_dir, worktree_path)
         if result["status"] == "error":
             raise HTTPException(status_code=500, detail=result["detail"])
-        return result
+
+    # Lock released — auto-deploy changed automations to dev (best-effort).
+    await _attach_sync_auto_deploy(result, worktree_name)
+    return result
 
 
 @router.post("/worktrees/{worktree_name}/sync-continue")
@@ -1009,7 +1042,10 @@ async def sync_continue(
         result = await _complete_merge(workspace_dir, worktree_path)
         if result["status"] == "error":
             raise HTTPException(status_code=500, detail=result["detail"])
-        return result
+
+    # Lock released — auto-deploy changed automations to dev (best-effort).
+    await _attach_sync_auto_deploy(result, worktree_name)
+    return result
 
 
 @router.post("/worktrees/{worktree_name}/sync-abort")
