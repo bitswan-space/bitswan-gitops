@@ -7,13 +7,21 @@ Same data is broadcast over `/events/stream` as a `processes` event for
 push-style consumers (the workspace dashboard).
 """
 
+import logging
+import os
 import re
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.dependencies import get_automation_service
+from app.deploy_runner import spawn_set_deploy
 from app.event_broadcaster import event_broadcaster
 from app.mqtt_processes import process_service
+from app.services import template_service
+from app.services.automation_service import AutomationService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/processes", tags=["processes"])
 
@@ -41,14 +49,23 @@ async def get_processes() -> list[dict]:
 
 
 @router.post("/")
-async def create_process(body: CreateProcessRequest) -> dict:
-    """Create a new business-process directory.
+async def create_process(
+    body: CreateProcessRequest,
+    automation_service: AutomationService = Depends(get_automation_service),
+) -> dict:
+    """Create a new business-process directory with auto-setup.
 
     Scaffolds `process.toml` + `README.md` under either `<workspace_repo>/<name>/`
     or `<workspace_repo>/worktrees/<worktree>/<name>/`. The new BP surfaces
     over the SSE feed within the same response (this route refreshes the
     cache + broadcasts inline instead of waiting for the filesystem watcher
     to debounce).
+
+    Auto-setup (best-effort): the default template group
+    (`BITSWAN_DEFAULT_TEMPLATE_GROUP`, default `BitSwanInternalAppGolang`) is
+    scaffolded into the new BP, and its deploy is kicked off in the background
+    — `dev` stage for a main BP, `live-dev` for a worktree BP. Failures never
+    fail the BP creation; they surface in the `setup_error` response field.
     """
     name = (body.name or "").strip()
     if not _PROCESS_NAME_RE.match(name):
@@ -82,4 +99,59 @@ async def create_process(body: CreateProcessRequest) -> dict:
     except Exception:
         pass
 
+    # Auto-setup: scaffold the default template group into the new BP and
+    # kick off its deploy in the background. Best-effort — the BP was already
+    # created; any failure is logged + reported via `setup_error`.
+    automations_created: list[str] = []
+    deploy_task_id: str | None = None
+    setup_error: str | None = None
+    try:
+        group_id = os.environ.get(
+            "BITSWAN_DEFAULT_TEMPLATE_GROUP", "BitSwanInternalAppGolang"
+        )
+        workspace_root = os.environ.get("BITSWAN_WORKSPACE_REPO_DIR", "/workspace-repo")
+        created = await template_service.create_automation_from_template(
+            workspace_root=workspace_root,
+            bp=name,
+            group_id=group_id,
+            worktree=body.worktree,
+        )
+        automations_created = [c["name"] for c in created.get("created", [])]
+
+        # Inline cache refresh + broadcast (mirrors routes/templates.py) so
+        # the new automation cards appear without waiting for the FS watcher.
+        try:
+            await automation_service.refresh(body.worktree)
+            automations = await automation_service.get_automations()
+            data = [
+                a.model_dump(mode="json") if hasattr(a, "model_dump") else a
+                for a in automations
+            ]
+            await event_broadcaster.broadcast("automations", data)
+        except Exception:
+            logger.exception("Failed to broadcast automations after BP scaffold")
+
+        stage = "live-dev" if body.worktree else "dev"
+        members = automation_service.members_for_bp(
+            name, worktree=body.worktree, stage=stage
+        )
+        res = await spawn_set_deploy(
+            label=name,
+            members=members,
+            stage=stage,
+            worktree=body.worktree,
+            service=automation_service,
+        )
+        if res.get("deploy"):
+            deploy_task_id = res["deploy"]["task_id"]
+        elif res.get("error"):
+            setup_error = res["error"]
+    except Exception as e:
+        logger.exception("BP auto-setup failed for %s", name)
+        setup_error = str(e)
+
+    entry["automations_created"] = automations_created
+    entry["deploy_task_id"] = deploy_task_id
+    if setup_error:
+        entry["setup_error"] = setup_error
     return entry

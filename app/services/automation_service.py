@@ -1071,21 +1071,25 @@ class AutomationService:
 
         return deployment_result
 
-    async def deploy_business_process(
+    async def deploy_source_set(
         self,
-        bp: str,
+        label: str,
+        members: list[dict],
         stage: str,
         worktree: str | None = None,
-        members: list[dict] | None = None,
         deployed_by: str | None = None,
+        commit_subject: str | None = None,
         progress_callback: Callable[..., Any] | None = None,
     ) -> dict:
-        """Deploy every automation under one business process as a single unit.
+        """Deploy an arbitrary set of scanned automation sources as one unit.
 
-        Preps ALL members first (build images + checksum + materialize), so a
-        failure in any member aborts before bitswan.yaml is touched or any
-        container is changed. Only once all preps succeed do we write the
-        config once and run a single compose-up over the member services.
+        `members` is a non-empty list of scanner dicts (the
+        `scan_workspace_sources` shape). Preps ALL members first (build images
+        + checksum + materialize), so a failure in any member aborts before
+        bitswan.yaml is touched or any container is changed. Only once all
+        preps succeed do we write the config once and run a single compose-up
+        over the member services. `label` is cosmetic (logs/commit context);
+        the caller owns deploy-task creation and member locking.
         """
 
         async def _report(step: str, message: str, current: int | None = None):
@@ -1097,13 +1101,10 @@ class AutomationService:
                 status_code=400,
                 detail=f"Unsupported stage '{stage}' (allowed: dev, live-dev)",
             )
-
-        if members is None:
-            members = self.members_for_bp(bp, worktree, stage)
         if not members:
             raise HTTPException(
                 status_code=404,
-                detail=f"No deployable automations under BP '{bp}'",
+                detail=f"No deployable automations for '{label}'",
             )
 
         # Prep every member up-front (fail-fast — touches no containers).
@@ -1124,7 +1125,7 @@ class AutomationService:
         await self.write_deployment_entries(
             prepped,
             deployed_by=deployed_by,
-            commit_subject=f"deploy business process {bp}",
+            commit_subject=commit_subject or f"deploy {label}",
             report=_report,
         )
 
@@ -1134,11 +1135,92 @@ class AutomationService:
         )
 
         return {
-            "message": "Deployed business process successfully",
-            "bp": bp,
+            "message": "Deployed successfully",
+            "label": label,
             "deployment_ids": deployment_ids,
             "result": result,
         }
+
+    async def deploy_business_process(
+        self,
+        bp: str,
+        stage: str,
+        worktree: str | None = None,
+        members: list[dict] | None = None,
+        deployed_by: str | None = None,
+        progress_callback: Callable[..., Any] | None = None,
+    ) -> dict:
+        """Deploy every automation under one business process as a single unit.
+
+        Thin wrapper over `deploy_source_set` that enumerates the BP's members
+        and preserves the BP-specific 404 message and return shape.
+        """
+        if stage not in {"dev", "live-dev"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported stage '{stage}' (allowed: dev, live-dev)",
+            )
+
+        if members is None:
+            members = self.members_for_bp(bp, worktree, stage)
+        if not members:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No deployable automations under BP '{bp}'",
+            )
+
+        out = await self.deploy_source_set(
+            label=bp,
+            members=members,
+            stage=stage,
+            worktree=worktree,
+            deployed_by=deployed_by,
+            commit_subject=f"deploy business process {bp}",
+            progress_callback=progress_callback,
+        )
+
+        return {
+            "message": "Deployed business process successfully",
+            "bp": bp,
+            "deployment_ids": out["deployment_ids"],
+            "result": out["result"],
+        }
+
+    async def changed_dev_members(self) -> list[dict]:
+        """Return main-scope scanner dicts whose source differs from (or has
+        no) deployed dev checksum.
+
+        Includes NEW automations (no dev entry in bitswan.yaml) and CHANGED
+        ones (merged-tree hash != stored checksum). Unchanged entries are
+        skipped regardless of their `active` flag — only *changed* sources get
+        (re)deployed, so an explicitly stopped dev automation isn't resurrected
+        by an unrelated sync. Deleted sources (dev entry remains but the
+        source dir is gone) are intentionally NOT auto-undeployed; they simply
+        don't appear in the scan.
+
+        Cheap: one bitswan.yaml read + one workspace scan + one tree hash per
+        source. No image builds, no materialize, no docker, no git lock —
+        for an unchanged source the fresh hash equals the stored checksum
+        because prep's image-tag rewrite is idempotent and persisted in the
+        workspace source.
+        """
+        sources = scan_workspace_sources(self.workspace_repo_dir, worktree=None)
+        bs_yaml = read_bitswan_yaml(self.gitops_dir) or {"deployments": {}}
+        deployments = bs_yaml.get("deployments", {}) or {}
+        bitswan_lib = os.path.join(self.workspace_repo_dir, "bitswan_lib")
+        lib_dirs = [bitswan_lib] if os.path.isdir(bitswan_lib) else []
+
+        changed: list[dict] = []
+        for src in sources:
+            dep_id = self.deployment_id_for(src, "dev")
+            entry = deployments.get(dep_id)
+            if entry is None:
+                changed.append(src)  # new — never dev-deployed
+                continue
+            current = await calculate_git_tree_hash([src["source_path"]] + lib_dirs)
+            if (entry or {}).get("checksum") != current:
+                changed.append(src)
+        return changed
 
     async def get_asset_diff(
         self, from_checksum: str, to_checksum: str, word_diff: bool = False

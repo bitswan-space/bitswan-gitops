@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.async_docker import get_async_docker_client, DockerError
+from app.deploy_runner import spawn_set_deploy
+from app.services.automation_service import scan_workspace_sources
 from app.utils import (
     call_git_command,
     call_git_command_with_output,
@@ -376,6 +378,30 @@ async def create_worktree(body: CreateWorktreeRequest):
     result = {"name": body.branch_name, "path": worktree_path}
     if cloned_db:
         result["postgres_db"] = cloned_db
+
+    # Auto-start live-dev for every automation in the new worktree (a fresh
+    # worktree carries all of main's BPs). Best-effort — the worktree was
+    # already created; failures are logged + reported via `deploy_error`.
+    try:
+        members = scan_workspace_sources(
+            _get_workspace_dir(), worktree=body.branch_name
+        )
+        res = await spawn_set_deploy(
+            label=f"wt:{body.branch_name}",
+            members=members,
+            stage="live-dev",
+            worktree=body.branch_name,
+        )
+        if res.get("deploy"):
+            result["deploy_task_id"] = res["deploy"]["task_id"]
+        elif res.get("error"):
+            result["deploy_error"] = res["error"]
+    except Exception as e:
+        logger.warning(
+            "Worktree auto-deploy spawn failed for '%s': %s", body.branch_name, e
+        )
+        result["deploy_error"] = str(e)
+
     return result
 
 
