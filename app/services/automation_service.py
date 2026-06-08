@@ -196,10 +196,11 @@ def make_hostname_label(
     """
     ws = workspace_name[:MAX_NAME_LEN]
     an = automation_name[:MAX_NAME_LEN]
+    has_stage = bool(stage) and stage != "production"
     if context:
         h = _short_hash(context)
-        return f"{ws}-{an}-{h}-{stage}" if stage else f"{ws}-{an}-{h}"
-    return f"{ws}-{an}-{stage}" if stage else f"{ws}-{an}"
+        return f"{ws}-{an}-{h}-{stage}" if has_stage else f"{ws}-{an}-{h}"
+    return f"{ws}-{an}-{stage}" if has_stage else f"{ws}-{an}"
 
 
 class AutomationService:
